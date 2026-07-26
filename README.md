@@ -64,22 +64,26 @@ $ security find-identity -v -p codesigning
 
 ### What you need
 
-1. **A Developer ID Application certificate.** This is the missing piece and the
-   only one that requires the paid account. Xcode → Settings → Accounts → your
-   Apple ID → Manage Certificates → **+** → *Developer ID Application*. You must
-   hold the Account Holder or Admin role; a team of one always does. (The portal
-   route is Certificates, IDs & Profiles → Certificates → **+**.)
-
-   Confirm it landed — you want a *second* line here:
+1. **A Developer ID Application certificate**, on the **Eat Picky Corp** team.
 
    ```sh
-   security find-identity -v -p codesigning   # expect "Developer ID Application: …"
+   security find-identity -v -p codesigning
+   #  1) … "Apple Development: GABRIEL CAMPILLO (AR6G3Q24VH)"
+   #  2) … "Developer ID Application: Eat Picky Corp (UR28366SA6)"   ← this one
    ```
 
-2. **Your Team ID: `UR28366SA6`.** Take it from the certificate's `OU` field,
-   not from the parenthesised string in the common name — for an Apple
-   Development cert that is the certificate's own id (`AR6G3Q24VH` above), which
-   is a different value and will fail notarization:
+   Xcode → Settings → Accounts → Manage Certificates → **+**. If the menu offers
+   only *Apple Development* / *Apple Distribution* / *Mac Installer
+   Distribution*, **you have the wrong team selected** — that list is per-team,
+   and Developer ID lives on the organization team, not on a personal one. Pick
+   Eat Picky Corp in the team list first. (Creating one also requires the
+   Account Holder role, and a team is capped at 5.)
+
+2. **Team ID `UR28366SA6`.** Confusingly this is the same team as the *Apple
+   Development* certificate — its `OU` field is the team, and the team is Eat
+   Picky Corp. What is **not** the team id is the parenthesised string in that
+   cert's common name (`AR6G3Q24VH`); that is the certificate's own identifier,
+   and passing it fails notarization.
 
    ```sh
    security find-certificate -c "Developer ID Application" -p \
@@ -87,17 +91,32 @@ $ security find-identity -v -p codesigning
    ```
 
 3. **An app-specific password**, from appleid.apple.com → Sign-In and Security →
-   App-Specific Passwords. (An App Store Connect API key works too and does not
-   expire when you change your Apple ID password.)
+   App-Specific Passwords.
 
 ### Then
 
+Store the credentials in the keychain once, rather than putting a password in
+your environment and shell history:
+
 ```sh
-export APPLE_ID='you@example.com'
-export APPLE_APP_SPECIFIC_PASSWORD='xxxx-xxxx-xxxx-xxxx'
-export APPLE_TEAM_ID='UR28366SA6'
-npm run dist:release
+xcrun notarytool store-credentials foreman \
+  --apple-id 'you@example.com' --team-id UR28366SA6     # prompts for the password
+
+APPLE_KEYCHAIN_PROFILE=foreman npm run dist:release
 ```
+
+`electron-builder` reads `APPLE_KEYCHAIN_PROFILE`, and also accepts
+`APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID`, or an App Store
+Connect API key via `APPLE_API_KEY` / `APPLE_API_KEY_ID` / `APPLE_API_ISSUER`.
+
+With two identities in the keychain, `electron-builder` picks Developer ID
+Application on its own for a non-MAS `mac` target — there is nothing to
+configure. Force it with `CSC_NAME="Developer ID Application: Eat Picky Corp"`
+if you ever need to.
+
+> A `.p12` export is only a transport format. Once
+> `security find-identity` lists the identity, the keychain has both halves and
+> the file is a loose copy of your private signing key — delete it.
 
 Expect it to be slow: notarization uploads the whole DMG, and the bundled
 `claude` binary alone is ~256 MB.
