@@ -12,11 +12,12 @@
     "start": "electron-vite preview",
     "icon": "qlmanage -t -s 1024 -o build build/icon.svg >/dev/null && mv build/icon.svg.png build/icon.png",
     "dist": "electron-vite build && electron-builder --mac",
-    "dist:release": "electron-vite build && electron-builder --mac -c.mac.notarize=true",
+    "dist:release": "electron-vite build && electron-builder --mac -c.mac.notarize=true && npm run notarize:dmg",
     "check:policy": "node src/main/agent/policy.check.mts",
     "check:derive": "node src/renderer/src/derive.check.mts",
     "check:transcript": "node src/main/agent/transcript.check.mts",
-    "check": "npm run check:porcelain && npm run check:policy && npm run check:derive && npm run check:transcript"
+    "check": "npm run check:porcelain && npm run check:policy && npm run check:derive && npm run check:transcript",
+    "notarize:dmg": "bash scripts/notarize-dmg.sh"
   },
   "keywords": [],
   "author": "",

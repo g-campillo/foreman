@@ -90,24 +90,50 @@ $ security find-identity -v -p codesigning
      | openssl x509 -noout -subject | tr ',' '\n' | grep OU
    ```
 
-3. **An app-specific password**, from appleid.apple.com → Sign-In and Security →
-   App-Specific Passwords.
+3. **An App Store Connect API key** — App Store Connect → Users and Access →
+   Integrations → App Store Connect API → **+**, role *Developer*. Gives an
+   Issuer ID, a Key ID, and a one-time `.p8` download.
+
+   Preferred over an app-specific password because it is scoped to the *team*
+   rather than to a person. This account has two Apple IDs registered in Xcode
+   and only one is on the Eat Picky Corp team, so `notarytool
+   store-credentials` against the wrong one fails with a bare `HTTP status
+   code: 401. Invalid credentials` that looks like a certificate problem and
+   isn't. The key sidesteps the question. It also survives a password change,
+   and is the only sane option in CI.
 
 ### Then
 
-Store the credentials in the keychain once, rather than putting a password in
-your environment and shell history:
+The `.p8` is a private key — keep it out of the repo and out of `~/Downloads`:
 
 ```sh
-xcrun notarytool store-credentials foreman \
-  --apple-id 'you@example.com' --team-id UR28366SA6     # prompts for the password
-
-APPLE_KEYCHAIN_PROFILE=foreman npm run dist:release
+mkdir -p ~/.private_keys && chmod 700 ~/.private_keys
+mv ~/Downloads/AuthKey_<KEYID>.p8 ~/.private_keys/
+chmod 600 ~/.private_keys/AuthKey_<KEYID>.p8
 ```
 
-`electron-builder` reads `APPLE_KEYCHAIN_PROFILE`, and also accepts
-`APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID`, or an App Store
-Connect API key via `APPLE_API_KEY` / `APPLE_API_KEY_ID` / `APPLE_API_ISSUER`.
+Check the credentials authenticate *before* a ten-minute build — an empty
+history is a successful response:
+
+```sh
+xcrun notarytool history \
+  --key ~/.private_keys/AuthKey_<KEYID>.p8 \
+  --key-id <KEYID> --issuer <ISSUER-UUID>
+```
+
+Then:
+
+```sh
+export APPLE_API_KEY="$HOME/.private_keys/AuthKey_<KEYID>.p8"   # a PATH, not the key
+export APPLE_API_KEY_ID='<KEYID>'
+export APPLE_API_ISSUER='<ISSUER-UUID>'
+npm run dist:release
+```
+
+All three are required together or `electron-builder` throws. It checks
+`APPLE_ID` **first**, so leave that unset or the API key is ignored.
+`APPLE_KEYCHAIN_PROFILE` (from `notarytool store-credentials`) and
+`APPLE_ID` + `APPLE_APP_SPECIFIC_PASSWORD` + `APPLE_TEAM_ID` also work.
 
 With two identities in the keychain, `electron-builder` picks Developer ID
 Application on its own for a non-MAS `mac` target — there is nothing to
@@ -118,16 +144,33 @@ if you ever need to.
 > `security find-identity` lists the identity, the keychain has both halves and
 > the file is a loose copy of your private signing key — delete it.
 
-Expect it to be slow: notarization uploads the whole DMG, and the bundled
-`claude` binary alone is ~256 MB.
+Expect it to be slow — two notarization round trips against a 189 MB DMG.
 
-Verify:
+Verify. **Check the DMG, not just the app:**
 
 ```sh
-codesign -dv --verbose=4 release/mac-arm64/Foreman.app   # Authority: Developer ID Application
-spctl -a -vvv -t exec    release/mac-arm64/Foreman.app   # accepted
-xcrun stapler validate   release/mac-arm64/Foreman.app   # ticket stapled
+spctl -a -vvv --type exec    release/mac-arm64/Foreman.app       # accepted
+xcrun stapler validate       release/mac-arm64/Foreman.app       # ticket stapled
+spctl -a -vvv --type install release/Foreman-0.1.0-arm64.dmg     # accepted
+xcrun stapler validate       release/Foreman-0.1.0-arm64.dmg     # ticket stapled
 ```
+
+All four should pass. `source=Notarized Developer ID` is the line you want;
+`source=Unnotarized Developer ID` means signed but no ticket, and
+`origin=Apple Development` means the wrong class of certificate entirely.
+
+### Why `dist:release` has a second step
+
+`electron-builder` notarizes the `.app` and *then* builds the DMG around it, so
+the container itself is left unsigned — a successful build prints
+`notarization successful` and still produces a DMG that Gatekeeper rejects at
+mount with `source=no usable signature`. The app inside is stapled and runs once
+dragged out, so this only bites the person you send it to.
+
+`scripts/notarize-dmg.sh` signs, notarizes and staples the DMG afterwards, and
+`spctl`s it to prove it. It reads the same credentials as `electron-builder`
+(API key, then keychain profile, then Apple ID) so one set of env vars drives
+both halves.
 
 ### Why the split between `dist` and `dist:release`
 
