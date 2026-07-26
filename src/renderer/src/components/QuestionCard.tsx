@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import type { PermissionRequest } from '../../../shared/types'
-import { askQuestions, type AskQuestion } from '../derive.mts'
+import { ANSWER_PREFIX, askQuestions, type AskQuestion } from '../derive.mts'
 import Markdown from './Markdown'
 
 /**
@@ -40,7 +40,7 @@ export default function QuestionCard({
     void window.foreman.respondPermission(
       req.requestId,
       'deny',
-      `The user answered:\n${lines.join('\n')}`,
+      `${ANSWER_PREFIX}\n${lines.join('\n')}`,
     )
   }
 

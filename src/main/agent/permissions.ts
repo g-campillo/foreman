@@ -7,9 +7,29 @@ import { send } from '../bridge'
 interface Waiter {
   resolve: (r: PermissionResult) => void
   sessionId: string
+  onPendingChange: (count: number) => void
 }
 
 const waiting = new Map<string, Waiter>()
+
+/**
+ * The single exit for a parked prompt: unpark it, answer the SDK, tell the
+ * renderer, re-count.
+ *
+ * Every way out goes through here — answered, denied, interrupted, session
+ * closed. Resolving without the re-count leaves the session pinned to
+ * 'awaiting-approval' with its queue gate shut and a stale count in the
+ * notification body, until some later stream event happens to unstick it.
+ */
+function settle(requestId: string, result: PermissionResult): boolean {
+  const w = waiting.get(requestId)
+  if (!w) return false
+  waiting.delete(requestId)
+  w.resolve(result)
+  send(IPC.permResolved, { requestId, sessionId: w.sessionId })
+  w.onPendingChange(countFor(w.sessionId))
+  return true
+}
 
 /**
  * Bridges the SDK's canUseTool callback to the renderer: park the resolver,
@@ -34,20 +54,14 @@ export function makeCanUseTool(
     })
 
     return new Promise<PermissionResult>((resolve) => {
-      waiting.set(requestId, { resolve, sessionId })
+      waiting.set(requestId, { resolve, sessionId, onPendingChange })
       onPendingChange(countFor(sessionId))
 
       // If the turn is aborted (interrupt, session close) the callback would
       // otherwise dangle forever and wedge the CLI subprocess.
       options.signal.addEventListener(
         'abort',
-        () => {
-          if (!waiting.has(requestId)) return
-          waiting.delete(requestId)
-          send(IPC.permResolved, { requestId, sessionId })
-          onPendingChange(countFor(sessionId))
-          resolve({ behavior: 'deny', message: 'Interrupted' })
-        },
+        () => settle(requestId, { behavior: 'deny', message: 'Interrupted' }),
         { once: true },
       )
     })
@@ -64,9 +78,7 @@ function countFor(sessionId: string): number {
 export function cancelPending(sessionId: string): void {
   for (const [id, w] of waiting) {
     if (w.sessionId !== sessionId) continue
-    waiting.delete(id)
-    send(IPC.permResolved, { requestId: id, sessionId })
-    w.resolve({ behavior: 'deny', message: 'Session closed' })
+    settle(id, { behavior: 'deny', message: 'Session closed' })
   }
 }
 
@@ -88,24 +100,20 @@ export function registerPermissionIpc(): void {
         alwaysAllow?: boolean
       },
     ) => {
-      const waiter = waiting.get(requestId)
-      if (!waiter) return false
-      waiting.delete(requestId)
+      void alwaysAllow // ponytail: rule persistence needs updatedPermissions + the SDK's
+      // suggestions passed back through; add when the always-allow button ships.
 
       // A deny message becomes the tool_result the model reads, which is the
       // only channel an SDK host has for answering AskUserQuestion: allowing the
       // tool just runs it, and it reports "The user did not answer the
       // questions" because the CLI collects answers from its own interactive UI,
       // which does not exist here. Verified against the live CLI.
-      waiter.resolve(
+      return settle(
+        requestId,
         behavior === 'allow'
           ? { behavior: 'allow', updatedInput: undefined }
           : { behavior: 'deny', message: message || 'Denied by user' },
       )
-      send(IPC.permResolved, { requestId, sessionId: waiter.sessionId })
-      void alwaysAllow // ponytail: rule persistence needs updatedPermissions + the SDK's
-      // suggestions passed back through; add when the always-allow button ships.
-      return true
     },
   )
 }

@@ -1,5 +1,6 @@
 import { Children, useState } from 'react'
 import type { ChatItem } from '../../../shared/types'
+import { ANSWER_PREFIX, askQuestions } from '../derive.mts'
 
 type Tool = Extract<ChatItem, { kind: 'tool' }>
 
@@ -35,6 +36,10 @@ export function summarise(name: string, input: unknown): string {
       return desc && kind ? `${kind}: ${desc}` : (desc ?? kind ?? '')
     }
     default: {
+      // The question set is the whole input, so the generic fallback would put
+      // raw JSON in the gist of the one card the user is being asked to read.
+      const questions = askQuestions(name, input)
+      if (questions) return questions.map((q) => q.header || q.question).join(' · ')
       const first = str('file_path') ?? str('path') ?? str('query') ?? str('prompt')
       return first ?? JSON.stringify(i).slice(0, 120)
     }
@@ -57,6 +62,12 @@ export default function ToolCard({
   const nested = Children.count(children) > 0
   const isOpen = open ?? nested
   const gist = summarise(item.name, item.input)
+  // An answered question comes back flagged is_error, because the answer had to
+  // travel as a permission deny — see ANSWER_PREFIX. It succeeded; don't paint
+  // it as a failure. A skipped one has no answer text and stays an error.
+  const status = item.status === 'error' && item.result?.startsWith(ANSWER_PREFIX)
+    ? 'done'
+    : item.status
 
   return (
     <div className="tool" data-nested={nested ? '' : undefined}>
@@ -64,14 +75,14 @@ export default function ToolCard({
         <span
           style={{
             color:
-              item.status === 'error'
+              status === 'error'
                 ? 'rgb(var(--danger))'
-                : item.status === 'done'
+                : status === 'done'
                   ? 'rgb(var(--ok))'
                   : 'rgb(var(--text-faint))',
           }}
         >
-          {ICON[item.status]}
+          {ICON[status]}
         </span>
         <span className="tool-name">{item.name}</span>
         {/* The rolling summary is the more useful line once there is one, and it

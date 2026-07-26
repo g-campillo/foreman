@@ -285,6 +285,15 @@ export function askQuestions(toolName: string, input: unknown): AskQuestion[] | 
   return questions.length ? questions : null
 }
 
+/**
+ * Marks a permission deny as an AskUserQuestion *answer* rather than a refusal.
+ *
+ * Answers ride out on the deny channel (see QuestionCard), so the CLI flags the
+ * resulting tool_result `is_error` and the card would otherwise turn red — which
+ * reads as "your answer failed" at the exact moment it succeeded.
+ */
+export const ANSWER_PREFIX = 'The user answered:'
+
 // -------------------------------------------------------- composer triggers
 
 export interface Trigger {
