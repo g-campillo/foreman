@@ -29,10 +29,20 @@ export default function SessionRail(): React.JSX.Element {
   const [searching, setSearching] = useState(false)
   const [renaming, setRenaming] = useState<string | null>(null)
 
+  /**
+   * Both browsing and search are scoped to the open project.
+   *
+   * Unscoped, they list every session on the machine, and resuming one silently
+   * starts an agent in an unrelated repo. With no session open there is no
+   * project to scope to, and an empty list would leave no way back in — so that
+   * one case stays global, and the header says which it is.
+   */
+  const scope = useStore((s) => s.sessions.find((x) => x.id === s.activeId)?.cwd)
+
   useEffect(() => {
     if (!showPast) return
-    void window.foreman.listPastSessions().then(setPast)
-  }, [showPast])
+    void window.foreman.listPastSessions(scope).then(setPast)
+  }, [showPast, scope])
 
   useEffect(() => {
     const q = query.trim()
@@ -43,13 +53,13 @@ export default function SessionRail(): React.JSX.Element {
     }
     setSearching(true)
     const t = setTimeout(() => {
-      void window.foreman.searchTranscripts(q).then((r: TranscriptSearchHit[]) => {
+      void window.foreman.searchTranscripts(q, scope).then((r: TranscriptSearchHit[]) => {
         setHits(r)
         setSearching(false)
       })
     }, SEARCH_DELAY_MS)
     return () => clearTimeout(t)
-  }, [query])
+  }, [query, scope])
 
   const commitRename = (sdkSessionId: string | null, title: string): void => {
     setRenaming(null)
@@ -110,8 +120,11 @@ export default function SessionRail(): React.JSX.Element {
               onChange={(e) => setQuery(e.target.value)}
             />
 
-            <div className="rail-section">
+            <div className="rail-section" title={scope ?? 'all projects'}>
               {hits ? `Matches${searching ? '…' : ` (${hits.length})`}` : 'Recent'}
+              <span className="rail-scope">
+                {scope ? scope.split('/').pop() : 'all projects'}
+              </span>
             </div>
 
             {/* Search results replace the recent list rather than sitting beside

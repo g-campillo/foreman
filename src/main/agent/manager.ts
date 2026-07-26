@@ -41,12 +41,19 @@ const TRANSCRIPT_LIMIT = 5000
  *  Fine for a local JSONL scan; add an index only if it starts dragging. */
 const SEARCH_SESSION_LIMIT = 40
 
-/** The SDK's field is `lastModified` (epoch ms) — there is no `updatedAt`,
- *  which is why the rail never showed a date. */
-function toPastSession(s: SDKSessionInfo): PastSession {
+/**
+ * The SDK's field is `lastModified` (epoch ms) — there is no `updatedAt`, which
+ * is why the rail never showed a date.
+ *
+ * `cwd` falls back to the queried directory: when listSessions is called WITH a
+ * dir the results omit cwd, since it is implied. Without this fallback every
+ * scoped row arrives cwd-less and the rail disables it as unresumable.
+ */
+function toPastSession(s: SDKSessionInfo, dir?: string): PastSession {
   return {
     sessionId: s.sessionId,
     summary: s.customTitle ?? s.summary ?? 'Untitled session',
+    cwd: s.cwd ?? dir,
     lastModified: s.lastModified,
     gitBranch: s.gitBranch,
   }
@@ -203,7 +210,7 @@ export function registerSessionIpc(): void {
 
   ipcMain.handle(IPC.sessionPastList, async (_e, { dir }: { dir?: string }): Promise<PastSession[]> => {
     try {
-      return (await listSessions({ dir, limit: 40 })).map(toPastSession)
+      return (await listSessions({ dir, limit: 40 })).map((x) => toPastSession(x, dir))
     } catch (err) {
       console.warn('[sessions] listSessions failed:', err)
       return []
@@ -251,7 +258,8 @@ export function registerSessionIpc(): void {
             return {
               sessionId: s.sessionId,
               summary: s.customTitle ?? s.summary ?? 'Untitled session',
-              cwd: s.cwd,
+              // Same fallback as toPastSession: a scoped query omits cwd.
+              cwd: s.cwd ?? dir,
               lastModified: s.lastModified,
               snippet: hit.snippet,
               matches: hit.matches,

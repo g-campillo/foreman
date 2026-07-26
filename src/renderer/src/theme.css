@@ -1530,3 +1530,23 @@ select {
 .branch-btn:hover {
   color: rgb(var(--accent-fg));
 }
+
+/* Names the directory the Past list and search are scoped to, so an empty
+   result reads as "not in this project" rather than "not anywhere". */
+.rail-section {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+}
+.rail-scope {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: rgb(var(--text-faint));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 55%;
+}
