@@ -7,10 +7,12 @@ import {
   type AgentInfo,
   type ChatItem,
   type ContextUsage,
+  type EffortLevel,
   type McpServerInfo,
   type ModelInfo,
   type PermissionMode,
   type RateWindow,
+  type RewindResult,
   type SessionMeta,
   type SendContent,
   type SessionStatus,
@@ -55,6 +57,7 @@ export interface SessionInit {
   title?: string
   resume?: string
   permissionMode?: PermissionMode
+  effort?: EffortLevel
 }
 
 export class Session {
@@ -94,6 +97,9 @@ export class Session {
       outputTokens: 0,
       permissionMode: init.permissionMode ?? 'default',
       createdAt: Date.now(),
+      effort: init.effort ?? null,
+      promptSuggestion: null,
+      backgroundTasks: [],
       // Fresh: we mint the id and hand it to the SDK, so the two agree.
       // Resume: `init.resume` IS the SDK's session id, and ours differs.
       // Either way this is the id that addresses the session on disk.
@@ -125,9 +131,21 @@ export class Session {
         // Backs up files before the agent modifies them, which is what makes
         // q.rewindFiles() possible later. Inert until something calls it.
         enableFileCheckpointing: true,
-        // Emits a `prompt_suggestion` message after each result. Nothing renders
-        // it yet; unhandled message types fall through handle()'s switch.
         promptSuggestions: true,
+        // Markdown rather than the 'html' the roadmap suggested: we already have
+        // a markdown renderer, and react-markdown drops raw HTML by default —
+        // so this avoids putting model-authored HTML through
+        // dangerouslySetInnerHTML in a renderer that can reach the network.
+        toolConfig: { askUserQuestion: { previewFormat: 'markdown' } },
+        // Adaptive lets the model choose per turn; the effort dropdown steers it.
+        thinking: { type: 'adaptive' },
+        ...(init.effort ? { effort: init.effort } : {}),
+        // Undocumented payload shapes, so this only observes for now — answering
+        // 'cancelled' is the contract's required reply for an unhandled kind.
+        onUserDialog: async (request) => {
+          console.error('[user-dialog]', JSON.stringify(request).slice(0, 900))
+          return { behavior: 'cancelled' }
+        },
         canUseTool: makeCanUseTool(this.meta.id, (n) => {
           this.pendingApprovals = n
           this.setStatus(n > 0 ? 'awaiting-approval' : 'running')
@@ -205,7 +223,39 @@ export class Session {
     // `rate_limit_event`, which carries the plan's 5-hour/7-day windows and is
     // a steadier source for those than the experimental usage API.
     switch (msg.type) {
+      // Predicted next prompt, emitted after each result. Rendered as composer
+      // ghost text; absence is normal (first turn, plan mode, after API errors).
+      case 'prompt_suggestion':
+        this.patchMeta({ promptSuggestion: msg.suggestion || null })
+        break
+
       case 'system':
+        // REPLACE semantics — the SDK sends the complete live set each time.
+        if (msg.subtype === 'background_tasks_changed') {
+          this.patchMeta({
+            backgroundTasks: msg.tasks.map((t) => ({
+              taskId: t.task_id,
+              taskType: t.task_type,
+              description: t.description,
+            })),
+          })
+          break
+        }
+        // A finished background task reports here; the changed-set message
+        // handles removal, so this only surfaces the outcome.
+        if (msg.subtype === 'task_notification') {
+          if (!msg.skip_transcript) {
+            this.emit({
+              id: randomUUID(),
+              kind: 'tool',
+              name: `background · ${msg.status}`,
+              input: undefined,
+              status: msg.status === 'completed' ? 'done' : 'error',
+              result: msg.summary,
+            })
+          }
+          break
+        }
         // Only the init frame means "ready", and only while we're still starting.
         // In streaming-input mode init doesn't arrive until the first user
         // message is already in flight, so it lands MID-TURN — without the
@@ -412,6 +462,78 @@ export class Session {
 
   setTitle(title: string): void {
     this.patchMeta({ title })
+  }
+
+  // ---------------------------------------------------- time travel + actions
+
+  /**
+   * Restore files to their state at a user message.
+   *
+   * With dryRun this is the confirmation preview — the SDK reports what *would*
+   * change without touching anything, which is why the card can show a file
+   * count before the user commits. Requires enableFileCheckpointing, on since
+   * batch 1.
+   */
+  async rewind(userMessageId: string, dryRun: boolean): Promise<RewindResult> {
+    await this.ready
+    try {
+      const r = await this.q?.rewindFiles(userMessageId, { dryRun })
+      if (!r) return { canRewind: false, error: 'No session', filesChanged: [], insertions: 0, deletions: 0 }
+      return {
+        canRewind: r.canRewind,
+        error: r.error,
+        filesChanged: r.filesChanged ?? [],
+        insertions: r.insertions ?? 0,
+        deletions: r.deletions ?? 0,
+        skippedLinks: r.skippedLinks,
+      }
+    } catch (err) {
+      return { canRewind: false, error: String(err), filesChanged: [], insertions: 0, deletions: 0 }
+    }
+  }
+
+  async setEffort(effort: EffortLevel | null): Promise<void> {
+    await this.ready
+    await this.q
+      ?.applyFlagSettings({ effortLevel: effort })
+      .catch((e) => console.warn('[setEffort]', e))
+    this.patchMeta({ effort })
+  }
+
+  /** Move in-flight work to the background so the turn can continue. */
+  async background(toolUseId?: string): Promise<boolean> {
+    await this.ready
+    return (await this.q?.backgroundTasks(toolUseId).catch(() => false)) ?? false
+  }
+
+  async stopTask(taskId: string): Promise<void> {
+    await this.ready
+    await this.q?.stopTask(taskId).catch((e) => console.warn('[stopTask]', e))
+  }
+
+  async toggleMcp(serverName: string, enabled: boolean): Promise<void> {
+    await this.ready
+    await this.q?.toggleMcpServer(serverName, enabled).catch((e) => console.warn('[mcpToggle]', e))
+  }
+
+  async reconnectMcp(serverName: string): Promise<void> {
+    await this.ready
+    await this.q?.reconnectMcpServer(serverName).catch((e) => console.warn('[mcpReconnect]', e))
+  }
+
+  /**
+   * Tighten-only by construction: the SDK's override can restrict a server's
+   * permission handling but never widen it, so this is safe to expose directly.
+   */
+  async setMcpPermissionOverride(
+    serverName: string,
+    mode: 'default' | 'auto' | null,
+  ): Promise<string | undefined> {
+    await this.ready
+    const r = await this.q
+      ?.setMcpPermissionModeOverride(serverName, mode)
+      .catch((e) => ({ warning: String(e) }))
+    return r?.warning
   }
 
   /** Withdraw a message that hasn't reached the SDK yet. */

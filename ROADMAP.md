@@ -32,7 +32,7 @@ seam boundary, not duplication — the halves land in different batches on purpo
 | 3 | ✅ Read-only panels (11 partial) | 2, 14, 11, 10a | S2 | 1–2 d |
 | 4 | ✅ Composer | 1, 18, 19, 17 | S4 | 2–3 d |
 | 5 | ✅ History | 3, 23, 4 | S5 | 2–3 d |
-| 6 | Time travel + actions | 5b, 7, 12, 8, 10b | S2 + S3 | 2 d |
+| 6 | ✅ Time travel + actions | 5b, 7, 12, 8, 10b | S2 + S3 | 2 d |
 | 7 | Subagents | 6 | S3 | 2 d |
 | 8 | Git | 25, 24 | S6 | L |
 
@@ -210,27 +210,33 @@ message types enabled in batch 1.
 **Files:** `src/main/agent/session.ts`, `src/preload/index.ts`, `src/shared/types.ts`,
 `src/renderer/src/components/`
 
-- [ ] **5b. Rewind.** `q.rewindFiles(userMessageId, {dryRun: true})` returns
+- [x] **5b. Rewind.** `q.rewindFiles(userMessageId, {dryRun: true})` returns
   `{canRewind, error?, stats}` — so the confirmation card's preview is free. Then call it
   for real. Gemini's `/restore`, Claude Code's double-Esc. Complements your existing
   per-*file* revert with per-*turn* rewind. Needs batch 5's uuid threading.
-- [ ] **7. Background tasks.** `q.backgroundTasks(toolUseId?)` moves in-flight Bash commands
+- [x] **7. Background tasks.** `q.backgroundTasks(toolUseId?)` moves in-flight Bash commands
   and subagents to the background — the blocking tool returns "running in the background"
   and the turn continues. `q.stopTask(taskId)` kills one. A 4-minute `npm test` drops to a
   tray instead of stalling the agent. Ctrl+B equivalent.
-- [ ] **12. `AskUserQuestion` as a real card.** `toolConfig: { askUserQuestion:
-  { previewFormat: 'html' } }`. The agent asks a multiple-choice question and you render
+- [x] **12. `AskUserQuestion` as a real card.** Uses `previewFormat: **'markdown'**`, not
+  'html' — we already have a markdown renderer, and react-markdown drops raw HTML, so this
+  avoids running model-authored HTML through dangerouslySetInnerHTML.
+  **The answer channel is not obvious:** the tool arrives via `canUseTool`, NOT
+  `onUserDialog`, and *allowing* it just runs it — it then reports "The user did not answer
+  the questions", because the CLI collects answers from its own interactive UI. A permission
+  **deny** carries a `message` that becomes the tool_result, and that is the only way to get
+  an answer back. Verified: the model replied "Tabs it is." The agent asks a multiple-choice question and you render
   actual buttons instead of a JSON blob. Uniquely IDE-shaped — the CLI can't render HTML
   previews.
-- [ ] **13b. Prompt-suggestion chip.** Render the `prompt_suggestion` message enabled in
+- [x] **13b. Prompt-suggestion chip.** Render the `prompt_suggestion` message enabled in
   batch 1 as ghost text in the composer. It piggybacks the parent's prompt cache, so it's
   nearly free. Suppressed on the first turn, after API errors, and in plan mode — don't
   treat absence as a bug.
-- [ ] **8. Effort + thinking controls.** `effort: 'low'|'medium'|'high'|'xhigh'|'max'` and
+- [x] **8. Effort + thinking controls.** `effort: 'low'|'medium'|'high'|'xhigh'|'max'` and
   `thinking: {type: 'adaptive'|'enabled'|'disabled'}` as constructor options, changeable
   mid-session via `q.applyFlagSettings({effortLevel})`. One dropdown beside the model
   picker. Note `'max'` is session-scoped and never persisted to settings files.
-- [ ] **10b. MCP mutators.** `toggleMcpServer()`, `reconnectMcpServer()`, `setMcpServers()`,
+- [x] **10b. MCP mutators.** `toggleMcpServer()`, `reconnectMcpServer()`, `setMcpServers()`,
   `setMcpPermissionModeOverride(server, 'default'|'auto'|null)`. The last is tighten-only —
   it can never widen privilege — so it's safe to expose directly.
 

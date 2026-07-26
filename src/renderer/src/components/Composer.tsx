@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type {
+  EffortLevel,
   ImageMediaType,
   PermissionMode,
   SendBlock,
@@ -15,6 +16,16 @@ const CURRENT = '__current__'
 
 /** Mirrors ImageMediaType; anything else is silently not attachable. */
 const ACCEPTED: readonly ImageMediaType[] = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
+
+/** null = leave the SDK's own default alone. 'max' is session-scoped. */
+const EFFORTS: { value: EffortLevel | ''; label: string }[] = [
+  { value: '', label: 'auto' },
+  { value: 'low', label: 'low' },
+  { value: 'medium', label: 'medium' },
+  { value: 'high', label: 'high' },
+  { value: 'xhigh', label: 'xhigh' },
+  { value: 'max', label: 'max' },
+]
 
 /** Cap on suggestions rendered at once — a 4000-file repo must not build 4000 rows. */
 const MAX_SUGGESTIONS = 50
@@ -170,6 +181,20 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
       )}
 
       <div className="composer-input">
+        {/* Ghost text for the predicted next prompt. Only while the box is
+            empty and idle — overlaying a suggestion on real typing is noise. */}
+        {!text && !busy && session.promptSuggestion && (
+          <button
+            className="ghost"
+            title="Tab to use"
+            onClick={() => {
+              setText(session.promptSuggestion ?? '')
+              box.current?.focus()
+            }}
+          >
+            {session.promptSuggestion}
+          </button>
+        )}
         {suggestions.length > 0 && (
           <Autocomplete items={suggestions} cursor={cursor} onPick={pick} />
         )}
@@ -226,6 +251,11 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
                 return
               }
             }
+            if (e.key === 'Tab' && !text && session.promptSuggestion) {
+              e.preventDefault()
+              setText(session.promptSuggestion)
+              return
+            }
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault()
               submit()
@@ -233,6 +263,22 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
           }}
         />
       </div>
+
+      {session.backgroundTasks.length > 0 && (
+        <div className="bg-tray">
+          {session.backgroundTasks.map((t) => (
+            <span key={t.taskId} className="chip" title={t.description}>
+              ⚙ {t.description || t.taskType}
+              <button
+                title="Stop this background task"
+                onClick={() => void window.foreman.stopTask(session.id, t.taskId)}
+              >
+                ✕
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
 
       <div className="composer-row">
         <select
@@ -275,22 +321,52 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
           ))}
         </select>
 
+        <select
+          className="select"
+          value={session.effort ?? ''}
+          onChange={(e) =>
+            void window.foreman.setEffort(session.id, e.target.value || null)
+          }
+          title="Reasoning effort"
+        >
+          {EFFORTS.map((x) => (
+            <option key={x.value} value={x.value}>
+              {x.label}
+            </option>
+          ))}
+        </select>
+
         <span className="spacer" />
 
-        <span className="cost">
-          ${session.costUsd.toFixed(4)} · {session.inputTokens + session.outputTokens} tok
-        </span>
+        {/* Hidden while busy: the row gains two buttons then, and this same
+            figure is in the Session panel. */}
+        {!busy && (
+          <span className="cost">
+            ${session.costUsd.toFixed(4)} · {session.inputTokens + session.outputTokens} tok
+          </span>
+        )}
 
         {/* Send stays available while running: the queue holds the message and
             the transcript shows it as cancellable until the agent picks it up. */}
         {busy && (
-          <button
-            className="btn"
-            data-variant="danger"
-            onClick={() => void window.foreman.interrupt(session.id)}
-          >
-            Stop
-          </button>
+          <>
+            {/* Moves in-flight Bash/subagent work to the background so the turn
+                continues instead of blocking on a long command. */}
+            <button
+              className="btn"
+              title="Run in-flight work in the background"
+              onClick={() => void window.foreman.backgroundTasks(session.id)}
+            >
+              ⇢ bg
+            </button>
+            <button
+              className="btn"
+              data-variant="danger"
+              onClick={() => void window.foreman.interrupt(session.id)}
+            >
+              Stop
+            </button>
+          </>
         )}
         <button
           className="btn"

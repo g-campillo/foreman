@@ -5,6 +5,7 @@ import type {
   ElicitationRequest,
   ModelInfo,
   PermissionRequest,
+  RewindResult,
   SendContent,
   SessionMeta,
 } from '../../shared/types'
@@ -27,6 +28,11 @@ interface State {
   resume(sessionId: string, cwd: string, title: string): Promise<void>
   hydrate(meta: SessionMeta): Promise<void>
   fork(upToMessageId?: string): Promise<void>
+  /** Dry-run preview awaiting confirmation, or null. */
+  rewindPreview: { messageId: string; result: RewindResult } | null
+  rewind(messageId: string): Promise<void>
+  confirmRewind(): Promise<void>
+  cancelRewind(): void
   close(id: string): Promise<void>
   send(content: SendContent): Promise<void>
   setAppearance(patch: Partial<Appearance>): void
@@ -121,6 +127,7 @@ export const useStore = create<State>((set, get) => ({
   items: {},
   approvals: [],
   elicitations: [],
+  rewindPreview: null,
   diffCounts: {},
   models: [],
   appearance: INITIAL_APPEARANCE,
@@ -187,6 +194,51 @@ export const useStore = create<State>((set, get) => ({
     )
     if (!forked) return
     await get().resume(forked, cur.cwd, `${cur.title} (branch)`)
+  },
+
+  /**
+   * Restore files to their state at a message.
+   *
+   * The dry run is free and reports exactly what would change, so this only
+   * stages a preview — nothing is written until confirmRewind(). Rendered as a
+   * card rather than window.confirm(), which in Electron blocks the whole
+   * renderer until dismissed.
+   */
+  async rewind(messageId) {
+    const id = get().activeId
+    if (!id) return
+    const result: RewindResult = await window.foreman.rewind(id, messageId, true)
+    set({ rewindPreview: { messageId, result } })
+  },
+
+  async confirmRewind() {
+    const pending = get().rewindPreview
+    const id = get().activeId
+    set({ rewindPreview: null })
+    if (!pending || !id) return
+    const done: RewindResult = await window.foreman.rewind(id, pending.messageId, false)
+    // Report the outcome in the transcript rather than a modal, same reasoning.
+    set((s) => {
+      const list = s.items[id] ?? []
+      // File counts come from the PREVIEW: a real rewind doesn't populate
+      // filesChanged (measured — it restored a file and reported 0), so reading
+      // them off `done` would report "Rewound 0 file(s)" after a successful one.
+      // Only skippedLinks is real-rewind-only.
+      const n = pending.result.filesChanged.length
+      const text = done.canRewind
+        ? `Rewound ${n} file${n === 1 ? '' : 's'}${done.skippedLinks ? ` · skipped ${done.skippedLinks} for link safety` : ''}`
+        : `Rewind failed: ${done.error ?? 'unknown error'}`
+      return {
+        items: {
+          ...s.items,
+          [id]: [...list, { id: crypto.randomUUID(), kind: 'error' as const, text }],
+        },
+      }
+    })
+  },
+
+  cancelRewind() {
+    set({ rewindPreview: null })
   },
 
   async close(id) {

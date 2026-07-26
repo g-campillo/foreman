@@ -579,7 +579,24 @@ select {
   display: flex;
   align-items: center;
   gap: 7px;
+  row-gap: 6px;
   flex-wrap: wrap;
+}
+/* Three selects plus Background/Stop/Send overflow a half-width pane, and the
+   wrap dropped the buttons onto their own line. Letting the selects shrink
+   keeps the row intact; each still shows enough of its label to identify it. */
+.composer-row .select {
+  flex: 0 1 auto;
+  min-width: 66px;
+}
+/* The cost readout is the one thing worth dropping first — it also lives in
+   the Session panel. */
+.composer-row .cost {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .select {
@@ -1549,4 +1566,120 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 55%;
+}
+
+/* ────────────────────────────────────────── time travel + actions */
+
+/* Ghost text sits over the empty textarea, so it must not eat the click that
+   focuses it — except on itself, where clicking accepts the suggestion. */
+.ghost {
+  position: absolute;
+  top: 10px;
+  left: 13px;
+  right: 13px;
+  text-align: left;
+  font-size: 13px;
+  color: rgb(var(--text-faint));
+  font-style: italic;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  z-index: 1;
+}
+.ghost:hover {
+  color: rgb(var(--text-dim));
+}
+
+.bg-tray {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+
+.msg-actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.mcp-acts {
+  display: flex;
+  gap: 4px;
+  flex: 0 0 auto !important;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.kv li:hover .mcp-acts,
+.mcp-acts:focus-within {
+  opacity: 1;
+}
+.mcp-acts select.code-btn {
+  padding: 1px 3px;
+}
+
+/* ───────────────────────────────────────────── AskUserQuestion card */
+
+.ask {
+  border: 1px solid rgb(var(--accent) / 0.5);
+  background: rgb(var(--accent) / 0.06);
+  border-radius: var(--r-md);
+  padding: 11px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ask-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 7px;
+}
+.ask-tag {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgb(var(--accent));
+  flex-shrink: 0;
+}
+.ask-multi {
+  margin-left: auto;
+  font-size: 10px;
+  color: rgb(var(--text-faint));
+  flex-shrink: 0;
+}
+.ask-opt {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--r-sm);
+  padding: 7px 10px;
+  margin-bottom: 6px;
+  background: rgb(var(--surface-2) / 0.5);
+}
+.ask-opt[data-on] {
+  border-color: rgb(var(--accent));
+  background: rgb(var(--accent) / 0.14);
+}
+.ask-opt-label {
+  display: block;
+  font-weight: 600;
+  font-size: 12.5px;
+}
+.ask-opt-desc {
+  display: block;
+  font-size: 11.5px;
+  color: rgb(var(--text-dim));
+  margin-top: 2px;
+}
+.ask-preview {
+  display: block;
+  margin-top: 6px;
+}
+.ask-actions {
+  display: flex;
+  gap: 7px;
+  justify-content: flex-end;
 }

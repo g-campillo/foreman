@@ -210,11 +210,49 @@ export default function SessionPanel({
         <p className="sect-empty">None configured.</p>
       ) : (
         <ul className="kv">
-          {data.mcp.map((s) => (
-            <li key={s.name} title={s.error}>
-              <i className="mcp-dot" data-status={s.status} />
-              <span>{s.name}</span>
-              <b>{s.status === 'connected' ? `${s.toolCount} tools` : s.status}</b>
+          {data.mcp.map((srv) => (
+            <li key={srv.name} title={srv.error}>
+              <i className="mcp-dot" data-status={srv.status} />
+              <span>{srv.name}</span>
+              <b>{srv.status === 'connected' ? `${srv.toolCount} tools` : srv.status}</b>
+              <span className="mcp-acts">
+                <button
+                  className="code-btn"
+                  title={srv.status === 'disabled' ? 'Enable this server' : 'Disable this server'}
+                  onClick={() =>
+                    void window.foreman
+                      .toggleMcp(session.id, srv.name, srv.status === 'disabled')
+                      .then(refresh)
+                  }
+                >
+                  {srv.status === 'disabled' ? 'Enable' : 'Disable'}
+                </button>
+                <button
+                  className="code-btn"
+                  title="Reconnect"
+                  onClick={() => void window.foreman.reconnectMcp(session.id, srv.name).then(refresh)}
+                >
+                  ↻
+                </button>
+                {/* Tighten-only by construction — the SDK's override can restrict
+                    a server's permission handling but never widen it. */}
+                <select
+                  className="code-btn"
+                  defaultValue=""
+                  title="Permission override (tighten-only)"
+                  onChange={(e) =>
+                    void window.foreman.setMcpPermissionOverride(
+                      session.id,
+                      srv.name,
+                      e.target.value || null,
+                    )
+                  }
+                >
+                  <option value="">inherit</option>
+                  <option value="default">ask</option>
+                  <option value="auto">auto</option>
+                </select>
+              </span>
             </li>
           ))}
         </ul>

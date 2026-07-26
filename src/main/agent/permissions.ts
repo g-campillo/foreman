@@ -78,17 +78,29 @@ export function registerPermissionIpc(): void {
       {
         requestId,
         behavior,
+        message,
         alwaysAllow,
-      }: { requestId: string; behavior: 'allow' | 'deny'; alwaysAllow?: boolean },
+      }: {
+        requestId: string
+        behavior: 'allow' | 'deny'
+        /** Replaces the default deny text; see the AskUserQuestion note below. */
+        message?: string
+        alwaysAllow?: boolean
+      },
     ) => {
       const waiter = waiting.get(requestId)
       if (!waiter) return false
       waiting.delete(requestId)
 
+      // A deny message becomes the tool_result the model reads, which is the
+      // only channel an SDK host has for answering AskUserQuestion: allowing the
+      // tool just runs it, and it reports "The user did not answer the
+      // questions" because the CLI collects answers from its own interactive UI,
+      // which does not exist here. Verified against the live CLI.
       waiter.resolve(
         behavior === 'allow'
           ? { behavior: 'allow', updatedInput: undefined }
-          : { behavior: 'deny', message: 'Denied by user' },
+          : { behavior: 'deny', message: message || 'Denied by user' },
       )
       send(IPC.permResolved, { requestId, sessionId: waiter.sessionId })
       void alwaysAllow // ponytail: rule persistence needs updatedPermissions + the SDK's

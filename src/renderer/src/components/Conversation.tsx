@@ -4,6 +4,8 @@ import { useStore } from '../store'
 import ToolCard from './ToolCard'
 import ApprovalCard from './ApprovalCard'
 import ElicitationCard from './ElicitationCard'
+import QuestionCard from './QuestionCard'
+import { askQuestions } from '../derive.mts'
 import Markdown from './Markdown'
 
 export default function Conversation({ sessionId }: { sessionId: string }): React.JSX.Element {
@@ -22,6 +24,7 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
     () => allElicitations.filter((e) => e.sessionId === sessionId),
     [allElicitations, sessionId],
   )
+  const rewindPreview = useStore((s) => s.rewindPreview)
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
 
@@ -30,7 +33,7 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
   useEffect(() => {
     const el = scroller.current
     if (el && pinned.current) el.scrollTop = el.scrollHeight
-  }, [items, approvals, elicitations])
+  }, [items, approvals, elicitations, rewindPreview])
 
   return (
     <div
@@ -44,12 +47,20 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
       {items.map((item) => (
         <Item key={item.id} item={item} sessionId={sessionId} />
       ))}
-      {approvals.map((a) => (
-        <ApprovalCard key={a.requestId} req={a} />
-      ))}
+      {approvals.map((a) => {
+        // A malformed question set falls back to the plain allow/deny card
+        // rather than rendering a card with nothing to click.
+        const questions = askQuestions(a.toolName, a.input)
+        return questions ? (
+          <QuestionCard key={a.requestId} req={a} questions={questions} />
+        ) : (
+          <ApprovalCard key={a.requestId} req={a} />
+        )
+      })}
       {elicitations.map((e) => (
         <ElicitationCard key={e.requestId} req={e} />
       ))}
+      {rewindPreview && <RewindCard />}
       {/* Without this there's dead air between sending and the first token. */}
       {status === 'running' && (
         <div className="working">
@@ -66,6 +77,67 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
 }
 
 const EMPTY: ChatItem[] = []
+
+/**
+ * Confirmation for a rewind, showing what the dry run says would actually
+ * change. The preview costs nothing, so the card names real files instead of
+ * asking the user to trust a verb.
+ */
+function RewindCard(): React.JSX.Element | null {
+  const preview = useStore((s) => s.rewindPreview)
+  const confirmRewind = useStore((s) => s.confirmRewind)
+  const cancelRewind = useStore((s) => s.cancelRewind)
+  if (!preview) return null
+
+  const { result } = preview
+  const files = result.filesChanged
+  return (
+    <div className="ask">
+      <div className="ask-head">
+        <span className="ask-tag">Rewind</span>
+        <span>
+          {result.canRewind
+            ? files.length
+              ? `Restore ${files.length} file${files.length === 1 ? '' : 's'} to this point?`
+              : 'Nothing to restore — no file changes since this message.'
+            : `Cannot rewind: ${result.error ?? 'no checkpoint for this message'}`}
+        </span>
+      </div>
+
+      {result.canRewind && files.length > 0 && (
+        <ul className="kv">
+          {files.slice(0, 12).map((f) => (
+            <li key={f} title={f}>
+              <span className="kv-path">{f}</span>
+            </li>
+          ))}
+          {files.length > 12 && (
+            <li>
+              <span>…and {files.length - 12} more</span>
+            </li>
+          )}
+          <li>
+            <span>Net change</span>
+            <b>
+              +{result.insertions}/−{result.deletions}
+            </b>
+          </li>
+        </ul>
+      )}
+
+      <div className="ask-actions">
+        <button className="btn" onClick={cancelRewind}>
+          Cancel
+        </button>
+        {result.canRewind && files.length > 0 && (
+          <button className="btn" data-variant="danger" onClick={() => void confirmRewind()}>
+            Restore files
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
 
 function Item({
   item,
@@ -94,13 +166,22 @@ function Item({
             item.uuid && (
               // Branches into a new session sliced at this message — the
               // edit-and-retry shape, without disturbing this conversation.
-              <button
-                className="branch-btn"
-                title="Branch a new session from this point"
-                onClick={() => void useStore.getState().fork(item.uuid)}
-              >
-                ⑂ branch
-              </button>
+              <span className="msg-actions">
+                <button
+                  className="branch-btn"
+                  title="Branch a new session from this point"
+                  onClick={() => void useStore.getState().fork(item.uuid)}
+                >
+                  ⑂ branch
+                </button>
+                <button
+                  className="branch-btn"
+                  title="Restore files to their state at this message"
+                  onClick={() => void useStore.getState().rewind(item.uuid!)}
+                >
+                  ↺ rewind
+                </button>
+              </span>
             )
           )}
         </div>

@@ -15,6 +15,22 @@ const api = {
   listSessions: () => ipcRenderer.invoke(IPC.sessionList),
   listPastSessions: (dir?: string) => ipcRenderer.invoke(IPC.sessionPastList, { dir }),
 
+  // time travel + actions
+  rewind: (sessionId: string, messageId: string, dryRun: boolean) =>
+    ipcRenderer.invoke(IPC.sessionRewind, { sessionId, messageId, dryRun }),
+  setEffort: (sessionId: string, effort: string | null) =>
+    ipcRenderer.invoke(IPC.sessionSetEffort, { sessionId, effort }),
+  backgroundTasks: (sessionId: string, toolUseId?: string) =>
+    ipcRenderer.invoke(IPC.sessionBackground, { sessionId, toolUseId }),
+  stopTask: (sessionId: string, taskId: string) =>
+    ipcRenderer.invoke(IPC.sessionStopTask, { sessionId, taskId }),
+  toggleMcp: (sessionId: string, name: string, enabled: boolean) =>
+    ipcRenderer.invoke(IPC.mcpToggle, { sessionId, name, enabled }),
+  reconnectMcp: (sessionId: string, name: string) =>
+    ipcRenderer.invoke(IPC.mcpReconnect, { sessionId, name }),
+  setMcpPermissionOverride: (sessionId: string, name: string, mode: string | null) =>
+    ipcRenderer.invoke(IPC.mcpPermissionOverride, { sessionId, name, mode }),
+
   // history
   sessionTranscript: (sessionId: string, dir?: string) =>
     ipcRenderer.invoke(IPC.sessionTranscript, { sessionId, dir }),
@@ -47,8 +63,8 @@ const api = {
   reloadSkills: (sessionId: string) => ipcRenderer.invoke(IPC.sessionReloadSkills, { sessionId }),
 
   // permissions
-  respondPermission: (requestId: string, behavior: 'allow' | 'deny') =>
-    ipcRenderer.invoke(IPC.permRespond, { requestId, behavior }),
+  respondPermission: (requestId: string, behavior: 'allow' | 'deny', message?: string) =>
+    ipcRenderer.invoke(IPC.permRespond, { requestId, behavior, message }),
 
   // MCP elicitation
   respondElicitation: (

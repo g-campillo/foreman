@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem } from '../../shared/types'
-import { latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt } from './derive.mts'
+import { latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -226,6 +226,64 @@ assert.deepEqual(
   // wants a value, and a text box is the honest generic control.
   assert.deepEqual(f.map((x) => x.type), ['string', 'string'])
   assert.equal(f.every((x) => x.required === false), true, 'bad `required` is ignored, not thrown on')
+}
+
+// -------------------------------------------------------------- askQuestions
+
+// Only that one tool, and only when there is something to pick — otherwise the
+// caller must fall back to the plain allow/deny card.
+assert.equal(askQuestions('Bash', { questions: [] }), null)
+assert.equal(askQuestions('AskUserQuestion', null), null)
+assert.equal(askQuestions('AskUserQuestion', { questions: 'nope' }), null)
+assert.equal(askQuestions('AskUserQuestion', { questions: [] }), null)
+assert.equal(
+  askQuestions('AskUserQuestion', { questions: [{ question: 'q', options: [] }] }),
+  null,
+  'a question with no options is not answerable as a card',
+)
+
+// Verbatim shape from a live AskUserQuestion call.
+{
+  const qs = askQuestions('AskUserQuestion', {
+    questions: [
+      {
+        question: 'Tabs or spaces for indentation?',
+        header: 'Indentation',
+        multiSelect: false,
+        options: [
+          { label: 'Tabs', description: 'One tab per level.', preview: 'if (x) {\n\treturn 1\n}' },
+          { label: 'Spaces', description: 'Fixed width.' },
+        ],
+      },
+    ],
+  })
+  assert.equal(qs?.length, 1)
+  assert.equal(qs?.[0].header, 'Indentation')
+  assert.equal(qs?.[0].multiSelect, undefined, 'multiSelect false is omitted, not carried as false')
+  assert.deepEqual(qs?.[0].options.map((o) => o.label), ['Tabs', 'Spaces'])
+  assert.ok(qs?.[0].options[0].preview?.includes('\t'))
+  assert.equal(qs?.[0].options[1].preview, undefined)
+}
+
+// multiSelect carries through when actually set.
+assert.equal(
+  askQuestions('AskUserQuestion', {
+    questions: [{ question: 'q', multiSelect: true, options: [{ label: 'a' }] }],
+  })?.[0].multiSelect,
+  true,
+)
+
+// Malformed entries drop out instead of throwing inside a render.
+{
+  const qs = askQuestions('AskUserQuestion', {
+    questions: [
+      null,
+      { header: 'no question text' },
+      { question: 'good', options: [{ label: 'ok' }, null, { description: 'no label' }] },
+    ],
+  })
+  assert.equal(qs?.length, 1)
+  assert.deepEqual(qs?.[0].options.map((o) => o.label), ['ok'])
 }
 
 // ----------------------------------------------------------------- triggerAt

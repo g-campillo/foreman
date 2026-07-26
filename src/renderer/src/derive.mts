@@ -226,6 +226,65 @@ export function schemaFields(schema: Record<string, unknown> | undefined): Elici
   })
 }
 
+// ------------------------------------------------------- AskUserQuestion
+
+export interface AskOption {
+  label: string
+  description?: string
+  /** Markdown, because the session requests previewFormat: 'markdown'. */
+  preview?: string
+}
+
+export interface AskQuestion {
+  question: string
+  header?: string
+  multiSelect?: boolean
+  options: AskOption[]
+}
+
+/**
+ * Pulls the question set out of an AskUserQuestion tool input, or null when it
+ * isn't one / isn't usable.
+ *
+ * Returning null is what makes the caller fall back to the generic approval
+ * card: a malformed question set should still be answerable as a plain
+ * allow/deny rather than rendering a card with no buttons.
+ */
+export function askQuestions(toolName: string, input: unknown): AskQuestion[] | null {
+  if (toolName !== 'AskUserQuestion') return null
+  const raw = (input as { questions?: unknown } | null)?.questions
+  if (!Array.isArray(raw)) return null
+
+  const questions = raw.flatMap((entry): AskQuestion[] => {
+    const q = entry as Record<string, unknown> | null
+    if (!q || typeof q.question !== 'string') return []
+    const opts = Array.isArray(q.options) ? q.options : []
+    const options = opts.flatMap((o): AskOption[] => {
+      const oo = o as Record<string, unknown> | null
+      if (!oo || typeof oo.label !== 'string') return []
+      return [
+        {
+          label: oo.label,
+          ...(typeof oo.description === 'string' ? { description: oo.description } : {}),
+          ...(typeof oo.preview === 'string' ? { preview: oo.preview } : {}),
+        },
+      ]
+    })
+    // A question with nothing to pick is not answerable as a card.
+    if (!options.length) return []
+    return [
+      {
+        question: q.question,
+        ...(typeof q.header === 'string' ? { header: q.header } : {}),
+        ...(q.multiSelect === true ? { multiSelect: true } : {}),
+        options,
+      },
+    ]
+  })
+
+  return questions.length ? questions : null
+}
+
 // -------------------------------------------------------- composer triggers
 
 export interface Trigger {

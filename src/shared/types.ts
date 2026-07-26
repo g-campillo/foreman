@@ -11,6 +11,26 @@ export type SessionStatus = 'starting' | 'idle' | 'running' | 'awaiting-approval
  *  'dontAsk' denies anything not pre-approved instead of prompting. */
 export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'dontAsk'
 
+/** Mirrors the SDK's EffortLevel. 'max' is session-scoped and never persisted. */
+export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+export interface BackgroundTask {
+  taskId: string
+  taskType: string
+  description: string
+}
+
+/** Result of rewindFiles, used both for the dry-run preview and the real thing. */
+export interface RewindResult {
+  canRewind: boolean
+  error?: string
+  filesChanged: string[]
+  insertions: number
+  deletions: number
+  /** Only populated on a real rewind: files skipped for link-safety reasons. */
+  skippedLinks?: number
+}
+
 export interface SessionMeta {
   id: string
   title: string
@@ -22,6 +42,12 @@ export interface SessionMeta {
   outputTokens: number
   permissionMode: PermissionMode
   createdAt: number
+  /** null until set; the SDK's own default applies while it is. */
+  effort: EffortLevel | null
+  /** Predicted next prompt from the last turn, shown as composer ghost text. */
+  promptSuggestion: string | null
+  /** Live background tasks. REPLACE semantics — the SDK sends the whole set. */
+  backgroundTasks: BackgroundTask[]
   /**
    * The session id the SDK/CLI actually uses.
    *
@@ -274,6 +300,15 @@ export const IPC = {
   sessionModels: 'session:models',
   sessionPastList: 'session:pastList',
   sessionCancelQueued: 'session:cancelQueued',
+
+  // time travel + actions
+  sessionRewind: 'session:rewind',
+  sessionSetEffort: 'session:setEffort',
+  sessionBackground: 'session:background',
+  sessionStopTask: 'session:stopTask',
+  mcpToggle: 'mcp:toggle',
+  mcpReconnect: 'mcp:reconnect',
+  mcpPermissionOverride: 'mcp:permissionOverride',
 
   // history
   sessionTranscript: 'session:transcript',

@@ -13,6 +13,7 @@ import {
 import {
   IPC,
   type ChatItem,
+  type EffortLevel,
   type PermissionMode,
   type PastSession,
   type SendContent,
@@ -206,6 +207,49 @@ export function registerSessionIpc(): void {
   )
   ipcMain.handle(IPC.sessionReloadSkills, (_e, { sessionId }: { sessionId: string }) =>
     get(sessionId)?.reloadSkills() ?? [],
+  )
+
+  ipcMain.handle(
+    IPC.sessionRewind,
+    (_e, { sessionId, messageId, dryRun }: { sessionId: string; messageId: string; dryRun: boolean }) =>
+      get(sessionId)?.rewind(messageId, dryRun) ??
+      { canRewind: false, error: 'No session', filesChanged: [], insertions: 0, deletions: 0 },
+  )
+
+  ipcMain.handle(
+    IPC.sessionSetEffort,
+    (_e, { sessionId, effort }: { sessionId: string; effort: EffortLevel | null }) =>
+      get(sessionId)?.setEffort(effort),
+  )
+
+  ipcMain.handle(
+    IPC.sessionBackground,
+    (_e, { sessionId, toolUseId }: { sessionId: string; toolUseId?: string }) =>
+      get(sessionId)?.background(toolUseId) ?? false,
+  )
+
+  ipcMain.handle(
+    IPC.sessionStopTask,
+    (_e, { sessionId, taskId }: { sessionId: string; taskId: string }) =>
+      get(sessionId)?.stopTask(taskId),
+  )
+
+  ipcMain.handle(
+    IPC.mcpToggle,
+    (_e, { sessionId, name, enabled }: { sessionId: string; name: string; enabled: boolean }) =>
+      get(sessionId)?.toggleMcp(name, enabled),
+  )
+
+  ipcMain.handle(IPC.mcpReconnect, (_e, { sessionId, name }: { sessionId: string; name: string }) =>
+    get(sessionId)?.reconnectMcp(name),
+  )
+
+  ipcMain.handle(
+    IPC.mcpPermissionOverride,
+    (
+      _e,
+      { sessionId, name, mode }: { sessionId: string; name: string; mode: 'default' | 'auto' | null },
+    ) => get(sessionId)?.setMcpPermissionOverride(name, mode),
   )
 
   ipcMain.handle(IPC.sessionPastList, async (_e, { dir }: { dir?: string }): Promise<PastSession[]> => {
