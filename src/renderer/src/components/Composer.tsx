@@ -13,6 +13,7 @@ const MODES: { value: PermissionMode; label: string }[] = [
   { value: 'acceptEdits', label: 'Accept edits' },
   { value: 'plan', label: 'Plan' },
   { value: 'bypassPermissions', label: 'Bypass' },
+  { value: 'dontAsk', label: "Don't ask" },
 ]
 
 export default function Composer({ session }: { session: SessionMeta }): React.JSX.Element {

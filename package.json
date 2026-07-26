@@ -12,7 +12,8 @@
     "start": "electron-vite preview",
     "icon": "qlmanage -t -s 1024 -o build build/icon.svg >/dev/null && mv build/icon.svg.png build/icon.png",
     "dist": "electron-vite build && electron-builder --mac",
-    "dist:release": "electron-vite build && electron-builder --mac -c.mac.notarize=true"
+    "dist:release": "electron-vite build && electron-builder --mac -c.mac.notarize=true",
+    "check:policy": "node src/main/agent/policy.check.mts"
   },
   "keywords": [],
   "author": "",

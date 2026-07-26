@@ -1,0 +1,302 @@
+# Foreman roadmap — 25 features in 8 batches
+
+Written 2026-07-26. Verified against the installed `@anthropic-ai/claude-agent-sdk@0.3.220`
+(`node_modules/@anthropic-ai/claude-agent-sdk/sdk.d.ts`) and the current source, not the
+docs page — the published API reference is abridged and wrong in several places.
+
+## How this is batched
+
+By **seam, not by theme**. A feature here almost never costs what the feature costs; it
+costs the plumbing tax — a new `IPC` key, a preload method, a store field, a `ChatItem`
+variant. Pay that tax once per batch and the 2nd–4th feature in the batch runs ~20% of
+the first.
+
+| Seam | Cost | Features |
+|---|---|---|
+| **S1** `query({options})` literal in `session.ts` | nothing — add a field | 5·6·8·9·12·13·15 |
+| **S2** control-method bridge (`q.x()` → invoke → preload → store) | write the pattern once | 1·2·5·7·8·10·11·14 |
+| **S3** `ChatItem` union + `handle()` switch + `Item` renderer | breaking type change | 6·12·13·20 |
+| **S4** composer input pipeline (popover + `MessageParam`) | one popover, one queue-type change | 1·17·18·19 |
+| **S5** session history (module-level SDK fns + transcript→ChatItem normaliser) | one normaliser | 3·4·23 |
+| **S6** no SDK — Electron main, renderer, git | independent of everything | 16·21·22·24·25 |
+
+Several features appear on two seams: they have an options half and a UI half. That's the
+seam boundary, not duplication — the halves land in different batches on purpose.
+
+## Order
+
+| # | Batch | Features | Seam | Size |
+|---|---|---|---|---|
+| 1 | ✅ One sitting | 15, 9, 13, 5a, 21 | S1 + S6 | ½ day |
+| 2 | Looks finished | 16, 20, 22 | S6 | 1–2 d |
+| 3 | Read-only panels | 2, 14, 11, 10a | S2 | 1–2 d |
+| 4 | Composer | 1, 18, 19, 17 | S4 | 2–3 d |
+| 5 | History | 3, 23, 4 | S5 | 2–3 d |
+| 6 | Time travel + actions | 5b, 7, 12, 8, 10b | S2 + S3 | 2 d |
+| 7 | Subagents | 6 | S3 | 2 d |
+| 8 | Git | 25, 24 | S6 | L |
+
+**If you only do three:** 1, 2, 3. That's ~3 days and closes the "feels unfinished" gap.
+
+**Parallel-safety:** batches 2, 3 and 4 are conflict-free with each other — 3 and 4 only
+*add* `IPC` keys, which merges cleanly. Batches **2 and 7 both edit the `Item` switch** in
+`Conversation.tsx`, and **5, 6 and 7 all edit the `ChatItem` union**. Serialize those
+three, which is also their natural order.
+
+---
+
+# Batch 1 — One sitting
+
+Options-only changes plus one main-process feature. Nothing here touches the renderer's
+types, so it can't conflict with anything else. Ships something visible on day one while
+the inert options start emitting data you can watch in the stream while building batches
+3–7.
+
+**Files:** `src/main/agent/session.ts`, `src/main/index.ts`, `src/main/bridge.ts`
+
+- [x] **21. Native notification + dock badge.** Fire on `status` → `idle` after a run, and
+  on `awaiting-approval`, but only when the window is unfocused. Electron's `Notification`
+  + `app.dock.setBadge()`. Highest value-per-line in the whole document, and the three web
+  apps structurally can't match it.
+- [x] **15a. `fallbackModel`.** Comma-separated list; the primary is retried at the start of
+  each user turn, so an overload doesn't permanently demote the session.
+- [x] **15b. `permissionMode: 'dontAsk'`.** The fourth mode — deny anything not
+  pre-approved, never prompt. Add to the `MODES` array in `Composer.tsx`; it's the one
+  renderer touch in this batch and it's a one-line array entry.
+- [x] **9. `maxBudgetUsd` + `maxTurns`.** A session that blows the cap stops with an
+  `error_max_budget_usd` result. You already render cost — this turns the readout into a
+  control. Ship with a generous default; the settings UI can come later.
+- [x] **13a. `promptSuggestions: true`.** Emits a `prompt_suggestion` message after each
+  `result`. Safe to enable blind: unhandled message types fall through `handle()`'s switch.
+  UI lands in batch 6.
+- [x] **5a. `enableFileCheckpointing: true`.** Just makes backups; unlocks
+  `q.rewindFiles()` in batch 6. Safe to enable blind.
+
+> **Trap: do NOT add `forwardSubagentText` here.** Subagent text arrives as ordinary
+> assistant messages with `parent_tool_use_id` set, and `handleAssistant()` doesn't check
+> that field — it will interleave subagent chatter into the main transcript. It is the one
+> option in this document that regresses the app if turned on before its renderer.
+> It belongs in batch 7. (`agentProgressSummaries` is safe early; it only affects
+> `task_progress` events, which nothing handles yet.)
+
+**Done when:** an unfocused Foreman raises a notification on turn-complete, and the `Ask /
+Accept edits / Plan / Bypass / Don't ask` dropdown has five entries.
+
+---
+
+# Batch 2 — Looks finished
+
+No SDK at all. Pure renderer work, and the largest perceived-quality gap in the app.
+
+**Files:** `src/renderer/src/components/Conversation.tsx`, `App.tsx`, `theme.css`
+
+- [ ] **16. Markdown + syntax-highlighted code blocks.** `Conversation.tsx` currently
+  renders `{item.text}` raw. Add copy buttons and collapse long blocks while you're in
+  there. All three of Claude, Codex and Gemini do this; it's why they read as finished.
+- [ ] **20. Todo/plan strip.** The `TodoWrite` tool stream is already flowing through your
+  tool cards. Pin the latest list to a header strip instead of burying it in scrollback.
+  No new plumbing — read the last `TodoWrite` item out of the existing store.
+- [ ] **22. Command palette (⌘P).** Sessions, files, and later slash commands. Today ⌘K
+  cycles sessions, which is the placeholder version of this.
+
+> Batch 7 also edits the `Item` switch in `Conversation.tsx`. Land this first.
+
+---
+
+# Batch 3 — Read-only panels
+
+Four `q.x()` calls that return data and render a panel. Build the invoke→preload→store
+pattern once for the context meter; the other three are then near-copies.
+
+**Files:** `src/shared/types.ts` (new `IPC` keys), `src/main/agent/session.ts`,
+`src/main/agent/manager.ts`, `src/preload/index.ts`, `src/renderer/src/store.ts`, new
+components
+
+- [ ] **2. Context-window meter.** `q.getContextUsage()` returns a *per-category* breakdown
+  — system prompt, tools, messages, MCP tools, memory files — not just a total. Gemini CLI
+  shows a bare percentage; nobody shows the breakdown. Cheap differentiator, and it's the
+  one that makes long sessions legible.
+- [ ] **14. Usage + account chip.** `q.accountInfo()` gives email, org and subscription
+  type. `q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` gives session
+  cost/token totals plus plan rate-limit windows (5-hour, 7-day, per-model).
+  **Caveat:** that method name is a promise that it will change. Wrap it in try/catch and
+  don't build UI that breaks when it disappears. `rate_limits_available` is false for API
+  key / Bedrock / Vertex sessions.
+- [ ] **11. Skills & agent personas.** `q.supportedAgents()` → `AgentInfo[]`, plus the
+  `skills: 'all' | string[]` option and `q.reloadSkills()`. Then the `agents: {...}` +
+  `agent: 'reviewer'` options let the *main thread* run as a persona — a "Review mode" /
+  "Plan mode" preset picker in the rail.
+- [ ] **10a. MCP status panel.** `q.mcpServerStatus()` → connected / failed / needs-auth /
+  pending. Claude Desktop's connectors UI. Mutators are batch 6.
+- [ ] **10c. `onElicitation` — this one is a bug fix, not a feature.** You don't pass the
+  callback, and the SDK auto-declines any elicitation that no hook handles. Every MCP
+  server that needs OAuth is silently failing right now. Grouped here because it's the same
+  subsystem; do it first in the batch.
+
+**Also cheap while you're in this seam:** `q.supportedCommands()` exists too, but its UI
+belongs in batch 4 — see the note there.
+
+---
+
+# Batch 4 — Composer
+
+One autocomplete popover and one change to the queue's input type unlock all four.
+
+**Files:** `src/renderer/src/components/Composer.tsx`, `src/main/agent/queue.ts`,
+`src/main/agent/session.ts`, `src/shared/types.ts`
+
+- [ ] **The queue takes strings today.** `Session.send(text: string)` → `queue.push(text)`.
+  `SDKUserMessage.message` is a `MessageParam`, so image and multi-block content is already
+  legal on the wire. Widen this first — it's the breaking change the rest of the batch
+  sits on.
+- [ ] **1. Slash commands.** `q.supportedCommands()` → `SlashCommand[]`. Typing `/` opens
+  the menu. **This looks like an SDK feature and is filed under S2, but its real cost is
+  the popover — the same widget as `@`-mentions. Split them and you build it twice.**
+- [ ] **18. `@`-file mentions with fuzzy autocomplete.** Same popover, different trigger and
+  data source. `q.readFile(path, {maxBytes, encoding})` gives a hover preview that respects
+  the session's read-permission rules rather than bypassing them.
+- [ ] **19. Queue messages while the agent runs.** Type-ahead: the composer currently just
+  shows Stop. Your push-queue already supports it. `interrupt()` now resolves to a receipt
+  carrying `still_queued` uuids of async user messages that will *still* run unless
+  cancelled — surface and cancel those, or Stop will feel like it lied.
+- [ ] **17. Image / file attachments.** Paste a screenshot into the composer. Falls out of
+  the `MessageParam` change above; Claude and Gemini both lean on this hard.
+
+---
+
+# Batch 5 — History
+
+Module-level SDK functions (not methods on `Query`), so they don't need a live session.
+One transcript→`ChatItem` normaliser serves all three.
+
+**Files:** `src/main/agent/manager.ts`, `src/shared/types.ts`, `src/renderer/src/store.ts`,
+`src/renderer/src/components/SessionRail.tsx`
+
+- [ ] **First commit of this batch: thread the SDK's message `uuid` onto `ChatItem`.**
+  Today `ChatItem.id` is a locally-minted `randomUUID()`. But `rewindFiles(userMessageId)`
+  and the `resumeSessionAt` option both want the *SDK's* `SDKAssistantMessage.uuid`.
+  Without that field, features 3, 4, 5 and 23 are all unbuildable. ~10 lines in `handle()`
+  and the union — and it makes batch 6's rewind fall out for free.
+- [ ] **3. Real transcript on resume.** `getSessionMessages({dir, limit, offset,
+  includeSystemMessages})`. A resumed session currently comes back with an empty
+  conversation, because `ChatItem`s only ever lived in the renderer. This is the fix, and
+  it's the highest-value item in the batch.
+- [ ] **23. Search across session transcripts.** `listSessions({dir})` (already wired for
+  `sessionPastList`) + `getSessionMessages()` + the normaliser from #3.
+- [ ] **4. Branch a conversation.** `forkSession({upToMessageId, title})` plus the
+  `resumeSessionAt` option. Claude.ai's edit-and-retry. **Needs #3** — forking into an
+  empty conversation view is worse than not forking. `renameSession()` is right there too,
+  for renaming in the rail.
+
+---
+
+# Batch 6 — Time travel + actions
+
+Back to the S2 bridge, but the mutator half: control methods that *do* something, each
+fronted by a card with a button. Also spends the `prompt_suggestion` and `AskUserQuestion`
+message types enabled in batch 1.
+
+**Files:** `src/main/agent/session.ts`, `src/preload/index.ts`, `src/shared/types.ts`,
+`src/renderer/src/components/`
+
+- [ ] **5b. Rewind.** `q.rewindFiles(userMessageId, {dryRun: true})` returns
+  `{canRewind, error?, stats}` — so the confirmation card's preview is free. Then call it
+  for real. Gemini's `/restore`, Claude Code's double-Esc. Complements your existing
+  per-*file* revert with per-*turn* rewind. Needs batch 5's uuid threading.
+- [ ] **7. Background tasks.** `q.backgroundTasks(toolUseId?)` moves in-flight Bash commands
+  and subagents to the background — the blocking tool returns "running in the background"
+  and the turn continues. `q.stopTask(taskId)` kills one. A 4-minute `npm test` drops to a
+  tray instead of stalling the agent. Ctrl+B equivalent.
+- [ ] **12. `AskUserQuestion` as a real card.** `toolConfig: { askUserQuestion:
+  { previewFormat: 'html' } }`. The agent asks a multiple-choice question and you render
+  actual buttons instead of a JSON blob. Uniquely IDE-shaped — the CLI can't render HTML
+  previews.
+- [ ] **13b. Prompt-suggestion chip.** Render the `prompt_suggestion` message enabled in
+  batch 1 as ghost text in the composer. It piggybacks the parent's prompt cache, so it's
+  nearly free. Suppressed on the first turn, after API errors, and in plan mode — don't
+  treat absence as a bug.
+- [ ] **8. Effort + thinking controls.** `effort: 'low'|'medium'|'high'|'xhigh'|'max'` and
+  `thinking: {type: 'adaptive'|'enabled'|'disabled'}` as constructor options, changeable
+  mid-session via `q.applyFlagSettings({effortLevel})`. One dropdown beside the model
+  picker. Note `'max'` is session-scoped and never persisted to settings files.
+- [ ] **10b. MCP mutators.** `toggleMcpServer()`, `reconnectMcpServer()`, `setMcpServers()`,
+  `setMcpPermissionModeOverride(server, 'default'|'auto'|null)`. The last is tighten-only —
+  it can never widen privilege — so it's safe to expose directly.
+
+---
+
+# Batch 7 — Subagents
+
+The one genuinely new render path. Today a `Task` tool call is a single opaque card.
+
+**Files:** `src/main/agent/session.ts`, `src/shared/types.ts`,
+`src/renderer/src/components/Conversation.tsx`
+
+- [ ] **6. Subagent tree.** Enable `forwardSubagentText: true` (held back since batch 1 for
+  the reason in that section) **together with** routing on `parent_tool_use_id` in
+  `handleAssistant()` and `handleToolResults()` — the option and the routing must land in
+  the same commit or the transcript interleaves. Add `agentProgressSummaries: true` for a
+  rolling present-tense summary ("Analyzing authentication module") every ~30s on
+  `task_progress` events; the fork reuses the subagent's model and prompt cache, so cost is
+  minimal. Render `task_notification` for settle events.
+
+Codex and Antigravity both lead with this view. With batch 8 it's the strategic bet — see
+below.
+
+---
+
+# Batch 8 — Git
+
+**Files:** `src/main/agent/manager.ts`, `src/main/agent/snapshots.ts`,
+`src/renderer/src/components/DiffPanel.tsx`
+
+- [ ] **25. Stage / commit from the diff panel.** You already compute hunks against a git
+  baseline (`snapshots.ts`, `porcelain.ts`). "Commit these 4 files" is a short hop.
+- [ ] **24. Parallel agents per repo via git worktrees.** Previously deferred by choice.
+  It's the Codex-cloud / Antigravity "Agent Manager" shape: three agents on three branches
+  of one repo, diffed side by side. `additionalDirectories` covers the multi-root variant.
+  Large — `manager.ts` currently assumes one agent per project cwd, via `realpathSync`.
+
+**6 + 24 together is the biggest strategic bet in this document.** A subagent tree plus
+worktree isolation is the one thing none of Claude, Codex or Gemini ships well on the
+desktop.
+
+---
+
+## Feature index
+
+Numbers are stable; batches reference them.
+
+| # | Feature | Batch |
+|---|---|---|
+| 1 | Slash commands | 4 |
+| 2 | Context-window meter | 3 |
+| 3 | Real transcript on resume | 5 |
+| 4 | Branch a conversation | 5 |
+| 5 | Checkpoint + rewind | 1 (option), 6 (UI) |
+| 6 | Subagent tree | 7 |
+| 7 | Background tasks | 6 |
+| 8 | Effort + thinking controls | 6 |
+| 9 | Spend guardrails | 1 |
+| 10 | MCP panel + `onElicitation` | 3 (status), 6 (mutators) |
+| 11 | Skills & agent personas | 3 |
+| 12 | `AskUserQuestion` cards | 6 |
+| 13 | Prompt suggestions | 1 (option), 6 (UI) |
+| 14 | Usage / plan limits + account | 3 |
+| 15 | `fallbackModel` + `dontAsk` mode | 1 |
+| 16 | Markdown + code blocks | 2 |
+| 17 | Image / file attachments | 4 |
+| 18 | `@`-file mentions | 4 |
+| 19 | Queue messages while running | 4 |
+| 20 | Todo/plan strip | 2 |
+| 21 | Native notifications + dock badge | 1 |
+| 22 | Command palette | 2 |
+| 23 | Transcript search | 5 |
+| 24 | Git worktree isolation | 8 |
+| 25 | Commit from diff panel | 8 |
+
+Three of these are bug fixes wearing feature costumes: **3** (resume shows nothing),
+**10c** (`onElicitation` missing ⇒ MCP auth silently declined), **15b** (`dontAsk`
+unreachable).
+
+Effort estimates are rough and assume one person who already knows this codebase.

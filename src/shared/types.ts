@@ -7,7 +7,9 @@
 
 export type SessionStatus = 'starting' | 'idle' | 'running' | 'awaiting-approval' | 'error'
 
-export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions'
+/** Mirrors the SDK's own union, minus 'auto' (no UI for the classifier yet).
+ *  'dontAsk' denies anything not pre-approved instead of prompting. */
+export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'dontAsk'
 
 export interface SessionMeta {
   id: string

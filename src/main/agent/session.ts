@@ -9,10 +9,17 @@ import {
   type SessionMeta,
   type SessionStatus,
 } from '../../shared/types'
-import { send } from '../bridge'
+import { notify, send } from '../bridge'
 import { createInputQueue, type InputQueue } from './queue'
 import { makeCanUseTool, cancelPending } from './permissions'
 import { makeSnapshotHook, makeBashDiffHook, beginSession, clearSnapshots } from './snapshots'
+import {
+  FALLBACK_MODEL,
+  MAX_BUDGET_USD,
+  MAX_TURNS,
+  notifyBody,
+  resultText,
+} from './policy.mts'
 
 /**
  * Absolute path to the Claude Code binary the SDK spawns.
@@ -89,6 +96,17 @@ export class Session {
         permissionMode: this.meta.permissionMode,
         includePartialMessages: true,
         allowDangerouslySkipPermissions: true, // lets the mode switcher offer bypass
+        fallbackModel: FALLBACK_MODEL,
+        // Spread rather than assign: FOREMAN_MAX_*=0 means "no cap at all", and
+        // the key has to be absent for that, not present-and-undefined.
+        ...(MAX_BUDGET_USD ? { maxBudgetUsd: MAX_BUDGET_USD } : {}),
+        ...(MAX_TURNS ? { maxTurns: MAX_TURNS } : {}),
+        // Backs up files before the agent modifies them, which is what makes
+        // q.rewindFiles() possible later. Inert until something calls it.
+        enableFileCheckpointing: true,
+        // Emits a `prompt_suggestion` message after each result. Nothing renders
+        // it yet; unhandled message types fall through handle()'s switch.
+        promptSuggestions: true,
         canUseTool: makeCanUseTool(this.meta.id, (n) => {
           this.pendingApprovals = n
           this.setStatus(n > 0 ? 'awaiting-approval' : 'running')
@@ -131,7 +149,11 @@ export class Session {
 
   private setStatus(status: SessionStatus): void {
     if (this.meta.status === status) return
+    const was = this.meta.status
     this.patchMeta({ status })
+
+    const body = notifyBody(was, status, this.pendingApprovals)
+    if (body) notify(this.meta.title, body)
   }
 
   // ------------------------------------------------------------------- pump
@@ -148,13 +170,22 @@ export class Session {
   }
 
   private handle(msg: SDKMessage): void {
+    // Unhandled types fall through deliberately. Verified arriving today:
+    // `prompt_suggestion` (enabled below, rendered in batch 6) and
+    // `rate_limit_event`, which carries the plan's 5-hour/7-day windows and is
+    // a steadier source for those than the experimental usage API.
     switch (msg.type) {
       case 'system':
-        // Only the init frame means "ready"; other system subtypes arrive
-        // mid-turn and would otherwise flip a running session to idle.
+        // Only the init frame means "ready", and only while we're still starting.
+        // In streaming-input mode init doesn't arrive until the first user
+        // message is already in flight, so it lands MID-TURN — without the
+        // status guard it marks a running session idle a second after send,
+        // which reads as a finished turn to anything watching (the rail, and
+        // turn-complete notifications). Verified live: running/idle/running/idle
+        // across one turn. Other system subtypes arrive mid-turn too.
         // (The init frame carries no `model` — that comes off the assistant
         // message, verified against the live SDK.)
-        if (msg.subtype === 'init') this.setStatus('idle')
+        if (msg.subtype === 'init' && this.meta.status === 'starting') this.setStatus('idle')
         break
 
       case 'stream_event':
@@ -181,7 +212,11 @@ export class Session {
         this.emit({
           id: randomUUID(),
           kind: 'result',
-          text: interrupted ? 'stopped' : 'result' in r && typeof r.result === 'string' ? r.result : '',
+          text: resultText({
+            interrupted,
+            result: 'result' in r ? r.result : undefined,
+            subtype: r.subtype,
+          }),
           costUsd: turnCost,
           durationMs: r.duration_ms ?? 0,
           isError: !interrupted && Boolean(r.is_error),
