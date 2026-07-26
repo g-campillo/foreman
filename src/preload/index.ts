@@ -23,9 +23,24 @@ const api = {
     ipcRenderer.invoke(IPC.sessionSetModel, { sessionId, model }),
   supportedModels: (sessionId: string) => ipcRenderer.invoke(IPC.sessionModels, { sessionId }),
 
+  // read-only panels
+  contextUsage: (sessionId: string) => ipcRenderer.invoke(IPC.sessionContextUsage, { sessionId }),
+  accountInfo: (sessionId: string) => ipcRenderer.invoke(IPC.sessionAccount, { sessionId }),
+  usageInfo: (sessionId: string) => ipcRenderer.invoke(IPC.sessionUsage, { sessionId }),
+  supportedAgents: (sessionId: string) => ipcRenderer.invoke(IPC.sessionAgents, { sessionId }),
+  mcpStatus: (sessionId: string) => ipcRenderer.invoke(IPC.sessionMcpStatus, { sessionId }),
+  reloadSkills: (sessionId: string) => ipcRenderer.invoke(IPC.sessionReloadSkills, { sessionId }),
+
   // permissions
   respondPermission: (requestId: string, behavior: 'allow' | 'deny') =>
     ipcRenderer.invoke(IPC.permRespond, { requestId, behavior }),
+
+  // MCP elicitation
+  respondElicitation: (
+    requestId: string,
+    action: 'accept' | 'decline' | 'cancel',
+    content?: Record<string, unknown>,
+  ) => ipcRenderer.invoke(IPC.elicitRespond, { requestId, action, content }),
 
   // diffs
   listDiffs: (sessionId: string, cwd: string) =>
@@ -55,6 +70,8 @@ const api = {
   onRemoved: (cb: (p: any) => void) => on(IPC.evtRemoved, cb),
   onPermissionRequest: (cb: (p: any) => void) => on(IPC.permRequest, cb),
   onPermissionResolved: (cb: (p: any) => void) => on(IPC.permResolved, cb),
+  onElicitationRequest: (cb: (p: any) => void) => on(IPC.elicitRequest, cb),
+  onElicitationResolved: (cb: (p: any) => void) => on(IPC.elicitResolved, cb),
   onDiffChanged: (cb: (p: any) => void) => on(IPC.evtDiffChanged, cb),
   onPtyData: (cb: (p: any) => void) => on(IPC.evtPtyData, cb),
   onPtyExit: (cb: (p: any) => void) => on(IPC.evtPtyExit, cb),

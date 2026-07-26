@@ -113,6 +113,119 @@ export function latestTodos(items: readonly ChatItem[]): Todo[] | null {
   return todos.every((t) => t.status === 'completed') ? null : todos
 }
 
+// ------------------------------------------------------------ context usage
+
+export interface ContextCategory {
+  name: string
+  tokens: number
+  isDeferred?: boolean
+}
+
+/**
+ * Splits the SDK's category list into what is actually occupying the context
+ * window versus what merely could.
+ *
+ * Two entries in that list are not usage, and both would fill the bar to 100%
+ * if drawn:
+ *  - a "Free space" filler that completes the list to maxTokens,
+ *  - deferred tool groups, which are loadable on demand and are excluded from
+ *    totalTokens (measured: the categories sum to 92,328 against a totalTokens
+ *    of 23,894 — the difference is exactly the two deferred groups).
+ *
+ * The filler is found by an exact identity — it is by definition
+ * `maxTokens - totalTokens` — rather than by name, which would break on
+ * relabelling, or by "bigger than the total", which breaks the moment the window
+ * is more than half full and free space becomes the smaller number.
+ * At most one category is dropped, so a real one that happens to tie doesn't
+ * silently vanish.
+ */
+export function contextBreakdown(
+  categories: readonly ContextCategory[],
+  totalTokens: number,
+  maxTokens: number,
+): { used: ContextCategory[]; deferred: ContextCategory[] } {
+  const filler = maxTokens - totalTokens
+  let droppedFiller = false
+  const used: ContextCategory[] = []
+  const deferred: ContextCategory[] = []
+
+  for (const c of categories) {
+    if (c.tokens <= 0) continue
+    if (c.isDeferred) {
+      deferred.push(c)
+    } else if (!droppedFiller && filler > 0 && c.tokens === filler) {
+      droppedFiller = true
+    } else {
+      used.push(c)
+    }
+  }
+  return { used, deferred }
+}
+
+// -------------------------------------------------------------- elicitation
+
+export interface ElicitField {
+  name: string
+  label: string
+  type: 'string' | 'number' | 'boolean' | 'enum'
+  required: boolean
+  /** Populated for 'enum'. */
+  options?: string[]
+  description?: string
+  default?: string | number | boolean
+}
+
+/**
+ * Turns an MCP elicitation `requestedSchema` into flat form fields.
+ *
+ * Flat is not a simplification: the MCP spec restricts elicitation schemas to an
+ * object of primitive properties (PrimitiveSchemaDefinition) precisely so that
+ * any client can render them generically. Anything nested is out of spec, and is
+ * dropped here rather than half-rendered.
+ */
+export function schemaFields(schema: Record<string, unknown> | undefined): ElicitField[] {
+  const props = schema?.properties
+  if (!props || typeof props !== 'object') return []
+  const required = new Set(
+    Array.isArray(schema?.required) ? (schema.required as unknown[]).filter((r) => typeof r === 'string') : [],
+  )
+
+  return Object.entries(props as Record<string, unknown>).flatMap(([name, raw]): ElicitField[] => {
+    const def = raw as Record<string, unknown> | null
+    if (!def || typeof def !== 'object') return []
+
+    const enumValues = Array.isArray(def.enum)
+      ? (def.enum as unknown[]).filter((v): v is string => typeof v === 'string')
+      : null
+
+    const declared = typeof def.type === 'string' ? def.type : ''
+    // enum wins over the declared type: an enum is always a string in the spec,
+    // but a dropdown is a strictly better control than a free-text box.
+    const type: ElicitField['type'] = enumValues?.length
+      ? 'enum'
+      : declared === 'boolean'
+        ? 'boolean'
+        : declared === 'number' || declared === 'integer'
+          ? 'number'
+          : 'string'
+
+    const dflt = def.default
+    return [
+      {
+        name,
+        label: typeof def.title === 'string' ? def.title : name,
+        type,
+        required: required.has(name),
+        ...(type === 'enum' && enumValues ? { options: enumValues } : {}),
+        ...(typeof def.description === 'string' ? { description: def.description } : {}),
+        ...(typeof dflt === 'string' || typeof dflt === 'number' || typeof dflt === 'boolean'
+          ? { default: dflt }
+          : {}),
+      },
+    ]
+  })
+}
+
 // ----------------------------------------------------------------- palette
 
 export interface Matchable {

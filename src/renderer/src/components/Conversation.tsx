@@ -3,6 +3,7 @@ import type { ChatItem } from '../../../shared/types'
 import { useStore } from '../store'
 import ToolCard from './ToolCard'
 import ApprovalCard from './ApprovalCard'
+import ElicitationCard from './ElicitationCard'
 import Markdown from './Markdown'
 
 export default function Conversation({ sessionId }: { sessionId: string }): React.JSX.Element {
@@ -16,6 +17,11 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
     () => allApprovals.filter((a) => a.sessionId === sessionId),
     [allApprovals, sessionId],
   )
+  const allElicitations = useStore((s) => s.elicitations)
+  const elicitations = useMemo(
+    () => allElicitations.filter((e) => e.sessionId === sessionId),
+    [allElicitations, sessionId],
+  )
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
 
@@ -24,7 +30,7 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
   useEffect(() => {
     const el = scroller.current
     if (el && pinned.current) el.scrollTop = el.scrollHeight
-  }, [items, approvals])
+  }, [items, approvals, elicitations])
 
   return (
     <div
@@ -40,6 +46,9 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
       ))}
       {approvals.map((a) => (
         <ApprovalCard key={a.requestId} req={a} />
+      ))}
+      {elicitations.map((e) => (
+        <ElicitationCard key={e.requestId} req={e} />
       ))}
       {/* Without this there's dead air between sending and the first token. */}
       {status === 'running' && (

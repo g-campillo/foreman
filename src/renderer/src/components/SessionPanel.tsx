@@ -1,0 +1,256 @@
+import { useCallback, useEffect, useState } from 'react'
+import type {
+  AccountInfo,
+  AgentInfo,
+  ContextUsage,
+  McpServerInfo,
+  SessionMeta,
+  SkillInfo,
+  UsageInfo,
+} from '../../../shared/types'
+import { contextBreakdown } from '../derive.mts'
+
+const fmt = (n: number): string =>
+  n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n)
+
+/** Our own palette, because the SDK's `color` is a CLI theme key, not CSS.
+ *  All theme tokens, so the breakdown flips with light/dark like everything else. */
+const SWATCHES = [
+  'rgb(var(--accent))',
+  'rgb(var(--ok))',
+  'rgb(var(--warn))',
+  'rgb(var(--syn-num))',
+  'rgb(var(--syn-type))',
+  'rgb(var(--syn-fn))',
+  'rgb(var(--danger))',
+]
+const swatch = (i: number): string => SWATCHES[i % SWATCHES.length]
+
+interface Data {
+  context: ContextUsage | null
+  account: AccountInfo | null
+  usage: UsageInfo | null
+  mcp: McpServerInfo[]
+  agents: AgentInfo[]
+}
+
+/**
+ * The read-only side of the session: what's in the context window, what the
+ * account is spending, which MCP servers are up, and which agents exist.
+ *
+ * One panel rather than four, because every one of these is a handful of rows
+ * that nobody wants a separate tab for.
+ */
+export default function SessionPanel({
+  session,
+  visible,
+}: {
+  session: SessionMeta
+  visible: boolean
+}): React.JSX.Element {
+  const [data, setData] = useState<Data | null>(null)
+  const [skills, setSkills] = useState<SkillInfo[] | null>(null)
+  const [busy, setBusy] = useState(false)
+
+  const refresh = useCallback(async (): Promise<void> => {
+    setBusy(true)
+    const f = window.foreman
+    // One round of calls, in parallel — a slow MCP status shouldn't hold up the
+    // context meter, which is the reason most people open this panel.
+    const [context, account, usage, mcp, agents] = await Promise.all([
+      f.contextUsage(session.id).catch(() => null),
+      f.accountInfo(session.id).catch(() => null),
+      f.usageInfo(session.id).catch(() => null),
+      f.mcpStatus(session.id).catch(() => []),
+      f.supportedAgents(session.id).catch(() => []),
+    ])
+    setData({ context, account, usage, mcp, agents })
+    setBusy(false)
+  }, [session.id])
+
+  // Refresh when the panel is actually on screen and the agent isn't mid-turn —
+  // context usage is only meaningful between turns, and polling a running
+  // session just races the numbers.
+  useEffect(() => {
+    if (visible && session.status === 'idle') void refresh()
+  }, [visible, session.status, refresh])
+
+  if (!visible) return <></>
+
+  const ctx = data?.context
+  const { used, deferred } = contextBreakdown(
+    ctx?.categories ?? [],
+    ctx?.totalTokens ?? 0,
+    ctx?.maxTokens ?? 0,
+  )
+  return (
+    <div className="panel-scroll">
+      <div className="sect-head">
+        <span>Context</span>
+        <button className="code-btn" onClick={() => void refresh()} disabled={busy}>
+          {busy ? 'Refreshing…' : 'Refresh'}
+        </button>
+      </div>
+
+      {!ctx ? (
+        <p className="sect-empty">Unavailable — send a message first.</p>
+      ) : (
+        <>
+          <div className="ctx-bar">
+            {used.map((c, i) => (
+              <span
+                key={c.name}
+                style={{
+                  width: `${(c.tokens / Math.max(ctx.maxTokens, 1)) * 100}%`,
+                  background: swatch(i),
+                }}
+                title={`${c.name}: ${fmt(c.tokens)}`}
+              />
+            ))}
+          </div>
+          {/* Percentage derived from the same tokens the bar is drawn from. The
+              SDK's own `percentage` is rounded differently (it reported 2.0 for
+              a 2.39% window) and a readout that disagrees with the bar beside it
+              reads as a bug. */}
+          <p className="sect-sub">
+            {fmt(ctx.totalTokens)} / {fmt(ctx.maxTokens)} ·{' '}
+            {((ctx.totalTokens / Math.max(ctx.maxTokens, 1)) * 100).toFixed(1)}% · {ctx.model}
+          </p>
+          <ul className="kv">
+            {used.map((c, i) => (
+              <li key={c.name}>
+                <i className="ctx-dot" style={{ background: swatch(i) }} />
+                <span>{c.name}</span>
+                <b>{fmt(c.tokens)}</b>
+              </li>
+            ))}
+            {/* Loadable on demand, and deliberately NOT in the bar: the SDK
+                excludes these from totalTokens, so drawing them would overstate
+                what the window is actually holding. */}
+            {deferred.map((c) => (
+              <li key={c.name} className="kv-muted">
+                <i className="ctx-dot" style={{ background: 'rgb(var(--text-faint))' }} />
+                <span>{c.name}</span>
+                <b>{fmt(c.tokens)}</b>
+              </li>
+            ))}
+          </ul>
+          {ctx.memoryFiles.length > 0 && (
+            <ul className="kv">
+              {ctx.memoryFiles.map((f) => (
+                <li key={f.path} title={f.path}>
+                  <span className="kv-path">{f.path}</span>
+                  <b>{fmt(f.tokens)}</b>
+                </li>
+              ))}
+            </ul>
+          )}
+        </>
+      )}
+
+      <div className="sect-head">
+        <span>Account &amp; usage</span>
+      </div>
+      {!data?.account && !data?.usage ? (
+        <p className="sect-empty">Unavailable.</p>
+      ) : (
+        <ul className="kv">
+          {data.account?.email && (
+            <li>
+              <span>Account</span>
+              <b>{data.account.email}</b>
+            </li>
+          )}
+          {data.account?.organization && (
+            <li>
+              <span>Org</span>
+              <b>{data.account.organization}</b>
+            </li>
+          )}
+          {(data.usage?.subscriptionType ?? data.account?.subscriptionType) && (
+            <li>
+              <span>Plan</span>
+              <b>{data.usage?.subscriptionType ?? data.account?.subscriptionType}</b>
+            </li>
+          )}
+          {data.usage && (
+            <li>
+              <span>Session</span>
+              <b>
+                ${data.usage.costUsd.toFixed(4)} · +{data.usage.linesAdded}/−
+                {data.usage.linesRemoved}
+              </b>
+            </li>
+          )}
+          {data.usage && !data.usage.rateLimitsAvailable && (
+            <li>
+              <span>Limits</span>
+              <b>n/a for this auth</b>
+            </li>
+          )}
+        </ul>
+      )}
+
+      {data?.usage?.windows.map((w) => (
+        <div key={w.label} className="meter">
+          <span className="meter-label">{w.label}</span>
+          <span className="meter-track">
+            <i style={{ width: `${Math.min(w.utilization ?? 0, 100)}%` }} />
+          </span>
+          <span className="meter-val">
+            {w.utilization === null ? '—' : `${Math.round(w.utilization)}%`}
+          </span>
+        </div>
+      ))}
+
+      <div className="sect-head">
+        <span>MCP servers</span>
+      </div>
+      {!data?.mcp.length ? (
+        <p className="sect-empty">None configured.</p>
+      ) : (
+        <ul className="kv">
+          {data.mcp.map((s) => (
+            <li key={s.name} title={s.error}>
+              <i className="mcp-dot" data-status={s.status} />
+              <span>{s.name}</span>
+              <b>{s.status === 'connected' ? `${s.toolCount} tools` : s.status}</b>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <div className="sect-head">
+        <span>Agents &amp; skills</span>
+        <button
+          className="code-btn"
+          onClick={() => void window.foreman.reloadSkills(session.id).then(setSkills)}
+        >
+          Reload skills
+        </button>
+      </div>
+      {!data?.agents.length ? (
+        <p className="sect-empty">None available.</p>
+      ) : (
+        <ul className="kv">
+          {data.agents.map((a) => (
+            <li key={a.name} title={a.description}>
+              <span>{a.name}</span>
+              <b>{a.model ?? 'inherits'}</b>
+            </li>
+          ))}
+        </ul>
+      )}
+      {skills && (
+        <ul className="kv">
+          {skills.length === 0 && <li><span>No skills found</span></li>}
+          {skills.map((s) => (
+            <li key={s.name} title={s.description}>
+              <span className="kv-path">{s.name}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}

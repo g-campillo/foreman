@@ -3,15 +3,23 @@ import { basename, dirname, join, sep } from 'node:path'
 import { query, type Query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   IPC,
+  type AccountInfo,
+  type AgentInfo,
   type ChatItem,
+  type ContextUsage,
+  type McpServerInfo,
   type ModelInfo,
   type PermissionMode,
+  type RateWindow,
   type SessionMeta,
   type SessionStatus,
+  type SkillInfo,
+  type UsageInfo,
 } from '../../shared/types'
 import { notify, send } from '../bridge'
 import { createInputQueue, type InputQueue } from './queue'
 import { makeCanUseTool, cancelPending } from './permissions'
+import { makeOnElicitation, cancelPendingElicitations } from './elicitation'
 import { makeSnapshotHook, makeBashDiffHook, beginSession, clearSnapshots } from './snapshots'
 import {
   FALLBACK_MODEL,
@@ -111,6 +119,9 @@ export class Session {
           this.pendingApprovals = n
           this.setStatus(n > 0 ? 'awaiting-approval' : 'running')
         }),
+        // Without this the SDK auto-declines every MCP elicitation, which
+        // silently kills OAuth for any server that needs it.
+        onElicitation: makeOnElicitation(this.meta.id),
         hooks: {
           PreToolUse: makeSnapshotHook(this.meta.id, init.cwd),
           PostToolUse: makeBashDiffHook(this.meta.id),
@@ -374,10 +385,114 @@ export class Session {
     }))
   }
 
+  // ------------------------------------------------------- read-only panels
+  //
+  // All of these are best-effort: a control call that fails must never take the
+  // session down, so every one degrades to null/[] and the panel says so.
+
+  async contextUsage(): Promise<ContextUsage | null> {
+    await this.ready
+    const u = await this.q?.getContextUsage().catch(() => null)
+    if (!u) return null
+    return {
+      categories: u.categories.map((c) => ({
+        name: c.name,
+        tokens: c.tokens,
+        isDeferred: c.isDeferred,
+      })),
+      totalTokens: u.totalTokens,
+      maxTokens: u.maxTokens,
+      percentage: u.percentage,
+      model: u.model,
+      memoryFiles: u.memoryFiles.map((f) => ({ path: f.path, tokens: f.tokens })),
+      mcpTools: u.mcpTools.map((t) => ({
+        name: t.name,
+        serverName: t.serverName,
+        tokens: t.tokens,
+      })),
+    }
+  }
+
+  async account(): Promise<AccountInfo | null> {
+    await this.ready
+    const a = await this.q?.accountInfo().catch(() => null)
+    return a
+      ? {
+          email: a.email,
+          organization: a.organization,
+          subscriptionType: a.subscriptionType,
+          apiProvider: a.apiProvider,
+        }
+      : null
+  }
+
+  /**
+   * The method name is a promise that it will change, so this is wrapped
+   * tighter than the rest: any throw, and any shape that isn't what we expect,
+   * degrades to null rather than breaking the panel.
+   */
+  async usage(): Promise<UsageInfo | null> {
+    await this.ready
+    try {
+      const u = await this.q?.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()
+      if (!u) return null
+
+      const rl = u.rate_limits
+      const windows: RateWindow[] = []
+      const push = (label: string, w?: { utilization: number | null; resets_at: string | null } | null): void => {
+        if (w) windows.push({ label, utilization: w.utilization, resetsAt: w.resets_at })
+      }
+      push('5-hour', rl?.five_hour)
+      push('7-day', rl?.seven_day)
+      push('7-day Opus', rl?.seven_day_opus)
+      push('7-day Sonnet', rl?.seven_day_sonnet)
+      for (const m of rl?.model_scoped ?? []) {
+        windows.push({ label: m.display_name, utilization: m.utilization, resetsAt: m.resets_at })
+      }
+
+      return {
+        costUsd: u.session?.total_cost_usd ?? 0,
+        linesAdded: u.session?.total_lines_added ?? 0,
+        linesRemoved: u.session?.total_lines_removed ?? 0,
+        subscriptionType: u.subscription_type ?? null,
+        rateLimitsAvailable: Boolean(u.rate_limits_available),
+        windows,
+      }
+    } catch {
+      return null
+    }
+  }
+
+  async agents(): Promise<AgentInfo[]> {
+    await this.ready
+    const list = await this.q?.supportedAgents().catch(() => [])
+    return (list ?? []).map((a) => ({ name: a.name, description: a.description, model: a.model }))
+  }
+
+  async mcpStatus(): Promise<McpServerInfo[]> {
+    await this.ready
+    const list = await this.q?.mcpServerStatus().catch(() => [])
+    return (list ?? []).map((s) => ({
+      name: s.name,
+      status: s.status,
+      error: s.error,
+      toolCount: s.tools?.length ?? 0,
+      scope: s.scope,
+    }))
+  }
+
+  /** There is no read-only skills listing in the SDK — reloading is how you get one. */
+  async reloadSkills(): Promise<SkillInfo[]> {
+    await this.ready
+    const res = await this.q?.reloadSkills().catch(() => null)
+    return (res?.skills ?? []).map((s) => ({ name: s.name, description: s.description }))
+  }
+
   close(): void {
     if (this.closed) return
     this.closed = true
     cancelPending(this.meta.id)
+    cancelPendingElicitations(this.meta.id)
     clearSnapshots(this.meta.id)
     this.queue.end()
     try {

@@ -82,6 +82,91 @@ export interface ModelInfo {
   resolvedModel?: string
 }
 
+// ------------------------------------------------------- read-only panels
+
+export interface ContextUsage {
+  /**
+   * System prompt, tools, messages, MCP tools, memory files — the SDK's own split.
+   *
+   * The SDK's `color` field is deliberately NOT carried across: it holds CLI
+   * theme keys ('inactive', 'promptBorder'), not CSS colours, so it would render
+   * as nothing. The panel assigns its own theme-aware palette instead.
+   */
+  categories: { name: string; tokens: number; isDeferred?: boolean }[]
+  totalTokens: number
+  maxTokens: number
+  percentage: number
+  model: string
+  memoryFiles: { path: string; tokens: number }[]
+  mcpTools: { name: string; serverName: string; tokens: number }[]
+}
+
+export interface AccountInfo {
+  email?: string
+  organization?: string
+  subscriptionType?: string
+  /** Anthropic OAuth fields are only populated when this is 'firstParty'. */
+  apiProvider?: string
+}
+
+export interface RateWindow {
+  label: string
+  /** 0–100, or null when the server didn't report it. */
+  utilization: number | null
+  resetsAt?: string | null
+}
+
+export interface UsageInfo {
+  costUsd: number
+  linesAdded: number
+  linesRemoved: number
+  subscriptionType: string | null
+  /** False for API-key / Bedrock / Vertex sessions; `windows` is then empty. */
+  rateLimitsAvailable: boolean
+  windows: RateWindow[]
+}
+
+export interface McpServerInfo {
+  name: string
+  status: 'connected' | 'failed' | 'needs-auth' | 'pending' | 'disabled'
+  error?: string
+  toolCount: number
+  scope?: string
+}
+
+export interface AgentInfo {
+  name: string
+  description: string
+  model?: string
+}
+
+export interface SkillInfo {
+  name: string
+  description?: string
+}
+
+/**
+ * An MCP server asking the user for something mid-turn.
+ *
+ * `schema` crosses the bridge as plain JSON rather than being normalised in
+ * main, the same way PermissionRequest.input does — it's ordinary JSON Schema,
+ * not an SDK type, so the renderer can read it without importing the SDK.
+ */
+export interface ElicitationRequest {
+  requestId: string
+  sessionId: string
+  serverName: string
+  message: string
+  title?: string
+  description?: string
+  mode: 'form' | 'url'
+  /** Present for 'url' mode — an OAuth page, already opened in the browser. */
+  url?: string
+  schema?: Record<string, unknown>
+}
+
+export type ElicitationAction = 'accept' | 'decline' | 'cancel'
+
 export interface PastSession {
   sessionId: string
   summary: string
@@ -122,6 +207,14 @@ export const IPC = {
   sessionModels: 'session:models',
   sessionPastList: 'session:pastList',
 
+  // read-only panels
+  sessionContextUsage: 'session:contextUsage',
+  sessionAccount: 'session:account',
+  sessionUsage: 'session:usage',
+  sessionAgents: 'session:agents',
+  sessionMcpStatus: 'session:mcpStatus',
+  sessionReloadSkills: 'session:reloadSkills',
+
   // session → renderer events
   evtItem: 'session:item',
   evtDelta: 'session:delta',
@@ -132,6 +225,11 @@ export const IPC = {
   permRequest: 'permission:request',
   permResolved: 'permission:resolved',
   permRespond: 'permission:respond',
+
+  // MCP elicitation (OAuth prompts and structured input)
+  elicitRequest: 'elicit:request',
+  elicitResolved: 'elicit:resolved',
+  elicitRespond: 'elicit:respond',
 
   // diffs
   diffList: 'diff:list',

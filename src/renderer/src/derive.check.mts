@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem } from '../../shared/types'
-import { latestTodos, score, filterEntries } from './derive.mts'
+import { latestTodos, score, filterEntries, schemaFields, contextBreakdown } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -99,6 +99,134 @@ assert.equal(latestTodos([tool('TodoWrite', { todos: 'nope' })]), null)
 assert.equal(latestTodos([tool('TodoWrite', null)]), null)
 assert.equal(latestTodos([tool('TodoWrite', { todos: [] })]), null)
 assert.equal(latestTodos([tool('TaskCreate', { description: 'no subject' })]), null)
+
+// ---------------------------------------------------------- contextBreakdown
+
+// Verbatim from a live session: the categories sum to 92,328 while totalTokens
+// is 23,894, and the list ends with a 976k "Free space" filler.
+{
+  const cats = [
+    { name: 'System prompt', tokens: 95 },
+    { name: 'System tools', tokens: 13761 },
+    { name: 'MCP tools (deferred)', tokens: 52166, isDeferred: true },
+    { name: 'System tools (deferred)', tokens: 16268, isDeferred: true },
+    { name: 'Custom agents', tokens: 71 },
+    { name: 'Memory files', tokens: 1492 },
+    { name: 'Skills', tokens: 2538 },
+    { name: 'Messages', tokens: 5937 },
+    { name: 'Free space', tokens: 976106 },
+  ]
+  const { used, deferred } = contextBreakdown(cats, 23894, 1_000_000)
+
+  assert.equal(
+    used.reduce((n, c) => n + c.tokens, 0),
+    23894,
+    'the used categories must sum to exactly totalTokens, or the bar lies',
+  )
+  assert.equal(used.some((c) => c.name === 'Free space'), false, 'filler is excluded')
+  assert.deepEqual(deferred.map((c) => c.name), ['MCP tools (deferred)', 'System tools (deferred)'])
+}
+
+// Zero-token categories are dropped so they don't clutter the legend.
+assert.deepEqual(contextBreakdown([{ name: 'x', tokens: 0 }], 100, 200).used, [])
+
+// A NEARLY-FULL window is the case a "bigger than the total" rule gets wrong:
+// free space is now the smallest entry, and keeping it would read as 100% used.
+{
+  const { used } = contextBreakdown(
+    [
+      { name: 'Messages', tokens: 990 },
+      { name: 'Free space', tokens: 10 },
+    ],
+    990,
+    1000,
+  )
+  assert.deepEqual(used.map((c) => c.name), ['Messages'])
+  assert.equal(used.reduce((n, c) => n + c.tokens, 0), 990, 'bar still sums to the real total')
+}
+
+// A completely full window has no filler at all, so nothing may be dropped.
+{
+  const { used } = contextBreakdown([{ name: 'Messages', tokens: 1000 }], 1000, 1000)
+  assert.deepEqual(used.map((c) => c.name), ['Messages'])
+}
+
+// Only ONE category is dropped, so a real one that happens to tie the filler
+// size still renders.
+{
+  const { used } = contextBreakdown(
+    [
+      { name: 'Free space', tokens: 40 },
+      { name: 'Messages', tokens: 40 },
+      { name: 'Skills', tokens: 20 },
+    ],
+    60,
+    100,
+  )
+  assert.deepEqual(used.map((c) => c.name), ['Messages', 'Skills'])
+  assert.equal(used.reduce((n, c) => n + c.tokens, 0), 60)
+}
+
+// -------------------------------------------------------------- schemaFields
+
+// Anything that isn't a property bag yields no form, so the card can fall back
+// to a plain accept/decline rather than rendering an empty box.
+assert.deepEqual(schemaFields(undefined), [])
+assert.deepEqual(schemaFields({}), [])
+assert.deepEqual(schemaFields({ properties: 'nope' }), [])
+assert.deepEqual(schemaFields({ properties: { bad: null } }), [])
+
+// The primitive types the MCP spec allows, plus `required` and titles.
+{
+  const fields = schemaFields({
+    type: 'object',
+    required: ['name'],
+    properties: {
+      name: { type: 'string', title: 'Your name', description: 'Full name' },
+      age: { type: 'integer' },
+      score: { type: 'number' },
+      subscribe: { type: 'boolean', default: true },
+      plan: { type: 'string', enum: ['free', 'pro'] },
+    },
+  })
+  assert.deepEqual(
+    fields.map((f) => [f.name, f.type, f.required]),
+    [
+      ['name', 'string', true],
+      ['age', 'number', false],
+      ['score', 'number', false],
+      ['subscribe', 'boolean', false],
+      ['plan', 'enum', false],
+    ],
+  )
+  assert.equal(fields[0].label, 'Your name', 'title becomes the label')
+  assert.equal(fields[0].description, 'Full name')
+  assert.equal(fields[1].label, 'age', 'no title falls back to the property name')
+  assert.equal(fields[3].default, true)
+  assert.deepEqual(fields[4].options, ['free', 'pro'])
+}
+
+// An enum is declared `type: 'string'` in the spec — it must still render as a
+// dropdown, not a free-text box.
+assert.equal(schemaFields({ properties: { x: { type: 'string', enum: ['a'] } } })[0].type, 'enum')
+
+// Field order follows the schema, which is the order the server intended.
+assert.deepEqual(
+  schemaFields({ properties: { z: { type: 'string' }, a: { type: 'string' } } }).map((f) => f.name),
+  ['z', 'a'],
+)
+
+// Out-of-spec junk must not produce a half-rendered control.
+{
+  const f = schemaFields({
+    required: 'not-an-array',
+    properties: { nested: { type: 'object' }, weird: { type: 'array' } },
+  })
+  // Both degrade to text inputs rather than being dropped — the server still
+  // wants a value, and a text box is the honest generic control.
+  assert.deepEqual(f.map((x) => x.type), ['string', 'string'])
+  assert.equal(f.every((x) => x.required === false), true, 'bad `required` is ignored, not thrown on')
+}
 
 // --------------------------------------------------------------------- score
 

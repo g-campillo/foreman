@@ -1119,3 +1119,227 @@ select {
   color: rgb(var(--text-faint));
   font-size: 12px;
 }
+
+/* ────────────────────────────────────────────────────── session panel */
+
+.panel-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 14px 16px 22px;
+}
+
+.sect-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 18px 0 8px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgb(var(--text-faint));
+}
+.sect-head:first-child {
+  margin-top: 0;
+}
+.sect-head > span:first-child {
+  flex: 1;
+}
+.sect-empty {
+  font-size: 12px;
+  color: rgb(var(--text-faint));
+}
+.sect-sub {
+  font-size: 11px;
+  color: rgb(var(--text-dim));
+  font-variant-numeric: tabular-nums;
+  margin-top: 6px;
+}
+
+/* Stacked segments, so the whole bar reads as one context window rather than
+   as separate bars per category. */
+.ctx-bar {
+  display: flex;
+  height: 9px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: rgb(var(--surface-3) / 0.7);
+}
+.ctx-bar > span {
+  min-width: 1px;
+}
+.ctx-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex: 0 0 auto;
+}
+
+.kv {
+  list-style: none;
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  font-size: 12px;
+}
+.kv li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: rgb(var(--text-dim));
+}
+.kv li > span {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kv li > b {
+  font-weight: 550;
+  color: rgb(var(--text));
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+/* No `direction: rtl` truncation trick here: it relocates a path's leading
+   slash to the end, rendering /Users/x/CLAUDE.md as Users/x/CLAUDE.md/.
+   Plain end-truncation plus a title tooltip is correct and needs no explaining. */
+.kv-path {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.meter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: rgb(var(--text-dim));
+}
+.meter-label {
+  width: 92px;
+  flex-shrink: 0;
+}
+.meter-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 99px;
+  background: rgb(var(--surface-3) / 0.7);
+  overflow: hidden;
+}
+.meter-track > i {
+  display: block;
+  height: 100%;
+  background: rgb(var(--accent));
+}
+.meter-val {
+  width: 34px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  flex-shrink: 0;
+}
+
+.mcp-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 99px;
+  flex: 0 0 auto;
+  background: rgb(var(--text-faint));
+}
+.mcp-dot[data-status='connected'] {
+  background: rgb(var(--ok));
+}
+.mcp-dot[data-status='failed'] {
+  background: rgb(var(--danger));
+}
+.mcp-dot[data-status='needs-auth'] {
+  background: rgb(var(--warn));
+}
+.mcp-dot[data-status='pending'] {
+  background: rgb(var(--accent));
+}
+
+/* ──────────────────────────────────────────────────── elicitation card */
+
+.elicit {
+  border: 1px solid rgb(var(--warn) / 0.45);
+  background: rgb(var(--warn) / 0.07);
+  border-radius: var(--r-md);
+  padding: 11px 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+.elicit-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.elicit-server {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 600;
+  flex: 1;
+}
+.elicit-badge {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgb(var(--text-faint));
+}
+.elicit-badge[data-wait] {
+  color: rgb(var(--warn));
+}
+.elicit-msg {
+  font-size: 13px;
+}
+.elicit-sub {
+  font-size: 11.5px;
+  color: rgb(var(--text-dim));
+}
+.elicit-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 11.5px;
+  color: rgb(var(--text-dim));
+}
+.elicit-field em {
+  color: rgb(var(--danger));
+  font-style: normal;
+}
+.elicit-field input[type='text'],
+.elicit-field input[type='number'] {
+  background: rgb(var(--surface-3) / 0.7);
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--r-sm);
+  padding: 5px 8px;
+  outline: none;
+}
+.elicit-field input:focus {
+  border-color: rgb(var(--accent));
+}
+.elicit-field input[type='checkbox'] {
+  align-self: flex-start;
+  accent-color: rgb(var(--accent));
+}
+.elicit-field small {
+  color: rgb(var(--text-faint));
+  font-size: 10.5px;
+}
+.elicit-actions {
+  display: flex;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
+.kv li.kv-muted {
+  color: rgb(var(--text-faint));
+}
+.kv li.kv-muted > b {
+  color: rgb(var(--text-faint));
+  font-weight: 400;
+}

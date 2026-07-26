@@ -79,6 +79,27 @@ export function registerSessionIpc(): void {
     get(sessionId)?.models() ?? [],
   )
 
+  // Read-only panels. Each returns a neutral empty value when the session is
+  // gone, so a panel opened mid-teardown renders "unavailable" rather than throwing.
+  ipcMain.handle(IPC.sessionContextUsage, (_e, { sessionId }: { sessionId: string }) =>
+    get(sessionId)?.contextUsage() ?? null,
+  )
+  ipcMain.handle(IPC.sessionAccount, (_e, { sessionId }: { sessionId: string }) =>
+    get(sessionId)?.account() ?? null,
+  )
+  ipcMain.handle(IPC.sessionUsage, (_e, { sessionId }: { sessionId: string }) =>
+    get(sessionId)?.usage() ?? null,
+  )
+  ipcMain.handle(IPC.sessionAgents, (_e, { sessionId }: { sessionId: string }) =>
+    get(sessionId)?.agents() ?? [],
+  )
+  ipcMain.handle(IPC.sessionMcpStatus, (_e, { sessionId }: { sessionId: string }) =>
+    get(sessionId)?.mcpStatus() ?? [],
+  )
+  ipcMain.handle(IPC.sessionReloadSkills, (_e, { sessionId }: { sessionId: string }) =>
+    get(sessionId)?.reloadSkills() ?? [],
+  )
+
   ipcMain.handle(IPC.sessionPastList, async (_e, { dir }: { dir?: string }): Promise<PastSession[]> => {
     try {
       const list = await listSessions({ dir, limit: 40 })

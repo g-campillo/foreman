@@ -29,7 +29,7 @@ seam boundary, not duplication — the halves land in different batches on purpo
 |---|---|---|---|---|
 | 1 | ✅ One sitting | 15, 9, 13, 5a, 21 | S1 + S6 | ½ day |
 | 2 | ✅ Looks finished | 16, 20, 22 | S6 | 1–2 d |
-| 3 | Read-only panels | 2, 14, 11, 10a | S2 | 1–2 d |
+| 3 | ✅ Read-only panels (11 partial) | 2, 14, 11, 10a | S2 | 1–2 d |
 | 4 | Composer | 1, 18, 19, 17 | S4 | 2–3 d |
 | 5 | History | 3, 23, 4 | S5 | 2–3 d |
 | 6 | Time travel + actions | 5b, 7, 12, 8, 10b | S2 + S3 | 2 d |
@@ -115,25 +115,30 @@ pattern once for the context meter; the other three are then near-copies.
 `src/main/agent/manager.ts`, `src/preload/index.ts`, `src/renderer/src/store.ts`, new
 components
 
-- [ ] **2. Context-window meter.** `q.getContextUsage()` returns a *per-category* breakdown
+- [x] **2. Context-window meter.** `q.getContextUsage()` returns a *per-category* breakdown
   — system prompt, tools, messages, MCP tools, memory files — not just a total. Gemini CLI
   shows a bare percentage; nobody shows the breakdown. Cheap differentiator, and it's the
   one that makes long sessions legible.
-- [ ] **14. Usage + account chip.** `q.accountInfo()` gives email, org and subscription
+- [x] **14. Usage + account chip.** `q.accountInfo()` gives email, org and subscription
   type. `q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET()` gives session
   cost/token totals plus plan rate-limit windows (5-hour, 7-day, per-model).
   **Caveat:** that method name is a promise that it will change. Wrap it in try/catch and
   don't build UI that breaks when it disappears. `rate_limits_available` is false for API
   key / Bedrock / Vertex sessions.
-- [ ] **11. Skills & agent personas.** `q.supportedAgents()` → `AgentInfo[]`, plus the
-  `skills: 'all' | string[]` option and `q.reloadSkills()`. Then the `agents: {...}` +
-  `agent: 'reviewer'` options let the *main thread* run as a persona — a "Review mode" /
-  "Plan mode" preset picker in the rail.
-- [ ] **10a. MCP status panel.** `q.mcpServerStatus()` → connected / failed / needs-auth /
+- [~] **11. Skills & agent personas — PARTIAL.** `q.supportedAgents()` → `AgentInfo[]`, plus the
+  `skills: 'all' | string[]` option and `q.reloadSkills()`. Listing + `reloadSkills()` are done. The persona picker is NOT:
+  `agent` / `agents` are **constructor-only** (there is no `setAgent` on `Query`), so
+  switching persona means recreating the session and losing its context. It belongs with a
+  create-session flow, not a rail toggle. The `skills` option is likewise constructor-only.
+- [x] **10a. MCP status panel.** `q.mcpServerStatus()` → connected / failed / needs-auth /
   pending. Claude Desktop's connectors UI. Mutators are batch 6.
-- [ ] **10c. `onElicitation` — this one is a bug fix, not a feature.** You don't pass the
-  callback, and the SDK auto-declines any elicitation that no hook handles. Every MCP
-  server that needs OAuth is silently failing right now. Grouped here because it's the same
+- [x] **10c. `onElicitation` — this one is a bug fix, not a feature.** Confirmed with a probe
+  MCP server: without the callback a form elicitation returns `{"action":"decline"}` to the
+  server and no prompt is ever shown. Now round-trips real values.
+  **Correction to the OAuth claim:** URL-mode elicitation never reaches a host callback —
+  the CLI advertises `elicitation: {}` to MCP servers, so a server's own capability check
+  (`if (!clientCapabilities?.elicitation?.url) throw`) rejects it first. Not fixable here;
+  MCP OAuth goes through the `needs-auth` status instead. Grouped here because it's the same
   subsystem; do it first in the batch.
 
 **Also cheap while you're in this seam:** `q.supportedCommands()` exists too, but its UI

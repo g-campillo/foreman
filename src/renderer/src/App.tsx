@@ -7,9 +7,10 @@ import DiffPanel from './components/DiffPanel'
 import TerminalPane from './components/TerminalPane'
 import Appearance from './components/Appearance'
 import TodoStrip from './components/TodoStrip'
+import SessionPanel from './components/SessionPanel'
 import CommandPalette, { type PaletteActions } from './components/CommandPalette'
 
-type Tab = 'diff' | 'terminal'
+type Tab = 'diff' | 'terminal' | 'session'
 
 export default function App(): React.JSX.Element {
   const session = useStore(activeSession)
@@ -92,6 +93,13 @@ export default function App(): React.JSX.Element {
             >
               Terminal
             </button>
+            <button
+              className="tab"
+              data-active={tab === 'session'}
+              onClick={() => setTab('session')}
+            >
+              Session
+            </button>
           </div>
         </header>
 
@@ -104,6 +112,13 @@ export default function App(): React.JSX.Element {
         <div className="pane pane-body" style={{ display: tab === 'terminal' ? 'flex' : 'none' }}>
           {session ? (
             <TerminalPane session={session} visible={tab === 'terminal'} />
+          ) : (
+            <div className="empty">No session</div>
+          )}
+        </div>
+        <div className="pane pane-body" style={{ display: tab === 'session' ? 'flex' : 'none' }}>
+          {session ? (
+            <SessionPanel session={session} visible={tab === 'session'} />
           ) : (
             <div className="empty">No session</div>
           )}

@@ -6,6 +6,7 @@ import { registerSessionIpc, disposeAllSessions } from './agent/manager'
 import { registerPtyIpc, disposeAllPtys } from './pty'
 import { registerDiffIpc } from './agent/snapshots'
 import { registerPermissionIpc } from './agent/permissions'
+import { registerElicitationIpc } from './agent/elicitation'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -115,6 +116,7 @@ app.whenReady().then(() => {
   })
   registerSessionIpc()
   registerPermissionIpc()
+  registerElicitationIpc()
   registerDiffIpc()
   registerPtyIpc()
 

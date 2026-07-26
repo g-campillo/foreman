@@ -13,7 +13,7 @@ interface Entry {
 }
 
 export interface PaletteActions {
-  showTab(tab: 'diff' | 'terminal'): void
+  showTab(tab: 'diff' | 'terminal' | 'session'): void
   showAppearance(): void
 }
 
@@ -58,6 +58,7 @@ export default function CommandPalette({
       { id: 'appearance', label: 'Appearance', group: 'View', run: actions.showAppearance },
       { id: 'diff', label: 'Show diff', group: 'View', run: () => actions.showTab('diff') },
       { id: 'term', label: 'Show terminal', group: 'View', run: () => actions.showTab('terminal') },
+      { id: 'sess', label: 'Show session info', group: 'View', run: () => actions.showTab('session') },
     )
 
     if (activeId) {

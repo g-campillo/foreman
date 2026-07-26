@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type {
   Appearance,
   ChatItem,
+  ElicitationRequest,
   ModelInfo,
   PermissionRequest,
   SessionMeta,
@@ -12,6 +13,7 @@ interface State {
   activeId: string | null
   items: Record<string, ChatItem[]>
   approvals: PermissionRequest[]
+  elicitations: ElicitationRequest[]
   diffCounts: Record<string, number>
   models: ModelInfo[]
   appearance: Appearance
@@ -115,6 +117,7 @@ export const useStore = create<State>((set, get) => ({
   activeId: null,
   items: {},
   approvals: [],
+  elicitations: [],
   diffCounts: {},
   models: [],
   appearance: INITIAL_APPEARANCE,
@@ -222,6 +225,18 @@ export const useStore = create<State>((set, get) => ({
 
     window.foreman.onPermissionResolved(({ requestId }: { requestId: string }) => {
       set((s) => ({ approvals: s.approvals.filter((a) => a.requestId !== requestId) }))
+    })
+
+    window.foreman.onElicitationRequest((req: ElicitationRequest) => {
+      set((s) =>
+        s.elicitations.some((e) => e.requestId === req.requestId)
+          ? s
+          : { elicitations: [...s.elicitations, req] },
+      )
+    })
+
+    window.foreman.onElicitationResolved(({ requestId }: { requestId: string }) => {
+      set((s) => ({ elicitations: s.elicitations.filter((e) => e.requestId !== requestId) }))
     })
 
     window.foreman.onDiffChanged(({ sessionId, count }: { sessionId: string; count: number }) => {
