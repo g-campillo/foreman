@@ -1,0 +1,21 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "lib": ["ES2023"],
+    "types": ["node"],
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    // porcelain.mts is imported by its real extension so that `npm run
+    // check:porcelain` can run it under bare node, which resolves .mts as ESM
+    // while the root package.json's "type": "commonjs" would make a .ts CJS.
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "composite": true
+  },
+  "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*", "electron.vite.config.ts"]
+}

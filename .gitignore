@@ -1,0 +1,14 @@
+node_modules/
+out/
+
+# electron-builder output: ~731M, and it contains an unpacked copy of the SDK's
+# 256MB `claude` binary. Never let this near a commit.
+release/
+
+*.tsbuildinfo
+.DS_Store
+
+# Notarization credentials (APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD, APPLE_TEAM_ID)
+# belong in the environment, never in the repo.
+.env
+.env.*

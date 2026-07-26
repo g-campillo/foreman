@@ -1,0 +1,39 @@
+<!--
+  Source for build/icon.png. Regenerate with `npm run icon`.
+
+  (sips claims success on this file and writes nothing; it only handles trivial
+  SVGs. qlmanage rasterizes it properly, which is why the script uses that.)
+
+  Laid out on the macOS icon grid: 1024 canvas, 824 body inset 100 on every
+  side, 185 corner radius. macOS does not mask app icons, so the rounded
+  rectangle has to be drawn here rather than assumed.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="body" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#3aa0ff"/>
+      <stop offset="1" stop-color="#0a5fd0"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="0.55" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+  </defs>
+
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#body)"/>
+  <rect x="100" y="100" width="824" height="824" rx="185" fill="url(#sheen)"/>
+
+  <!-- Hard hat: dome, then brim over it so the seam never shows. -->
+  <g fill="#ffffff">
+    <path d="M 332 566 A 180 180 0 0 1 692 566 Z"/>
+    <rect x="212" y="556" width="600" height="76" rx="38"/>
+  </g>
+
+  <!-- Ribs, punched back out in the body colour. Flat white reads as a blob at
+       16px; these are what keep the shape legible in the Dock. -->
+  <g stroke="#1a72e0" stroke-width="26" stroke-linecap="round" fill="none">
+    <path d="M 512 390 L 512 556"/>
+    <path d="M 410 424 L 410 556"/>
+    <path d="M 614 424 L 614 556"/>
+  </g>
+</svg>
