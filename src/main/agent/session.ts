@@ -12,8 +12,10 @@ import {
   type PermissionMode,
   type RateWindow,
   type SessionMeta,
+  type SendContent,
   type SessionStatus,
   type SkillInfo,
+  type SlashCommandInfo,
   type UsageInfo,
 } from '../../shared/types'
 import { notify, send } from '../bridge'
@@ -25,6 +27,7 @@ import {
   FALLBACK_MODEL,
   MAX_BUDGET_USD,
   MAX_TURNS,
+  normaliseSend,
   notifyBody,
   resultText,
 } from './policy.mts'
@@ -56,7 +59,12 @@ export interface SessionInit {
 
 export class Session {
   readonly meta: SessionMeta
-  private readonly queue: InputQueue = createInputQueue()
+  // A message leaving the queue is the moment it stops being cancellable, and
+  // the moment the session is genuinely working on it.
+  private readonly queue: InputQueue = createInputQueue((itemId) => {
+    send(IPC.evtQueue, { sessionId: this.meta.id, itemId, state: 'started' })
+    this.setStatus('running')
+  })
   private readonly abort = new AbortController()
   private q: Query | null = null
   private closed = false
@@ -162,6 +170,12 @@ export class Session {
     if (this.meta.status === status) return
     const was = this.meta.status
     this.patchMeta({ status })
+
+    // Hold queued messages while a turn is in flight, and release one when it
+    // ends. Anything other than an in-flight turn (including 'starting' and
+    // 'error') leaves the gate open, so a session that never reaches idle can
+    // still send rather than stalling messages here forever.
+    this.queue.setGate(status !== 'running' && status !== 'awaiting-approval')
 
     const body = notifyBody(was, status, this.pendingApprovals)
     if (body) notify(this.meta.title, body)
@@ -347,10 +361,59 @@ export class Session {
 
   // ---------------------------------------------------------------- controls
 
-  send(text: string): void {
-    this.emit({ id: randomUUID(), kind: 'user', text })
-    this.setStatus('running')
-    this.queue.push(text)
+  /**
+   * Accepts block content, not just a string, so attachments ride the same path
+   * as text. A bare string stays a bare string on the wire — the block form only
+   * appears when there is actually something attached.
+   *
+   * The item is emitted immediately and marked `queued`, so a message typed
+   * during a run shows up straight away and stays cancellable until the SDK
+   * actually pulls it off the queue.
+   */
+  send(raw: SendContent): void {
+    const content = normaliseSend(raw)
+    if (content === null) return
+    const id = randomUUID()
+    const text =
+      typeof content === 'string'
+        ? content
+        : content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('\n')
+    const images =
+      typeof content === 'string'
+        ? []
+        : content.flatMap((b) =>
+            b.type === 'image' ? [`data:${b.source.media_type};base64,${b.source.data}`] : [],
+          )
+
+    const busy = this.meta.status === 'running' || this.meta.status === 'awaiting-approval'
+    this.emit({
+      id,
+      kind: 'user',
+      text,
+      ...(images.length ? { images } : {}),
+      ...(busy ? { queued: true } : {}),
+    })
+    // No setStatus here: pushing is enough. If the gate is open the generator
+    // picks it up immediately and onDequeue flips the status, which is the same
+    // signal for a first message and a released one.
+    this.queue.push(content, id)
+  }
+
+  /** Withdraw a message that hasn't reached the SDK yet. */
+  cancelQueued(itemId: string): boolean {
+    const dropped = this.queue.cancel(itemId)
+    if (dropped) send(IPC.evtQueue, { sessionId: this.meta.id, itemId, state: 'dropped' })
+    return dropped
+  }
+
+  async commands(): Promise<SlashCommandInfo[]> {
+    await this.ready
+    const list = await this.q?.supportedCommands().catch(() => [])
+    return (list ?? []).map((c) => ({
+      name: c.name,
+      description: c.description,
+      argumentHint: c.argumentHint,
+    }))
   }
 
   async interrupt(): Promise<void> {

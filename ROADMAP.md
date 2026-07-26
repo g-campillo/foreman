@@ -30,7 +30,7 @@ seam boundary, not duplication — the halves land in different batches on purpo
 | 1 | ✅ One sitting | 15, 9, 13, 5a, 21 | S1 + S6 | ½ day |
 | 2 | ✅ Looks finished | 16, 20, 22 | S6 | 1–2 d |
 | 3 | ✅ Read-only panels (11 partial) | 2, 14, 11, 10a | S2 | 1–2 d |
-| 4 | Composer | 1, 18, 19, 17 | S4 | 2–3 d |
+| 4 | ✅ Composer | 1, 18, 19, 17 | S4 | 2–3 d |
 | 5 | History | 3, 23, 4 | S5 | 2–3 d |
 | 6 | Time travel + actions | 5b, 7, 12, 8, 10b | S2 + S3 | 2 d |
 | 7 | Subagents | 6 | S3 | 2 d |
@@ -153,21 +153,24 @@ One autocomplete popover and one change to the queue's input type unlock all fou
 **Files:** `src/renderer/src/components/Composer.tsx`, `src/main/agent/queue.ts`,
 `src/main/agent/session.ts`, `src/shared/types.ts`
 
-- [ ] **The queue takes strings today.** `Session.send(text: string)` → `queue.push(text)`.
-  `SDKUserMessage.message` is a `MessageParam`, so image and multi-block content is already
-  legal on the wire. Widen this first — it's the breaking change the rest of the batch
-  sits on.
-- [ ] **1. Slash commands.** `q.supportedCommands()` → `SlashCommand[]`. Typing `/` opens
+- [x] **The queue already took blocks.** `queue.push(content: Content)` was already
+  `string | ContentBlockParam[]`; only `Session.send` and the IPC narrowed it to a string, so
+  the "breaking change" was two signatures, not a rewrite. **The real work was elsewhere:**
+  the SDK sits in `for await` on the queue permanently, so a pushed message is pulled within
+  microseconds — a mid-turn message was handed over and its "queued" marker cleared before
+  it could render. Queued messages only exist because the generator is now gated while a
+  turn is in flight.
+- [x] **1. Slash commands.** `q.supportedCommands()` → `SlashCommand[]`. Typing `/` opens
   the menu. **This looks like an SDK feature and is filed under S2, but its real cost is
   the popover — the same widget as `@`-mentions. Split them and you build it twice.**
-- [ ] **18. `@`-file mentions with fuzzy autocomplete.** Same popover, different trigger and
+- [x] **18. `@`-file mentions with fuzzy autocomplete.** Same popover, different trigger and
   data source. `q.readFile(path, {maxBytes, encoding})` gives a hover preview that respects
   the session's read-permission rules rather than bypassing them.
-- [ ] **19. Queue messages while the agent runs.** Type-ahead: the composer currently just
+- [x] **19. Queue messages while the agent runs.** Type-ahead: the composer currently just
   shows Stop. Your push-queue already supports it. `interrupt()` now resolves to a receipt
   carrying `still_queued` uuids of async user messages that will *still* run unless
   cancelled — surface and cancel those, or Stop will feel like it lied.
-- [ ] **17. Image / file attachments.** Paste a screenshot into the composer. Falls out of
+- [x] **17. Image / file attachments.** Paste a screenshot into the composer. Falls out of
   the `MessageParam` change above; Claude and Gemini both lean on this hard.
 
 ---

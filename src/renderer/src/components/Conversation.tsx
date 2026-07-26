@@ -42,7 +42,7 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
       }}
     >
       {items.map((item) => (
-        <Item key={item.id} item={item} />
+        <Item key={item.id} item={item} sessionId={sessionId} />
       ))}
       {approvals.map((a) => (
         <ApprovalCard key={a.requestId} req={a} />
@@ -67,10 +67,32 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
 
 const EMPTY: ChatItem[] = []
 
-function Item({ item }: { item: ChatItem }): React.JSX.Element | null {
+function Item({
+  item,
+  sessionId,
+}: {
+  item: ChatItem
+  sessionId: string
+}): React.JSX.Element | null {
   switch (item.kind) {
     case 'user':
-      return <div className="msg-user">{item.text}</div>
+      return (
+        <div className="msg-user" data-queued={item.queued ? '' : undefined}>
+          {item.images?.map((src, i) => (
+            <img key={i} className="msg-image" src={src} alt="attachment" />
+          ))}
+          {item.text}
+          {item.queued && (
+            <button
+              className="queued-cancel"
+              title="Cancel this queued message"
+              onClick={() => void window.foreman.cancelQueued(sessionId, item.id)}
+            >
+              queued ✕
+            </button>
+          )}
+        </div>
+      )
     case 'assistant':
       // User and thinking text stay literal on purpose: a prompt should read back
       // exactly as typed, and markdown headings inside the small italic thinking

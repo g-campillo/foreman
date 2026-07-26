@@ -226,6 +226,44 @@ export function schemaFields(schema: Record<string, unknown> | undefined): Elici
   })
 }
 
+// -------------------------------------------------------- composer triggers
+
+export interface Trigger {
+  kind: 'command' | 'file'
+  /** Text between the trigger character and the caret. */
+  query: string
+  /** Index of the trigger character, for splicing the completion back in. */
+  start: number
+}
+
+const SPACE = new Set([' ', '\t', '\n'])
+
+/**
+ * Finds an open completion trigger at the caret, or null.
+ *
+ * Two rules, both chosen to avoid firing on ordinary prose:
+ *  - `/` completes a slash command only at position 0. Anywhere else it is far
+ *    more likely to be a path (`src/foo`), so scanning continues past it — which
+ *    is also what lets `@src/foo` keep completing as a file.
+ *  - `@` completes a file only at a word boundary, so `email@example.com` is
+ *    left alone.
+ * Whitespace closes any trigger, since neither commands nor paths span it.
+ */
+export function triggerAt(text: string, caret: number): Trigger | null {
+  const before = text.slice(0, Math.max(0, Math.min(caret, text.length)))
+
+  for (let i = before.length - 1; i >= 0; i--) {
+    const ch = before[i]
+    if (SPACE.has(ch)) return null
+    if (ch === '@') {
+      const prev = i === 0 ? ' ' : before[i - 1]
+      return SPACE.has(prev) ? { kind: 'file', query: before.slice(i + 1), start: i } : null
+    }
+    if (ch === '/' && i === 0) return { kind: 'command', query: before.slice(1), start: 0 }
+  }
+  return null
+}
+
 // ----------------------------------------------------------------- palette
 
 export interface Matchable {

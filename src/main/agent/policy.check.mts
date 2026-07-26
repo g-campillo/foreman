@@ -7,7 +7,7 @@
  * blocked waiting for them.
  */
 import { strict as assert } from 'node:assert'
-import { MAX_BUDGET_USD, MAX_TURNS, cap, resultText, notifyBody } from './policy.mts'
+import { MAX_BUDGET_USD, MAX_TURNS, cap, resultText, notifyBody, normaliseSend } from './policy.mts'
 
 // ------------------------------------------------------------------------ cap
 
@@ -59,6 +59,48 @@ assert.equal(resultText({ interrupted: false, subtype: 'success', result: 'all d
 // leaking a raw subtype into the transcript.
 assert.equal(resultText({ interrupted: false, subtype: 'success' }), '')
 assert.equal(resultText({ interrupted: false, subtype: 'error_during_execution' }), '')
+
+// -------------------------------------------------------------- normaliseSend
+
+// A plain typed message stays a plain string — no block wrapping unless needed.
+assert.equal(normaliseSend('hello'), 'hello')
+assert.equal(normaliseSend('   '), null, 'whitespace-only is not a message')
+assert.equal(normaliseSend(''), null)
+assert.equal(normaliseSend(undefined), null)
+assert.equal(normaliseSend({ nope: 1 }), null)
+assert.equal(normaliseSend([]), null, 'an empty block list is not a message')
+
+const img = (mediaType: string): unknown => ({
+  type: 'image',
+  source: { type: 'base64', media_type: mediaType, data: 'AAAA' },
+})
+
+// The four media types the API accepts survive; everything else is dropped
+// here rather than failing upstream with an error pointing nowhere near the paste.
+for (const ok of ['image/png', 'image/jpeg', 'image/gif', 'image/webp']) {
+  assert.equal((normaliseSend([img(ok)]) as unknown[]).length, 1, `${ok} accepted`)
+}
+for (const bad of ['image/heic', 'image/svg+xml', 'image/bmp', 'text/plain', '']) {
+  assert.equal(normaliseSend([img(bad)]), null, `${bad} rejected`)
+}
+
+// A mixed message keeps order, and drops only the offending block.
+{
+  const out = normaliseSend([img('image/png'), img('image/heic'), { type: 'text', text: 'look' }])
+  assert.deepEqual(
+    (out as { type: string }[]).map((b) => b.type),
+    ['image', 'text'],
+  )
+}
+
+// Malformed blocks never reach the SDK.
+assert.equal(normaliseSend([null, { type: 'image' }, { type: 'image', source: {} }]), null)
+assert.equal(normaliseSend([{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: '' } }]), null,
+  'an empty payload is not an image')
+assert.equal(normaliseSend([{ type: 'text', text: '  ' }]), null, 'blank text block is dropped')
+
+// An image with no caption is still a message worth sending.
+assert.equal((normaliseSend([img('image/png')]) as unknown[]).length, 1)
 
 // ----------------------------------------------------------------- notifyBody
 

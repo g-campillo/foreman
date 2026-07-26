@@ -24,8 +24,38 @@ export interface SessionMeta {
   createdAt: number
 }
 
+/**
+ * What the composer can send.
+ *
+ * Mirrors the SDK's MessageParam content without importing it, so the renderer
+ * stays SDK-free. A bare string is still legal and is what a plain typed message
+ * sends — the block form only appears once there's an attachment.
+ */
+/** The only image types the API accepts. Anything else is rejected upstream. */
+export type ImageMediaType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+
+export type SendBlock =
+  | { type: 'text'; text: string }
+  | { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string } }
+
+export type SendContent = string | SendBlock[]
+
+export interface SlashCommandInfo {
+  name: string
+  description: string
+  argumentHint: string
+}
+
 export type ChatItem =
-  | { id: string; kind: 'user'; text: string }
+  | {
+      id: string
+      kind: 'user'
+      text: string
+      /** data: URLs for pasted attachments, so the transcript can show them. */
+      images?: string[]
+      /** Still sitting in our input queue, and therefore still cancellable. */
+      queued?: boolean
+    }
   | { id: string; kind: 'assistant'; text: string }
   | { id: string; kind: 'thinking'; text: string }
   | {
@@ -206,6 +236,11 @@ export const IPC = {
   sessionSetModel: 'session:setModel',
   sessionModels: 'session:models',
   sessionPastList: 'session:pastList',
+  sessionCancelQueued: 'session:cancelQueued',
+
+  // composer autocomplete
+  sessionCommands: 'session:commands',
+  sessionFiles: 'session:files',
 
   // read-only panels
   sessionContextUsage: 'session:contextUsage',
@@ -220,6 +255,8 @@ export const IPC = {
   evtDelta: 'session:delta',
   evtMeta: 'session:meta',
   evtRemoved: 'session:removed',
+  /** A queued user message left the queue: 'started' (now running) or 'dropped'. */
+  evtQueue: 'session:queue',
 
   // permissions
   permRequest: 'permission:request',

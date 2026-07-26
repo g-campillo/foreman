@@ -5,6 +5,7 @@ import type {
   ElicitationRequest,
   ModelInfo,
   PermissionRequest,
+  SendContent,
   SessionMeta,
 } from '../../shared/types'
 
@@ -25,7 +26,7 @@ interface State {
   newSession(): Promise<void>
   resume(sessionId: string, cwd: string, title: string): Promise<void>
   close(id: string): Promise<void>
-  send(text: string): Promise<void>
+  send(content: SendContent): Promise<void>
   setAppearance(patch: Partial<Appearance>): void
   bootstrap(): void
 }
@@ -161,10 +162,14 @@ export const useStore = create<State>((set, get) => ({
     })
   },
 
-  async send(text) {
+  async send(content) {
     const id = get().activeId
-    if (!id || !text.trim()) return
-    await window.foreman.sendMessage(id, text)
+    if (!id) return
+    // Blocks are only built when there's an attachment, and an attachment with
+    // no text is still worth sending.
+    if (typeof content === 'string' && !content.trim()) return
+    if (Array.isArray(content) && content.length === 0) return
+    await window.foreman.sendMessage(id, content)
   },
 
   setAppearance(patch) {
@@ -214,6 +219,28 @@ export const useStore = create<State>((set, get) => ({
     window.foreman.onRemoved(({ sessionId }: { sessionId: string }) => {
       set((s) => ({ sessions: s.sessions.filter((x) => x.id !== sessionId) }))
     })
+
+    window.foreman.onQueue(
+      ({
+        sessionId,
+        itemId,
+        state,
+      }: {
+        sessionId: string
+        itemId: string
+        state: 'started' | 'dropped'
+      }) => {
+        set((s) => {
+          const list = s.items[sessionId]
+          if (!list) return s
+          const next =
+            state === 'dropped'
+              ? list.filter((x) => x.id !== itemId)
+              : list.map((x) => (x.id === itemId && x.kind === 'user' ? { ...x, queued: false } : x))
+          return { items: { ...s.items, [sessionId]: next } }
+        })
+      },
+    )
 
     window.foreman.onPermissionRequest((req: PermissionRequest) => {
       set((s) =>

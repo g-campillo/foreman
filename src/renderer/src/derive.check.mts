@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem } from '../../shared/types'
-import { latestTodos, score, filterEntries, schemaFields, contextBreakdown } from './derive.mts'
+import { latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -227,6 +227,43 @@ assert.deepEqual(
   assert.deepEqual(f.map((x) => x.type), ['string', 'string'])
   assert.equal(f.every((x) => x.required === false), true, 'bad `required` is ignored, not thrown on')
 }
+
+// ----------------------------------------------------------------- triggerAt
+
+const at = (s: string) => triggerAt(s, s.length)
+
+// Slash commands: only at the very start of the message.
+assert.deepEqual(at('/rev'), { kind: 'command', query: 'rev', start: 0 })
+assert.deepEqual(at('/'), { kind: 'command', query: '', start: 0 })
+assert.equal(at('run /rev'), null, 'a slash mid-sentence is not a command')
+
+// A bare path must not open the command menu — this is the common false positive.
+assert.equal(at('src/foo.ts'), null)
+assert.equal(at('look at src/'), null)
+
+// @-mentions at a word boundary, including at the very start.
+assert.deepEqual(at('@src'), { kind: 'file', query: 'src', start: 0 })
+assert.deepEqual(at('read @src/app.ts'), { kind: 'file', query: 'src/app.ts', start: 5 })
+assert.deepEqual(at('read @'), { kind: 'file', query: '', start: 5 })
+
+// An email is the other common false positive.
+assert.equal(at('mail me at bob@example.com'), null)
+
+// Whitespace closes the trigger, so a finished mention stops completing.
+assert.equal(at('@src/app.ts and then'), null)
+assert.equal(at('@src '), null)
+assert.equal(at('/rev '), null)
+
+// A slash inside a mention must not steal the trigger from the @.
+assert.deepEqual(at('@a/b/c'), { kind: 'file', query: 'a/b/c', start: 0 })
+
+// The caret, not the end of the string, decides.
+assert.deepEqual(triggerAt('@src and more', 4), { kind: 'file', query: 'src', start: 0 })
+assert.equal(triggerAt('@src and more', 9), null, 'caret past the mention closes it')
+assert.equal(triggerAt('', 0), null)
+// A caret past the end is clamped rather than producing a wrong slice.
+assert.deepEqual(triggerAt('@abc', 99), triggerAt('@abc', 4), 'caret is clamped to the text')
+assert.deepEqual(triggerAt('@abc', -5), null, 'a negative caret yields nothing')
 
 // --------------------------------------------------------------------- score
 

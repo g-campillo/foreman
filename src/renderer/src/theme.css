@@ -1343,3 +1343,124 @@ select {
   color: rgb(var(--text-faint));
   font-weight: 400;
 }
+
+/* ─────────────────────────────────────────────── composer autocomplete */
+
+/* Anchor for the popover, which sits ABOVE the textarea — the composer is at
+   the bottom of the window, so a downward menu would open off-screen. */
+.composer-input {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+}
+
+.ac {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  max-height: 260px;
+  overflow-y: auto;
+  z-index: 30;
+  background: rgb(var(--surface) / 0.98);
+  border: 1px solid rgb(var(--border-strong));
+  border-radius: var(--r-md);
+  box-shadow: 0 16px 44px rgb(0 0 0 / 0.42);
+  padding: 4px;
+}
+.ac-row {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  width: 100%;
+  padding: 5px 9px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  font-size: 12.5px;
+  color: rgb(var(--text-dim));
+}
+.ac-row[data-sel] {
+  background: rgb(var(--accent) / 0.9);
+  color: rgb(var(--accent-fg));
+}
+.ac-label {
+  font-family: var(--mono);
+  font-size: 11.5px;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+}
+.ac-hint {
+  font-size: 11px;
+  color: rgb(var(--text-faint));
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.ac-row[data-sel] .ac-hint {
+  color: rgb(var(--accent-fg) / 0.75);
+}
+
+/* ───────────────────────────────────────────────────────── attachments */
+
+.attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 7px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px 3px 3px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgb(var(--border));
+  background: rgb(var(--surface-3) / 0.7);
+  font-size: 11px;
+  color: rgb(var(--text-dim));
+  max-width: 220px;
+}
+.chip img {
+  width: 22px;
+  height: 22px;
+  object-fit: cover;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+.chip button {
+  color: rgb(var(--text-faint));
+  font-size: 10px;
+}
+.chip button:hover {
+  color: rgb(var(--danger));
+}
+
+/* A queued message is dimmed to read as not-yet-sent, and carries its own
+   cancel affordance because it is still withdrawable. */
+.msg-user[data-queued] {
+  opacity: 0.62;
+  border: 1px dashed rgb(var(--accent-fg) / 0.5);
+}
+.queued-cancel {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgb(var(--accent-fg) / 0.85);
+}
+.queued-cancel:hover {
+  color: rgb(var(--accent-fg));
+}
+.msg-image {
+  display: block;
+  max-width: 100%;
+  border-radius: var(--r-sm);
+  margin-bottom: 6px;
+}

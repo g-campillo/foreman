@@ -14,8 +14,13 @@ const api = {
   closeSession: (sessionId: string) => ipcRenderer.invoke(IPC.sessionClose, { sessionId }),
   listSessions: () => ipcRenderer.invoke(IPC.sessionList),
   listPastSessions: (dir?: string) => ipcRenderer.invoke(IPC.sessionPastList, { dir }),
-  sendMessage: (sessionId: string, text: string) =>
-    ipcRenderer.invoke(IPC.sessionSend, { sessionId, text }),
+  sendMessage: (sessionId: string, content: unknown) =>
+    ipcRenderer.invoke(IPC.sessionSend, { sessionId, content }),
+  cancelQueued: (sessionId: string, itemId: string) =>
+    ipcRenderer.invoke(IPC.sessionCancelQueued, { sessionId, itemId }),
+  supportedCommands: (sessionId: string) =>
+    ipcRenderer.invoke(IPC.sessionCommands, { sessionId }),
+  projectFiles: (sessionId: string) => ipcRenderer.invoke(IPC.sessionFiles, { sessionId }),
   interrupt: (sessionId: string) => ipcRenderer.invoke(IPC.sessionInterrupt, { sessionId }),
   setPermissionMode: (sessionId: string, mode: string) =>
     ipcRenderer.invoke(IPC.sessionSetMode, { sessionId, mode }),
@@ -68,6 +73,7 @@ const api = {
   onDelta: (cb: (p: any) => void) => on(IPC.evtDelta, cb),
   onMeta: (cb: (p: any) => void) => on(IPC.evtMeta, cb),
   onRemoved: (cb: (p: any) => void) => on(IPC.evtRemoved, cb),
+  onQueue: (cb: (p: any) => void) => on(IPC.evtQueue, cb),
   onPermissionRequest: (cb: (p: any) => void) => on(IPC.permRequest, cb),
   onPermissionResolved: (cb: (p: any) => void) => on(IPC.permResolved, cb),
   onElicitationRequest: (cb: (p: any) => void) => on(IPC.elicitRequest, cb),
