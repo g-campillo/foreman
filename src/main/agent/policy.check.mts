@@ -15,7 +15,36 @@ import {
   resultText,
   notifyBody,
   normaliseSend,
+  within,
 } from './policy.mts'
+
+// --------------------------------------------------------------------- within
+
+assert.equal(within('/repo', '/repo/src/a.ts'), true, 'a file in the tree')
+assert.equal(within('/repo', '/repo'), true, 'the root itself')
+assert.equal(within('/repo', '/repo/'), true, 'the root with a trailing slash')
+assert.equal(within('/repo', '/repo/a/../b.ts'), true, 'normalised back inside')
+
+// The prefix trap: a plain startsWith would call both of these true, and pull a
+// sibling checkout's edits into this session's diff.
+assert.equal(within('/repo', '/repo-other/x.ts'), false, 'sibling sharing a prefix')
+assert.equal(within('/repo', '/repository/x.ts'), false, 'longer name sharing a prefix')
+
+assert.equal(within('/repo', '/etc/passwd'), false, 'unrelated absolute path')
+assert.equal(within('/repo/pkg', '/repo/other.ts'), false, 'above the given dir')
+assert.equal(within('/repo', '/repo/../escape.ts'), false, 'traversal out of the tree')
+
+// The case this was written for: plan mode writes every plan outside the
+// project, so these must never reach the diff panel.
+assert.equal(
+  within('/Users/x/code/foreman', '/Users/x/.claude/plans/witty-tiger.md'),
+  false,
+  'a plan file is not part of the working tree',
+)
+
+// A directory named '..' at the end is a traversal; one merely starting with
+// dots is an ordinary hidden file and stays in.
+assert.equal(within('/repo', '/repo/..config/a'), true, 'a dotted name is not a traversal')
 
 // ------------------------------------------------------------------------ cap
 

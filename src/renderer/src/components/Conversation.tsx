@@ -5,7 +5,8 @@ import ToolCard from './ToolCard'
 import ApprovalCard from './ApprovalCard'
 import ElicitationCard from './ElicitationCard'
 import QuestionCard from './QuestionCard'
-import { askQuestions } from '../derive.mts'
+import PlanCard from './PlanCard'
+import { askQuestions, planProposal } from '../derive.mts'
 import Markdown from './Markdown'
 
 export default function Conversation({ sessionId }: { sessionId: string }): React.JSX.Element {
@@ -63,6 +64,10 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
         <Item key={item.id} item={item} sessionId={sessionId} byParent={byParent} />
       ))}
       {approvals.map((a) => {
+        // ExitPlanMode's approval prompt IS the plan approval, so it gets the
+        // plan rendered rather than "Allow ExitPlanMode?" over raw JSON.
+        const plan = planProposal(a.toolName, a.input)
+        if (plan) return <PlanCard key={a.requestId} req={a} plan={plan} />
         // A malformed question set falls back to the plain allow/deny card
         // rather than rendering a card with nothing to click.
         const questions = askQuestions(a.toolName, a.input)

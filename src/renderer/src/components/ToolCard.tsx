@@ -1,6 +1,7 @@
 import { Children, useState } from 'react'
 import type { ChatItem } from '../../../shared/types'
-import { ANSWER_PREFIX, askQuestions } from '../derive.mts'
+import { ANSWER_PREFIX, askQuestions, planProposal, planTitle } from '../derive.mts'
+import Markdown from './Markdown'
 
 type Tool = Extract<ChatItem, { kind: 'tool' }>
 
@@ -25,6 +26,12 @@ export function summarise(name: string, input: unknown): string {
       return str('pattern') ?? ''
     case 'WebFetch':
       return str('url') ?? ''
+    case 'ExitPlanMode': {
+      // The whole plan is in here; the default branch would put the first 120
+      // characters of it, JSON-escaped, in a one-line gist.
+      const plan = planProposal(name, input)
+      return plan ? planTitle(plan.markdown) : ''
+    }
     // The subagent tool reports as 'Agent' on the wire; 'Task' is kept because
     // that is what it is called everywhere else, including older transcripts.
     // Without this the default branch falls through to `prompt` and puts the
@@ -62,6 +69,7 @@ export default function ToolCard({
   const nested = Children.count(children) > 0
   const isOpen = open ?? nested
   const gist = summarise(item.name, item.input)
+  const plan = planProposal(item.name, item.input)
   // An answered question comes back flagged is_error, because the answer had to
   // travel as a permission deny — see ANSWER_PREFIX. It succeeded; don't paint
   // it as a failure. A skipped one has no answer text and stays an error.
@@ -95,13 +103,21 @@ export default function ToolCard({
       {isOpen && (
         <>
           {nested && <div className="tool-nest">{children}</div>}
-          <div className="tool-out">
-            {JSON.stringify(item.input, null, 2)}
-            {/* A subagent's tool_result is verbatim its last nested message, so
-                printing it here too doubles the longest thing on screen — and
-                the raw copy loses the markdown the nested one renders. */}
-            {!nested && item.result ? `\n\n─────\n${item.result}` : ''}
-          </div>
+          {/* Once a plan is approved its modal is gone, and this card is the only
+              copy left in the transcript — as markdown, not as a JSON blob. */}
+          {plan ? (
+            <div className="tool-plan">
+              <Markdown text={plan.markdown} />
+            </div>
+          ) : (
+            <div className="tool-out">
+              {JSON.stringify(item.input, null, 2)}
+              {/* A subagent's tool_result is verbatim its last nested message, so
+                  printing it here too doubles the longest thing on screen — and
+                  the raw copy loses the markdown the nested one renders. */}
+              {!nested && item.result ? `\n\n─────\n${item.result}` : ''}
+            </div>
+          )}
         </>
       )}
     </div>

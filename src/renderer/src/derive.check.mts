@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem } from '../../shared/types'
-import { latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions } from './derive.mts'
+import { latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, planProposal, planTitle } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -373,5 +373,50 @@ assert.equal(filterEntries(entries, 'zzzz').length, 0)
   filterEntries(src, 'e')
   assert.deepEqual(src, entries)
 }
+
+// ------------------------------------------------------------ planProposal
+
+// Shape confirmed against live transcripts: the SDK's published
+// ExitPlanModeInput declares neither key, so nothing but this pins them down.
+{
+  const got = planProposal('ExitPlanMode', {
+    plan: '# Ship the thing\n\n## Context\n\nWhy.',
+    planFilePath: '/Users/x/.claude/plans/ship-the-thing-witty-tiger.md',
+  })
+  assert.ok(got, 'a real ExitPlanMode input yields a proposal')
+  assert.equal(got.filePath, '/Users/x/.claude/plans/ship-the-thing-witty-tiger.md')
+  assert.match(got.markdown, /^# Ship the thing/)
+}
+
+assert.equal(planProposal('Bash', { command: 'ls' }), null, 'other tools are not plans')
+assert.equal(planProposal('ExitPlanMode', null), null, 'null input')
+assert.equal(planProposal('ExitPlanMode', {}), null, 'no plan key')
+assert.equal(planProposal('ExitPlanMode', { plan: '   ' }), null, 'a blank plan is not a plan')
+assert.equal(planProposal('ExitPlanMode', { plan: 42 }), null, 'non-string plan')
+
+// A missing path must be absent, not present-and-undefined: the modal keys its
+// footer row off `filePath &&`, and renders an empty line for a bad value.
+assert.equal(
+  'filePath' in planProposal('ExitPlanMode', { plan: '# x' })!,
+  false,
+  'no planFilePath key when the CLI sent none',
+)
+assert.equal(
+  'filePath' in planProposal('ExitPlanMode', { plan: '# x', planFilePath: '' })!,
+  false,
+  'an empty planFilePath is dropped, not shown as a blank path',
+)
+
+// ---------------------------------------------------------------- planTitle
+
+assert.equal(planTitle('# Ship the thing\n\nbody'), 'Ship the thing')
+assert.equal(planTitle('## Nested heading\n'), 'Nested heading', 'h2 counts')
+assert.equal(planTitle('Intro line\n\n### Later\n'), 'Later', 'first heading anywhere')
+assert.equal(planTitle('## Closed ##'), 'Closed', 'closed ATX heading')
+assert.equal(planTitle('  # Indented'), 'Indented', 'up to 3 spaces is still a heading')
+// Never empty: it labels the modal, the tab-stop title and the transcript bar.
+assert.equal(planTitle('just prose'), 'Implementation plan', 'fallback when unheaded')
+assert.equal(planTitle(''), 'Implementation plan', 'fallback when empty')
+assert.equal(planTitle('#hashtag not a heading'), 'Implementation plan', 'needs the space')
 
 console.log('derive: ok')

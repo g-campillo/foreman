@@ -5,6 +5,7 @@
  * Deliberately free of Electron and SDK imports so `npm run check:policy` can
  * load it under plain node — same arrangement as porcelain.mts.
  */
+import { isAbsolute, relative, sep } from 'node:path'
 import type {
   ImageMediaType,
   SendBlock,
@@ -157,6 +158,22 @@ export function branchSlug(raw: string): string {
     .slice(0, 60)
     .replace(/[-.]+$/, '')
   return s || 'agent'
+}
+
+/**
+ * True when `path` is `dir` or sits underneath it.
+ *
+ * Via `relative` rather than a prefix test, because `'/repo-other'.startsWith('/repo')`
+ * is true and would quietly pull a sibling checkout into this session's diff.
+ *
+ * This is what keeps the diff panel to files the session could actually commit.
+ * Getting it wrong in the generous direction is loud — plan files reappear in
+ * the panel as a row of `../../../`. Getting it wrong in the strict direction is
+ * silent, and the user simply never sees an edit the agent made.
+ */
+export function within(dir: string, path: string): boolean {
+  const rel = relative(dir, path)
+  return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel))
 }
 
 /**

@@ -165,10 +165,17 @@ export class Session {
           console.error('[user-dialog]', JSON.stringify(request).slice(0, 900))
           return { behavior: 'cancelled' }
         },
-        canUseTool: makeCanUseTool(this.meta.id, (n) => {
-          this.pendingApprovals = n
-          this.setStatus(n > 0 ? 'awaiting-approval' : 'running')
-        }),
+        canUseTool: makeCanUseTool(
+          this.meta.id,
+          (n) => {
+            this.pendingApprovals = n
+            this.setStatus(n > 0 ? 'awaiting-approval' : 'running')
+          },
+          // Approving a plan changes the mode through the permission result, so
+          // meta has to follow it there — patchMeta only, since the CLI already
+          // applied it and calling setPermissionMode would just echo it back.
+          (mode) => this.patchMeta({ permissionMode: mode }),
+        ),
         // Without this the SDK auto-declines every MCP elicitation, which
         // silently kills OAuth for any server that needs it.
         onElicitation: makeOnElicitation(this.meta.id),

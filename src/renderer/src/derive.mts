@@ -294,6 +294,55 @@ export function askQuestions(toolName: string, input: unknown): AskQuestion[] | 
  */
 export const ANSWER_PREFIX = 'The user answered:'
 
+// ----------------------------------------------------------- ExitPlanMode
+
+export interface PlanProposal {
+  /** The plan itself, as markdown. */
+  markdown: string
+  /** Where the CLI saved it — under ~/.claude/plans, never in the project. */
+  filePath?: string
+}
+
+/**
+ * Pulls a finished plan out of an ExitPlanMode call.
+ *
+ * The input carries the whole plan as markdown (`plan`) plus the file the CLI
+ * made the agent write it to first (`planFilePath`). Neither is in the SDK's
+ * published `ExitPlanModeInput`, which declares one deprecated field and an
+ * index signature — so both are read defensively and confirmed against live
+ * transcripts rather than trusted from the type.
+ *
+ * Returning null is what keeps a malformed call on the generic approval card
+ * instead of opening an empty plan modal over the conversation.
+ */
+export function planProposal(toolName: string, input: unknown): PlanProposal | null {
+  if (toolName !== 'ExitPlanMode') return null
+  const i = input as Record<string, unknown> | null
+  const markdown = typeof i?.plan === 'string' ? i.plan.trim() : ''
+  if (!markdown) return null
+  return {
+    markdown,
+    ...(typeof i?.planFilePath === 'string' && i.planFilePath ? { filePath: i.planFilePath } : {}),
+  }
+}
+
+/**
+ * The plan's own first heading, for a one-line label.
+ *
+ * Plans reliably open with one, and it beats every generic alternative: the
+ * file slug is a mangled fragment of the prompt that opened the session
+ * ("use-your-brainstorming-superpower-witty-tiger"), and the raw input is tens
+ * of kilobytes of JSON.
+ */
+export function planTitle(markdown: string): string {
+  const m = /^\s{0,3}#{1,3}\s+(.+?)\s*#*\s*$/m.exec(markdown)
+  return m ? m[1].trim() : 'Implementation plan'
+}
+
+/** Sent back on the deny channel when the user wants revisions, not a rewrite. */
+export const PLAN_FEEDBACK_PREFIX =
+  'The user did not approve this plan. Stay in plan mode and revise it based on this feedback:'
+
 // -------------------------------------------------------- composer triggers
 
 export interface Trigger {

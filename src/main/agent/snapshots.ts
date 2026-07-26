@@ -8,6 +8,7 @@ import type { HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import { IPC, type DiffHunk, type DiffLine, type FileDiff } from '../../shared/types'
 import { send } from '../bridge'
 import { parsePorcelainZ } from './porcelain.mts'
+import { within } from './policy.mts'
 
 const exec = promisify(execFile)
 
@@ -36,6 +37,12 @@ function targetPath(toolInput: unknown, cwd: string): string | null {
  * This is a PreToolUse hook rather than part of canUseTool on purpose: hooks run
  * ahead of every other permission step, so diffs are still captured in
  * acceptEdits / bypassPermissions mode where canUseTool is never called.
+ *
+ * Writes outside the working tree are skipped. The panel's whole vocabulary is
+ * git's — revert, tick, commit — and none of it is meaningful for a file no
+ * `git add` here could ever stage. Plan mode makes this concrete: every plan is
+ * a Write to ~/.claude/plans/<slug>.md, which used to land in the panel as a
+ * file of `../../../` and could not be committed. PlanCard renders those.
  */
 export function makeSnapshotHook(sessionId: string, cwd: string): HookCallbackMatcher[] {
   return [
@@ -46,6 +53,7 @@ export function makeSnapshotHook(sessionId: string, cwd: string): HookCallbackMa
           if (input.hook_event_name !== 'PreToolUse') return { continue: true }
           const path = targetPath(input.tool_input, cwd)
           if (!path) return { continue: true }
+          if (!(await inWorkingTree(sessionId, cwd, path))) return { continue: true }
 
           const snaps = bucket(sessionId)
           if (!snaps.has(path)) {
@@ -131,6 +139,20 @@ async function readGitState(cwd: string): Promise<GitBaseline> {
 /** Record what was already dirty, before the agent gets a chance to change it. */
 export function beginSession(sessionId: string, cwd: string): void {
   baselines.set(sessionId, readGitState(cwd))
+}
+
+/**
+ * Whether a path is inside the tree this session can actually commit.
+ *
+ * The git root rather than the cwd, so a session opened in a subdirectory still
+ * shows edits to files above it that are genuinely part of the repo. Falls back
+ * to the cwd when there is no repo — some boundary is better than none, and the
+ * baseline is already resolved by then: beginSession runs before query() starts,
+ * so nothing the agent does can outrun it.
+ */
+async function inWorkingTree(sessionId: string, cwd: string, path: string): Promise<boolean> {
+  const root = (await baselines.get(sessionId))?.root
+  return within(root ?? cwd, path)
 }
 
 /** Content at HEAD, or null when the file did not exist there (or there is no HEAD). */

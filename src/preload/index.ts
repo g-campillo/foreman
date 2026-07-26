@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import { IPC } from '../shared/types'
+import { IPC, type PermissionMode } from '../shared/types'
 
 function on(channel: string, cb: (payload: any) => void): () => void {
   const listener = (_e: IpcRendererEvent, payload: any): void => cb(payload)
@@ -63,8 +63,13 @@ const api = {
   reloadSkills: (sessionId: string) => ipcRenderer.invoke(IPC.sessionReloadSkills, { sessionId }),
 
   // permissions
-  respondPermission: (requestId: string, behavior: 'allow' | 'deny', message?: string) =>
-    ipcRenderer.invoke(IPC.permRespond, { requestId, behavior, message }),
+  respondPermission: (
+    requestId: string,
+    behavior: 'allow' | 'deny',
+    message?: string,
+    /** Switch the session to this mode as part of the same allow. */
+    setMode?: PermissionMode,
+  ) => ipcRenderer.invoke(IPC.permRespond, { requestId, behavior, message, setMode }),
 
   // MCP elicitation
   respondElicitation: (
