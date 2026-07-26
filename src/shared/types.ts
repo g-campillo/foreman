@@ -82,6 +82,13 @@ export interface SlashCommandInfo {
   argumentHint: string
 }
 
+/**
+ * `parentId`, where present, is the ChatItem id of the `Task` tool card whose
+ * subagent produced this item — the flat-list form of a nested transcript. The
+ * renderer groups on it rather than main building a tree, so the store stays a
+ * flat upsert-by-id array. Absent means the main thread; a subagent inside a
+ * subagent chains naturally, since its parent card is itself parented.
+ */
 export type ChatItem =
   | {
       id: string
@@ -105,8 +112,9 @@ export type ChatItem =
       text: string
       /** SDKAssistantMessage.uuid — what resumeSessionAt wants. */
       uuid?: string
+      parentId?: string
     }
-  | { id: string; kind: 'thinking'; text: string }
+  | { id: string; kind: 'thinking'; text: string; parentId?: string }
   | {
       id: string
       kind: 'tool'
@@ -114,6 +122,13 @@ export type ChatItem =
       input: unknown
       status: 'pending' | 'done' | 'error'
       result?: string
+      /**
+       * Rolling one-line status for long-running work: the AI progress summary
+       * from `task_progress`, or the settle summary from `task_notification`.
+       * Kept off `result` so a subagent's own report is never overwritten.
+       */
+      progress?: string
+      parentId?: string
     }
   | { id: string; kind: 'result'; text: string; costUsd: number; durationMs: number; isError: boolean }
   | { id: string; kind: 'error'; text: string }

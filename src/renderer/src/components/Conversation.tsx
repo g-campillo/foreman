@@ -25,6 +25,21 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
     [allElicitations, sessionId],
   )
   const rewindPreview = useStore((s) => s.rewindPreview)
+  // Subagent output arrives flat with a parentId; the tree is assembled here so
+  // main never has to maintain one. Items without a parent are the main thread.
+  const byParent = useMemo(() => {
+    const m = new Map<string, ChatItem[]>()
+    for (const it of items) {
+      const p = parentOf(it)
+      if (!p) continue
+      const kids = m.get(p)
+      if (kids) kids.push(it)
+      else m.set(p, [it])
+    }
+    return m
+  }, [items])
+  const roots = useMemo(() => items.filter((it) => !parentOf(it)), [items])
+
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
 
@@ -44,8 +59,8 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
         pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
       }}
     >
-      {items.map((item) => (
-        <Item key={item.id} item={item} sessionId={sessionId} />
+      {roots.map((item) => (
+        <Item key={item.id} item={item} sessionId={sessionId} byParent={byParent} />
       ))}
       {approvals.map((a) => {
         // A malformed question set falls back to the plain allow/deny card
@@ -139,12 +154,19 @@ function RewindCard(): React.JSX.Element | null {
   )
 }
 
+/** Only some variants can be parented, so the union needs narrowing to read it. */
+function parentOf(item: ChatItem): string | undefined {
+  return 'parentId' in item ? item.parentId : undefined
+}
+
 function Item({
   item,
   sessionId,
+  byParent,
 }: {
   item: ChatItem
   sessionId: string
+  byParent: Map<string, ChatItem[]>
 }): React.JSX.Element | null {
   switch (item.kind) {
     case 'user':
@@ -198,7 +220,15 @@ function Item({
     case 'thinking':
       return <div className="msg-thinking">{item.text}</div>
     case 'tool':
-      return <ToolCard item={item} />
+      // A Task card owns its subagent's whole transcript, nested. Recursing on
+      // Item means a subagent that spawns its own subagent nests again for free.
+      return (
+        <ToolCard item={item}>
+          {byParent.get(item.id)?.map((child) => (
+            <Item key={child.id} item={child} sessionId={sessionId} byParent={byParent} />
+          ))}
+        </ToolCard>
+      )
     case 'error':
       return <div className="msg-error">{item.text}</div>
     case 'result':

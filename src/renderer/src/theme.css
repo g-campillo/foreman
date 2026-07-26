@@ -498,6 +498,34 @@ select {
   flex: 1;
   text-align: left;
 }
+/* A Task card holding a subagent transcript. Accented left edge so the nesting
+   depth reads at a glance when a subagent spawns its own subagent. */
+.tool[data-nested] {
+  border-color: rgb(var(--accent) / 0.35);
+}
+.tool-nest {
+  border-top: 1px solid rgb(var(--border));
+  border-left: 2px solid rgb(var(--accent) / 0.35);
+  margin-left: 11px;
+  padding: 11px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  /* Same reason as .convo > *: these must keep their natural height rather than
+     being squashed by the column flex. */
+  max-height: 460px;
+  overflow-y: auto;
+}
+.tool-nest > * {
+  flex-shrink: 0;
+}
+/* A subagent's own prompt echo would sit right-aligned like a user message and
+   read as something you typed. Keep it in the flow instead. */
+.tool-nest .msg-user {
+  align-self: flex-start;
+  max-width: 100%;
+}
+
 .tool-out {
   border-top: 1px solid rgb(var(--border));
   padding: 9px 11px;

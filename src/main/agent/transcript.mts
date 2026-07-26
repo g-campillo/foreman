@@ -49,9 +49,19 @@ function resultText(raw: unknown): string {
  * Replays stored messages into the same ChatItem shapes a live session emits,
  * so a resumed conversation renders identically to one you watched happen.
  *
- * Subagent messages are skipped: they carry a parent_tool_use_id and would
- * otherwise interleave into the main transcript, which is the same hazard that
- * keeps forwardSubagentText held back until its renderer exists.
+ * Subagent messages are nested rather than interleaved: they carry a
+ * parent_tool_use_id, and the stored tool card's id IS its tool_use id, so that
+ * field is already the `parentId` the renderer groups on.
+ *
+ * **Measured, so nobody re-derives it:** today's CLI does not persist subagent
+ * messages in the parent session's file at all — a resumed run of a session that
+ * spawned one comes back with the Agent tool_use, its tool_result, and nothing
+ * in between (the subagent's own conversation goes to the separate `output_file`
+ * named on `task_notification`). So this branch is currently unreachable in
+ * practice, and a resumed Agent card falls back to rendering its report as the
+ * tool_result. It is kept because the live path nests, `parent_tool_use_id` is
+ * part of the stored shape, and dropping-or-nesting is strictly safer than the
+ * alternative of letting an unrecognised parent land in the main thread.
  */
 export function normaliseTranscript(messages: readonly StoredMessage[]): ChatItem[] {
   const items: ChatItem[] = []
@@ -59,8 +69,14 @@ export function normaliseTranscript(messages: readonly StoredMessage[]): ChatIte
   const toolIndex = new Map<string, number>()
 
   for (const m of messages) {
-    if (m.parent_tool_use_id) continue
     if (m.type === 'system') continue
+
+    const parentId = m.parent_tool_use_id ?? undefined
+    // An orphan — parent Task outside this slice, or a tool_use block that had
+    // no usable id — is dropped rather than promoted, since rendering it at top
+    // level is exactly the interleaving this field exists to prevent.
+    if (parentId && !toolIndex.has(parentId)) continue
+    const under = parentId ? { parentId } : {}
 
     if (m.type === 'user') {
       const blocks = blocksOf(m.message)
@@ -84,15 +100,23 @@ export function normaliseTranscript(messages: readonly StoredMessage[]): ChatIte
 
       // A user turn that is nothing but tool results is plumbing, not something
       // the user said — rendering it would put an empty bubble after every tool.
-      if (text.trim()) items.push({ id: m.uuid, kind: 'user', text, uuid: m.uuid })
+      // A subagent's user turn is its prompt echo, which the Task card's own
+      // input already shows, so it is dropped too — matching the live path.
+      if (!parentId && text.trim()) items.push({ id: m.uuid, kind: 'user', text, uuid: m.uuid })
       continue
     }
 
     for (const b of blocksOf(m.message)) {
       if (b.type === 'text' && typeof b.text === 'string' && b.text) {
-        items.push({ id: `${m.uuid}:${items.length}`, kind: 'assistant', text: b.text, uuid: m.uuid })
+        items.push({
+          id: `${m.uuid}:${items.length}`,
+          kind: 'assistant',
+          text: b.text,
+          uuid: m.uuid,
+          ...under,
+        })
       } else if (b.type === 'thinking' && typeof b.thinking === 'string' && b.thinking) {
-        items.push({ id: `${m.uuid}:${items.length}`, kind: 'thinking', text: b.thinking })
+        items.push({ id: `${m.uuid}:${items.length}`, kind: 'thinking', text: b.thinking, ...under })
       } else if (b.type === 'tool_use' && typeof b.name === 'string') {
         if (typeof b.id === 'string') toolIndex.set(b.id, items.length)
         items.push({
@@ -103,6 +127,7 @@ export function normaliseTranscript(messages: readonly StoredMessage[]): ChatIte
           // Stored transcripts are finished. Anything still 'pending' here would
           // render a permanent spinner for a tool that ran days ago.
           status: 'done',
+          ...under,
         })
       }
     }

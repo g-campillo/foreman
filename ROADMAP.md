@@ -33,7 +33,7 @@ seam boundary, not duplication — the halves land in different batches on purpo
 | 4 | ✅ Composer | 1, 18, 19, 17 | S4 | 2–3 d |
 | 5 | ✅ History | 3, 23, 4 | S5 | 2–3 d |
 | 6 | ✅ Time travel + actions | 5b, 7, 12, 8, 10b | S2 + S3 | 2 d |
-| 7 | Subagents | 6 | S3 | 2 d |
+| 7 | ✅ Subagents | 6 | S3 | 2 d |
 | 8 | Git | 25, 24 | S6 | L |
 
 **If you only do three:** 1, 2, 3. That's ~3 days and closes the "feels unfinished" gap.
@@ -249,13 +249,27 @@ The one genuinely new render path. Today a `Task` tool call is a single opaque c
 **Files:** `src/main/agent/session.ts`, `src/shared/types.ts`,
 `src/renderer/src/components/Conversation.tsx`
 
-- [ ] **6. Subagent tree.** Enable `forwardSubagentText: true` (held back since batch 1 for
-  the reason in that section) **together with** routing on `parent_tool_use_id` in
-  `handleAssistant()` and `handleToolResults()` — the option and the routing must land in
-  the same commit or the transcript interleaves. Add `agentProgressSummaries: true` for a
-  rolling present-tense summary ("Analyzing authentication module") every ~30s on
-  `task_progress` events; the fork reuses the subagent's model and prompt cache, so cost is
-  minimal. Render `task_notification` for settle events.
+- [x] **6. Subagent tree.** Enabled `forwardSubagentText: true` **together with** the
+  `parent_tool_use_id` routing, in one commit. Three corrections to the plan above:
+  **(a) `handleStreamEvent` was the missing third site** — `SDKPartialAssistantMessage`
+  carries `parent_tool_use_id` too, so routing only the assistant/user handlers still
+  splices live subagent *deltas* into the main transcript. `handleToolResults`, by
+  contrast, needed **no** change: it merges by `tool_use_id` onto a card that already
+  carries its parent. **(b) The streaming slots had to become maps** keyed by
+  `parent_tool_use_id` — subagents stream concurrently with the main thread, and a single
+  `streamingText` scalar splices their deltas into one item. **(c) `handleAssistant` was
+  clobbering `meta.model`** with the subagent's model, flipping the model picker mid-turn.
+  Guarded to the main thread.
+  Shape: one optional `parentId` on the `ChatItem` union, grouped in the renderer, so the
+  store stays a flat upsert-by-id array and nested subagents recurse for free. The tool is
+  named **`Agent`** on the wire, not `Task` — `summarise()` fell through to dumping the
+  whole prompt until that case was added. `agentProgressSummaries: true` lands on
+  `task_progress` as a rolling `progress` line on the card; `task_notification` now settles
+  the *originating* card instead of adding a floating one, and clears `progress` rather
+  than writing its summary (that text is already the tool_result).
+  **Resume caveat, measured:** the CLI does not persist subagent messages in the parent
+  session's transcript — a resumed session shows the Agent card with its report and no
+  nest. See the note in `transcript.mts`.
 
 Codex and Antigravity both lead with this view. With batch 8 it's the strategic bet — see
 below.

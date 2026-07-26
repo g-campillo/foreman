@@ -18,6 +18,8 @@ const resultOf = (i: ChatItem | undefined): string | undefined =>
   i && i.kind === 'tool' ? i.result : undefined
 const uuidOf = (i: ChatItem | undefined): string | undefined =>
   i && (i.kind === 'user' || i.kind === 'assistant') ? i.uuid : undefined
+const parentOf = (i: ChatItem | undefined): string | undefined =>
+  i && 'parentId' in i ? i.parentId : undefined
 
 
 const user = (uuid: string, content: unknown, parent?: string): StoredMessage => ({
@@ -129,15 +131,68 @@ assert.doesNotThrow(() =>
 
 // ------------------------------------------------------------- robustness
 
-// Subagent messages carry parent_tool_use_id and must not interleave into the
-// main transcript — the same hazard that holds forwardSubagentText back.
+// Subagent messages carry parent_tool_use_id and must NEVER land in the main
+// thread — they nest under their Task card, and an orphan is dropped outright.
+{
+  const items = normaliseTranscript([
+    user('u1', 'main'),
+    assistant('a1', [{ type: 'tool_use', id: 'tool-123', name: 'Task' }]),
+    assistant('a2', [{ type: 'text', text: 'subagent chatter' }], 'tool-123'),
+    assistant('a3', [{ type: 'text', text: 'back on the main thread' }]),
+  ])
+  assert.deepEqual(items.map((i) => [textOf(i), parentOf(i)]), [
+    ['main', undefined],
+    ['', undefined], // the Task card
+    ['subagent chatter', 'tool-123'],
+    ['back on the main thread', undefined],
+  ])
+  // The parent it points at has to be a real item, or the renderer silently
+  // drops the row while the list still counts it.
+  assert.ok(items.some((i) => i.id === 'tool-123'))
+}
+
+// A subagent whose Task card isn't in this slice is dropped, not promoted to
+// the main thread — promoting it is exactly the interleaving we're preventing.
 assert.deepEqual(
   normaliseTranscript([
     user('u1', 'main'),
-    assistant('a1', [{ type: 'text', text: 'subagent chatter' }], 'tool-123'),
-  ]).map((i) => textOf(i)),
+    assistant('a1', [{ type: 'text', text: 'orphan' }], 'tool-gone'),
+  ]).map(textOf),
   ['main'],
 )
+
+// A subagent's user turn is its prompt echo; the Task card's input already
+// shows it, so it must not render as something the user typed.
+assert.deepEqual(
+  normaliseTranscript([
+    assistant('a1', [{ type: 'tool_use', id: 't1', name: 'Task' }]),
+    user('u2', 'go do the thing', 't1'),
+  ]).map((i) => i.kind),
+  ['tool'],
+)
+
+// Nesting is recursive: a subagent that spawns its own subagent chains, because
+// its Task card is itself parented.
+{
+  const items = normaliseTranscript([
+    assistant('a1', [{ type: 'tool_use', id: 'outer', name: 'Task' }]),
+    assistant('a2', [{ type: 'tool_use', id: 'inner', name: 'Task' }], 'outer'),
+    assistant('a3', [{ type: 'text', text: 'deep' }], 'inner'),
+  ])
+  assert.deepEqual(items.map(parentOf), [undefined, 'outer', 'inner'])
+}
+
+// A subagent's tool card still completes from its tool_result.
+{
+  const items = normaliseTranscript([
+    assistant('a1', [{ type: 'tool_use', id: 'task1', name: 'Task' }]),
+    assistant('a2', [{ type: 'tool_use', id: 'b1', name: 'Bash' }], 'task1'),
+    user('u3', [{ type: 'tool_result', tool_use_id: 'b1', content: 'ran' }], 'task1'),
+  ])
+  assert.equal(items.length, 2)
+  assert.equal(resultOf(items[1]), 'ran')
+  assert.equal(parentOf(items[1]), 'task1')
+}
 
 // System messages are skipped.
 assert.deepEqual(

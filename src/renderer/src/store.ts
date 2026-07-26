@@ -113,7 +113,16 @@ function upsert(list: ChatItem[], item: ChatItem): ChatItem[] {
   const prev = list[i]
   const merged: ChatItem =
     prev.kind === 'tool' && item.kind === 'tool'
-      ? { ...prev, ...item, name: item.name || prev.name, input: item.input ?? prev.input }
+      ? {
+          ...prev,
+          ...item,
+          name: item.name || prev.name,
+          input: item.input ?? prev.input,
+          // Progress updates are emitted as 'pending' because that's the only
+          // status the tool variant allows on a partial patch. Never let one
+          // arriving late put a settled card back into its spinner.
+          status: item.status === 'pending' && prev.status !== 'pending' ? prev.status : item.status,
+        }
       : item
 
   const next = [...list]

@@ -81,6 +81,9 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     if (mentioning) void window.foreman.projectFiles(session.id).then(setFiles)
   }, [mentioning, session.id])
 
+  /** Showing the predicted next prompt as an overlay on the empty input. */
+  const ghost = !text && !busy && session.promptSuggestion
+
   const suggestions = useMemo<Suggestion[]>(() => {
     if (!trigger) return []
     const pool: Suggestion[] =
@@ -183,7 +186,7 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
       <div className="composer-input">
         {/* Ghost text for the predicted next prompt. Only while the box is
             empty and idle — overlaying a suggestion on real typing is noise. */}
-        {!text && !busy && session.promptSuggestion && (
+        {ghost && (
           <button
             className="ghost"
             title="Tab to use"
@@ -201,8 +204,10 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         <textarea
           ref={box}
           value={text}
+          // The ghost is an overlay on this same box, so leaving the
+          // placeholder on paints the two strings on top of each other.
           placeholder={
-            busy ? 'Queue a message…' : `Message the agent in ${session.title}…`
+            ghost ? '' : busy ? 'Queue a message…' : `Message the agent in ${session.title}…`
           }
           onChange={(e) => {
             setText(e.target.value)

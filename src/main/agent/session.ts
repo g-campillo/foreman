@@ -72,9 +72,14 @@ export class Session {
   private q: Query | null = null
   private closed = false
 
-  /** Item ids for the text/thinking blocks currently being streamed into. */
-  private streamingText: string | null = null
-  private streamingThinking: string | null = null
+  /**
+   * Item ids for the text/thinking blocks currently being streamed into, keyed
+   * by parent_tool_use_id ('' for the main thread). Maps rather than scalars
+   * because subagents stream concurrently with the main thread and with each
+   * other — a single slot would splice their deltas into one item.
+   */
+  private readonly streamingText = new Map<string, string>()
+  private readonly streamingThinking = new Map<string, string>()
   /** tool_use_id -> ChatItem id, so tool_result can update the right card. */
   private readonly toolItems = new Map<string, string>()
   private pendingApprovals = 0
@@ -132,6 +137,14 @@ export class Session {
         // q.rewindFiles() possible later. Inert until something calls it.
         enableFileCheckpointing: true,
         promptSuggestions: true,
+        // Subagent text/thinking arrives as ordinary assistant messages with
+        // parent_tool_use_id set. This MUST stay in the same commit as the
+        // parent_tool_use_id routing below (handleAssistant, handleStreamEvent)
+        // or subagent chatter interleaves into the main transcript.
+        forwardSubagentText: true,
+        // Forks the subagent every ~30s for a present-tense summary on
+        // task_progress. Reuses its model and prompt cache, so it's near-free.
+        agentProgressSummaries: true,
         // Markdown rather than the 'html' the roadmap suggested: we already have
         // a markdown renderer, and react-markdown drops raw HTML by default —
         // so this avoids putting model-authored HTML through
@@ -241,18 +254,53 @@ export class Session {
           })
           break
         }
-        // A finished background task reports here; the changed-set message
-        // handles removal, so this only surfaces the outcome.
+        // Rolling AI summary of a running subagent. Folded onto the Task card
+        // rather than emitted as its own item, so it reads as a status line on
+        // the work it describes instead of scrolling past as noise.
+        if (msg.subtype === 'task_progress') {
+          const itemId = msg.tool_use_id ? this.toolItems.get(msg.tool_use_id) : undefined
+          if (itemId) {
+            this.emit({
+              id: itemId,
+              kind: 'tool',
+              name: '',
+              input: undefined,
+              status: 'pending',
+              progress: msg.summary || msg.last_tool_name || msg.description,
+            })
+          }
+          break
+        }
+        // A finished background task or subagent reports here; the changed-set
+        // message handles removal, so this only surfaces the outcome.
         if (msg.subtype === 'task_notification') {
           if (!msg.skip_transcript) {
-            this.emit({
-              id: randomUUID(),
-              kind: 'tool',
-              name: `background · ${msg.status}`,
-              input: undefined,
-              status: msg.status === 'completed' ? 'done' : 'error',
-              result: msg.summary,
-            })
+            // Prefer settling the card that started the work: a backgrounded
+            // tool already returned "running in the background", so this is the
+            // only place its true outcome shows up. `summary` is deliberately
+            // dropped here — it's the subagent's full report, which already
+            // arrives as the tool_result, and it is not a one-line status.
+            // Clearing `progress` retires the live status line with the work.
+            const itemId = msg.tool_use_id ? this.toolItems.get(msg.tool_use_id) : undefined
+            this.emit(
+              itemId
+                ? {
+                    id: itemId,
+                    kind: 'tool',
+                    name: '',
+                    input: undefined,
+                    status: msg.status === 'completed' ? 'done' : 'error',
+                    progress: undefined,
+                  }
+                : {
+                    id: randomUUID(),
+                    kind: 'tool',
+                    name: `background · ${msg.status}`,
+                    input: undefined,
+                    status: msg.status === 'completed' ? 'done' : 'error',
+                    result: msg.summary,
+                  },
+            )
           }
           break
         }
@@ -269,7 +317,9 @@ export class Session {
         break
 
       case 'stream_event':
-        this.handleStreamEvent(msg.event)
+        // Deltas carry parent_tool_use_id too — routing only handleAssistant
+        // would still splice live subagent text into the main transcript.
+        this.handleStreamEvent(msg.event, msg.parent_tool_use_id)
         break
 
       case 'assistant':
@@ -282,8 +332,8 @@ export class Session {
 
       case 'result': {
         const r = msg as Extract<SDKMessage, { type: 'result' }>
-        this.streamingText = null
-        this.streamingThinking = null
+        this.streamingText.clear()
+        this.streamingThinking.clear()
         // The per-turn line wants this turn's spend, which is the delta against
         // the previous running total.
         const turnCost = Math.max(0, (r.total_cost_usd ?? 0) - this.meta.costUsd)
@@ -315,44 +365,47 @@ export class Session {
     }
   }
 
+  /**
+   * The Task card a subagent's output belongs under, or undefined for the main
+   * thread. A miss degrades to top-level rather than dropping the item — the
+   * pre-subagent behaviour, which is the safe direction to fail in.
+   */
+  private parentItem(parentToolUseId: string | null | undefined): string | undefined {
+    return parentToolUseId ? this.toolItems.get(parentToolUseId) : undefined
+  }
+
   /** Live text/thinking deltas. Rendering is upserted, then reconciled below. */
-  private handleStreamEvent(event: unknown): void {
+  private handleStreamEvent(event: unknown, parentToolUseId: string | null): void {
     const e = event as { type?: string; delta?: { type?: string; text?: string; thinking?: string } }
+    const key = parentToolUseId ?? ''
 
     if (e.type === 'content_block_start') {
       // A fresh block begins; the next deltas belong to a new item.
       const block = (event as { content_block?: { type?: string } }).content_block
-      if (block?.type === 'text') this.streamingText = null
-      if (block?.type === 'thinking') this.streamingThinking = null
+      if (block?.type === 'text') this.streamingText.delete(key)
+      if (block?.type === 'thinking') this.streamingThinking.delete(key)
       return
     }
 
     if (e.type !== 'content_block_delta' || !e.delta) return
 
+    const parentId = this.parentItem(parentToolUseId)
+    const stream = (map: Map<string, string>, kind: 'assistant' | 'thinking', text: string): void => {
+      const id = map.get(key)
+      if (id) {
+        send(IPC.evtDelta, { sessionId: this.meta.id, itemId: id, text })
+      } else {
+        const fresh = randomUUID()
+        map.set(key, fresh)
+        this.emit({ id: fresh, kind, text, ...(parentId ? { parentId } : {}) })
+      }
+      this.setStatus('running')
+    }
+
     if (e.delta.type === 'text_delta' && e.delta.text) {
-      if (!this.streamingText) {
-        this.streamingText = randomUUID()
-        this.emit({ id: this.streamingText, kind: 'assistant', text: e.delta.text })
-      } else {
-        send(IPC.evtDelta, {
-          sessionId: this.meta.id,
-          itemId: this.streamingText,
-          text: e.delta.text,
-        })
-      }
-      this.setStatus('running')
+      stream(this.streamingText, 'assistant', e.delta.text)
     } else if (e.delta.type === 'thinking_delta' && e.delta.thinking) {
-      if (!this.streamingThinking) {
-        this.streamingThinking = randomUUID()
-        this.emit({ id: this.streamingThinking, kind: 'thinking', text: e.delta.thinking })
-      } else {
-        send(IPC.evtDelta, {
-          sessionId: this.meta.id,
-          itemId: this.streamingThinking,
-          text: e.delta.thinking,
-        })
-      }
-      this.setStatus('running')
+      stream(this.streamingThinking, 'thinking', e.delta.thinking)
     }
   }
 
@@ -362,18 +415,27 @@ export class Session {
    * tool_use blocks become cards here, since deltas don't carry them usefully.
    */
   private handleAssistant(msg: Extract<SDKMessage, { type: 'assistant' }>): void {
-    // The system/init frame carries no model, so this is where we learn it.
+    const key = msg.parent_tool_use_id ?? ''
+    const parentId = this.parentItem(msg.parent_tool_use_id)
+    const under = parentId ? { parentId } : {}
+
+    // The system/init frame carries no model, so this is where we learn it —
+    // but only from the main thread. A subagent can run a different model
+    // (AgentInfo.model), and stamping that here flips the model picker mid-turn
+    // and then leaves it wrong once the subagent finishes.
     const model = msg.message?.model
-    if (typeof model === 'string' && model !== this.meta.model) this.patchMeta({ model })
+    if (!msg.parent_tool_use_id && typeof model === 'string' && model !== this.meta.model) {
+      this.patchMeta({ model })
+    }
 
     for (const block of msg.message?.content ?? []) {
       if (block.type === 'text') {
-        const id = this.streamingText ?? randomUUID()
+        const id = this.streamingText.get(key) ?? randomUUID()
         // msg.uuid is the SDK's id for this assistant turn — the one
         // resumeSessionAt takes. Our own `id` keys the streaming upsert and is
         // unrelated to it.
-        this.emit({ id, kind: 'assistant', text: block.text, uuid: msg.uuid })
-        this.streamingText = null
+        this.emit({ id, kind: 'assistant', text: block.text, uuid: msg.uuid, ...under })
+        this.streamingText.delete(key)
       } else if (block.type === 'tool_use') {
         const itemId = randomUUID()
         this.toolItems.set(block.id, itemId)
@@ -383,10 +445,11 @@ export class Session {
           name: block.name,
           input: block.input,
           status: 'pending',
+          ...under,
         })
       }
     }
-    this.streamingThinking = null
+    this.streamingThinking.delete(key)
   }
 
   private handleToolResults(msg: Extract<SDKMessage, { type: 'user' }>): void {
