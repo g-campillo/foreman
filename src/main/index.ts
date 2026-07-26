@@ -108,6 +108,23 @@ function initialProject(): string | null {
 // Dev-only: lets us drive the renderer over CDP for end-to-end checks.
 if (!app.isPackaged) app.commandLine.appendSwitch('remote-debugging-port', '9222')
 
+/**
+ * Keep a dev run's state away from the installed app's, so you can use Foreman
+ * while working on Foreman.
+ *
+ * Without this they share one directory. `app.getName()` is `foreman` from
+ * package.json in dev and `Foreman` from productName when packaged — and APFS
+ * is case-INsensitive by default, so those are the same path. Two Electron
+ * processes on one userData means one Chromium profile: the second to start
+ * can't take the LevelDB lock and its localStorage silently stops persisting,
+ * and both would share `userData/worktrees`.
+ *
+ * setName rather than setPath, so the Dock, menu bar and About box say which
+ * one you're looking at too. Must run before anything reads a path — the value
+ * is resolved at first use, not on demand.
+ */
+if (!app.isPackaged) app.setName('Foreman Dev')
+
 app.whenReady().then(() => {
   ipcMain.handle('app:initialProject', () => initialProject())
   ipcMain.handle('app:vibrancy', (_e, { v }: { v: string | null }) => {
