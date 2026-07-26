@@ -14,7 +14,9 @@
     "dist": "electron-vite build && electron-builder --mac",
     "dist:release": "electron-vite build && electron-builder --mac -c.mac.notarize=true",
     "check:policy": "node src/main/agent/policy.check.mts",
-    "check:derive": "node src/renderer/src/derive.check.mts"
+    "check:derive": "node src/renderer/src/derive.check.mts",
+    "check:transcript": "node src/main/agent/transcript.check.mts",
+    "check": "npm run check:porcelain && npm run check:policy && npm run check:derive && npm run check:transcript"
   },
   "keywords": [],
   "author": "",
@@ -52,8 +54,13 @@
   "build": {
     "appId": "com.gcampillo.foreman",
     "productName": "Foreman",
-    "directories": { "output": "release" },
-    "files": ["out/**/*", "package.json"],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "out/**/*",
+      "package.json"
+    ],
     "asarUnpack": [
       "node_modules/@anthropic-ai/claude-agent-sdk/**",
       "node_modules/@anthropic-ai/claude-agent-sdk-*/**",

@@ -25,6 +25,8 @@ interface State {
   openPath(cwd: string): Promise<void>
   newSession(): Promise<void>
   resume(sessionId: string, cwd: string, title: string): Promise<void>
+  hydrate(meta: SessionMeta): Promise<void>
+  fork(upToMessageId?: string): Promise<void>
   close(id: string): Promise<void>
   send(content: SendContent): Promise<void>
   setAppearance(patch: Partial<Appearance>): void
@@ -147,6 +149,44 @@ export const useStore = create<State>((set, get) => ({
     const meta: SessionMeta = await window.foreman.resumeSession({ cwd, resume: sessionId, title })
     set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id }))
     get().select(meta.id)
+    await get().hydrate(meta)
+  },
+
+  /**
+   * Fill a session's transcript from disk.
+   *
+   * ChatItems only ever lived in this store, so before this a resumed session
+   * came back with a working agent and an empty conversation. Prepended rather
+   * than assigned, so anything the live session has already emitted survives a
+   * slow read.
+   */
+  async hydrate(meta) {
+    if (!meta.sdkSessionId) return
+    const past: ChatItem[] = await window.foreman.sessionTranscript(meta.sdkSessionId, meta.cwd)
+    if (!past.length) return
+    set((s) => {
+      const live = s.items[meta.id] ?? []
+      const seen = new Set(live.map((i) => i.id))
+      return { items: { ...s.items, [meta.id]: [...past.filter((p) => !seen.has(p.id)), ...live] } }
+    })
+  },
+
+  /**
+   * Branch the active conversation, optionally slicing it at a message.
+   *
+   * forkSession only writes the new transcript to disk — it doesn't open it —
+   * so this resumes the fork, which is also what hydrates its history.
+   */
+  async fork(upToMessageId) {
+    const cur = get().sessions.find((x) => x.id === get().activeId)
+    if (!cur?.sdkSessionId) return
+    const forked: string | null = await window.foreman.forkSession(
+      cur.sdkSessionId,
+      upToMessageId,
+      `${cur.title} (branch)`,
+    )
+    if (!forked) return
+    await get().resume(forked, cur.cwd, `${cur.title} (branch)`)
   },
 
   async close(id) {
@@ -217,7 +257,16 @@ export const useStore = create<State>((set, get) => ({
     )
 
     window.foreman.onRemoved(({ sessionId }: { sessionId: string }) => {
-      set((s) => ({ sessions: s.sessions.filter((x) => x.id !== sessionId) }))
+      set((s) => {
+        const sessions = s.sessions.filter((x) => x.id !== sessionId)
+        // Repair the selection here, not only in close(): a session can also go
+        // away from main's side, and a dangling activeId renders the empty
+        // state while a perfectly good session sits in the rail.
+        return {
+          sessions,
+          activeId: s.activeId === sessionId ? (sessions[0]?.id ?? null) : s.activeId,
+        }
+      })
     })
 
     window.foreman.onQueue(
@@ -282,6 +331,9 @@ export const useStore = create<State>((set, get) => ({
         if (live?.length) {
           set({ sessions: live })
           get().select(live[0].id)
+          // A reload empties this store while main keeps the Session objects,
+          // so adopted sessions need their transcripts back too.
+          await Promise.all(live.map((m) => get().hydrate(m)))
           return
         }
         const p: string | null = await window.foreman.initialProject()

@@ -14,6 +14,16 @@ const api = {
   closeSession: (sessionId: string) => ipcRenderer.invoke(IPC.sessionClose, { sessionId }),
   listSessions: () => ipcRenderer.invoke(IPC.sessionList),
   listPastSessions: (dir?: string) => ipcRenderer.invoke(IPC.sessionPastList, { dir }),
+
+  // history
+  sessionTranscript: (sessionId: string, dir?: string) =>
+    ipcRenderer.invoke(IPC.sessionTranscript, { sessionId, dir }),
+  searchTranscripts: (query: string, dir?: string) =>
+    ipcRenderer.invoke(IPC.sessionSearch, { query, dir }),
+  forkSession: (sessionId: string, upToMessageId?: string, title?: string) =>
+    ipcRenderer.invoke(IPC.sessionFork, { sessionId, upToMessageId, title }),
+  renameSession: (sessionId: string, title: string) =>
+    ipcRenderer.invoke(IPC.sessionRename, { sessionId, title }),
   sendMessage: (sessionId: string, content: unknown) =>
     ipcRenderer.invoke(IPC.sessionSend, { sessionId, content }),
   cancelQueued: (sessionId: string, itemId: string) =>

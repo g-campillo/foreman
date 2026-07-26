@@ -3,14 +3,27 @@ import { realpathSync } from 'node:fs'
 import { readdir } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { listSessions } from '@anthropic-ai/claude-agent-sdk'
+import {
+  forkSession,
+  getSessionMessages,
+  listSessions,
+  renameSession,
+  type SDKSessionInfo,
+} from '@anthropic-ai/claude-agent-sdk'
 import {
   IPC,
+  type ChatItem,
   type PermissionMode,
   type PastSession,
   type SendContent,
   type SessionMeta,
+  type TranscriptSearchHit,
 } from '../../shared/types'
+import {
+  normaliseTranscript,
+  searchTranscript,
+  type StoredMessage,
+} from './transcript.mts'
 import { send } from '../bridge'
 import { Session, type SessionInit } from './session'
 
@@ -20,6 +33,24 @@ const exec = promisify(execFile)
 
 /** Cap on files offered to @-mention autocomplete. */
 const FILE_LIMIT = 4000
+
+/** Messages read back from a stored session. Long enough for any real session. */
+const TRANSCRIPT_LIMIT = 5000
+
+/** ponytail: search reads this many recent sessions per query, newest first.
+ *  Fine for a local JSONL scan; add an index only if it starts dragging. */
+const SEARCH_SESSION_LIMIT = 40
+
+/** The SDK's field is `lastModified` (epoch ms) — there is no `updatedAt`,
+ *  which is why the rail never showed a date. */
+function toPastSession(s: SDKSessionInfo): PastSession {
+  return {
+    sessionId: s.sessionId,
+    summary: s.customTitle ?? s.summary ?? 'Untitled session',
+    lastModified: s.lastModified,
+    gitBranch: s.gitBranch,
+  }
+}
 
 /**
  * Repo-relative paths for @-mention autocomplete.
@@ -66,6 +97,10 @@ export function createSession(init: SessionInit): SessionMeta {
   // Canonicalise once, here, so cwd / snapshot paths / pty all agree. Tools
   // report real paths, so an un-resolved symlink (e.g. macOS /tmp ->
   // /private/tmp) makes every diff path render as ../../private/tmp/...
+  // An empty cwd would resolve to the process's own directory, which silently
+  // starts the session in the wrong project — and on resume the CLI then reports
+  // "No conversation found" for a session that exists perfectly well elsewhere.
+  if (!init.cwd) throw new Error('createSession: cwd is required')
   let cwd = init.cwd
   try {
     cwd = realpathSync(init.cwd)
@@ -168,16 +203,99 @@ export function registerSessionIpc(): void {
 
   ipcMain.handle(IPC.sessionPastList, async (_e, { dir }: { dir?: string }): Promise<PastSession[]> => {
     try {
-      const list = await listSessions({ dir, limit: 40 })
-      return list.map((s: Record<string, unknown>) => ({
-        sessionId: String(s.sessionId ?? ''),
-        summary: String(s.summary ?? s.title ?? 'Untitled session'),
-        cwd: typeof s.cwd === 'string' ? s.cwd : undefined,
-        updatedAt: typeof s.updatedAt === 'string' ? s.updatedAt : undefined,
-      }))
+      return (await listSessions({ dir, limit: 40 })).map(toPastSession)
     } catch (err) {
       console.warn('[sessions] listSessions failed:', err)
       return []
     }
   })
+
+  // Transcript of a stored session. `sessionId` here is the SDK's id, which is
+  // NOT our meta.id on a resumed session — see SessionMeta.sdkSessionId.
+  ipcMain.handle(
+    IPC.sessionTranscript,
+    async (_e, { sessionId, dir }: { sessionId: string; dir?: string }): Promise<ChatItem[]> => {
+      try {
+        const msgs = await getSessionMessages(sessionId, { dir, limit: TRANSCRIPT_LIMIT })
+        return normaliseTranscript(msgs as unknown as StoredMessage[])
+      } catch (err) {
+        console.warn('[sessions] getSessionMessages failed:', err)
+        return []
+      }
+    },
+  )
+
+  ipcMain.handle(
+    IPC.sessionSearch,
+    async (
+      _e,
+      { query, dir }: { query: string; dir?: string },
+    ): Promise<TranscriptSearchHit[]> => {
+      if (!query.trim()) return []
+      let sessions: Awaited<ReturnType<typeof listSessions>> = []
+      try {
+        sessions = await listSessions({ dir, limit: SEARCH_SESSION_LIMIT })
+      } catch (err) {
+        console.warn('[search] listSessions failed:', err)
+        return []
+      }
+
+      // Read transcripts concurrently — these are local JSONL files, so the cost
+      // is IO the event loop can overlap, not CPU.
+      const hits = await Promise.all(
+        sessions.map(async (s): Promise<TranscriptSearchHit | null> => {
+          try {
+            const msgs = await getSessionMessages(s.sessionId, { dir, limit: TRANSCRIPT_LIMIT })
+            const hit = searchTranscript(msgs as unknown as StoredMessage[], query)
+            if (!hit) return null
+            return {
+              sessionId: s.sessionId,
+              summary: s.customTitle ?? s.summary ?? 'Untitled session',
+              cwd: s.cwd,
+              lastModified: s.lastModified,
+              snippet: hit.snippet,
+              matches: hit.matches,
+            }
+          } catch {
+            // One unreadable session must not sink the whole search.
+            return null
+          }
+        }),
+      )
+      return hits.filter((h): h is TranscriptSearchHit => h !== null)
+    },
+  )
+
+  ipcMain.handle(
+    IPC.sessionFork,
+    async (
+      _e,
+      { sessionId, upToMessageId, title }: { sessionId: string; upToMessageId?: string; title?: string },
+    ): Promise<string | null> => {
+      try {
+        const { sessionId: forked } = await forkSession(sessionId, { upToMessageId, title })
+        return forked
+      } catch (err) {
+        console.warn('[sessions] forkSession failed:', err)
+        return null
+      }
+    },
+  )
+
+  ipcMain.handle(
+    IPC.sessionRename,
+    async (_e, { sessionId, title }: { sessionId: string; title: string }): Promise<boolean> => {
+      try {
+        await renameSession(sessionId, title)
+        // Keep a live session's rail entry in step with the stored title.
+        for (const s of sessions.values()) {
+          if (s.meta.sdkSessionId === sessionId) s.setTitle(title)
+        }
+        return true
+      } catch (err) {
+        console.warn('[sessions] renameSession failed:', err)
+        return false
+      }
+    },
+  )
 }

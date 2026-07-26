@@ -22,6 +22,16 @@ export interface SessionMeta {
   outputTokens: number
   permissionMode: PermissionMode
   createdAt: number
+  /**
+   * The session id the SDK/CLI actually uses.
+   *
+   * Equals `id` for a fresh session, because we mint it and pass it as
+   * `sessionId`. On resume we must NOT pass one (the CLI rejects --session-id
+   * with --resume), so the SDK keeps the original and this diverges from `id`.
+   * Anything addressing the session on disk — transcripts, fork, rename —
+   * needs this one, not `id`.
+   */
+  sdkSessionId: string | null
 }
 
 /**
@@ -55,8 +65,21 @@ export type ChatItem =
       images?: string[]
       /** Still sitting in our input queue, and therefore still cancellable. */
       queued?: boolean
+      /**
+       * The SDK's message uuid. For user messages this equals `id`, because we
+       * stamp our own id onto the SDKUserMessage before queueing it — which is
+       * what makes rewindFiles() and forkSession({upToMessageId}) addressable
+       * from a rendered item.
+       */
+      uuid?: string
     }
-  | { id: string; kind: 'assistant'; text: string }
+  | {
+      id: string
+      kind: 'assistant'
+      text: string
+      /** SDKAssistantMessage.uuid — what resumeSessionAt wants. */
+      uuid?: string
+    }
   | { id: string; kind: 'thinking'; text: string }
   | {
       id: string
@@ -201,7 +224,21 @@ export interface PastSession {
   sessionId: string
   summary: string
   cwd?: string
-  updatedAt?: string
+  /** Epoch ms. The SDK's field is `lastModified`, not a date string. */
+  lastModified?: number
+  gitBranch?: string
+}
+
+export interface TranscriptSearchHit {
+  sessionId: string
+  summary: string
+  /** Required to resume: the CLI looks for a session under its project dir, so
+   *  resuming without it searches the wrong place and finds nothing. */
+  cwd?: string
+  lastModified?: number
+  /** Text around the first match, for the result row. */
+  snippet: string
+  matches: number
 }
 
 /** Appearance knobs the renderer persists and applies as CSS custom properties. */
@@ -237,6 +274,12 @@ export const IPC = {
   sessionModels: 'session:models',
   sessionPastList: 'session:pastList',
   sessionCancelQueued: 'session:cancelQueued',
+
+  // history
+  sessionTranscript: 'session:transcript',
+  sessionSearch: 'session:search',
+  sessionFork: 'session:fork',
+  sessionRename: 'session:rename',
 
   // composer autocomplete
   sessionCommands: 'session:commands',

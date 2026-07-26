@@ -43,7 +43,17 @@ export function createInputQueue(onDequeue?: (id: string) => void): InputQueue {
       if (closed) return
       pending.push({
         id,
-        msg: { type: 'user', message: { role: 'user', content }, parent_tool_use_id: null },
+        // Stamping our ChatItem id as the SDK's message uuid is what makes a
+        // rendered message addressable later: rewindFiles(userMessageId) and
+        // forkSession({upToMessageId}) both take this uuid. It also puts the
+        // message on interrupt()'s `still_queued` receipt, which only lists
+        // uuid-stamped messages.
+        msg: {
+          type: 'user',
+          message: { role: 'user', content },
+          parent_tool_use_id: null,
+          uuid: id as `${string}-${string}-${string}-${string}-${string}`,
+        },
       })
       wake?.()
       wake = null

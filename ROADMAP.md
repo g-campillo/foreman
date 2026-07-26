@@ -31,7 +31,7 @@ seam boundary, not duplication — the halves land in different batches on purpo
 | 2 | ✅ Looks finished | 16, 20, 22 | S6 | 1–2 d |
 | 3 | ✅ Read-only panels (11 partial) | 2, 14, 11, 10a | S2 | 1–2 d |
 | 4 | ✅ Composer | 1, 18, 19, 17 | S4 | 2–3 d |
-| 5 | History | 3, 23, 4 | S5 | 2–3 d |
+| 5 | ✅ History | 3, 23, 4 | S5 | 2–3 d |
 | 6 | Time travel + actions | 5b, 7, 12, 8, 10b | S2 + S3 | 2 d |
 | 7 | Subagents | 6 | S3 | 2 d |
 | 8 | Git | 25, 24 | S6 | L |
@@ -183,18 +183,18 @@ One transcript→`ChatItem` normaliser serves all three.
 **Files:** `src/main/agent/manager.ts`, `src/shared/types.ts`, `src/renderer/src/store.ts`,
 `src/renderer/src/components/SessionRail.tsx`
 
-- [ ] **First commit of this batch: thread the SDK's message `uuid` onto `ChatItem`.**
+- [x] **First commit of this batch: thread the SDK's message `uuid` onto `ChatItem`.**
   Today `ChatItem.id` is a locally-minted `randomUUID()`. But `rewindFiles(userMessageId)`
   and the `resumeSessionAt` option both want the *SDK's* `SDKAssistantMessage.uuid`.
   Without that field, features 3, 4, 5 and 23 are all unbuildable. ~10 lines in `handle()`
   and the union — and it makes batch 6's rewind fall out for free.
-- [ ] **3. Real transcript on resume.** `getSessionMessages({dir, limit, offset,
-  includeSystemMessages})`. A resumed session currently comes back with an empty
+- [x] **3. Real transcript on resume.** `getSessionMessages(sessionId, {dir, limit, offset,
+  includeSystemMessages})` — note the id is a positional arg, not part of the options. A resumed session currently comes back with an empty
   conversation, because `ChatItem`s only ever lived in the renderer. This is the fix, and
   it's the highest-value item in the batch.
-- [ ] **23. Search across session transcripts.** `listSessions({dir})` (already wired for
+- [x] **23. Search across session transcripts.** `listSessions({dir})` (already wired for
   `sessionPastList`) + `getSessionMessages()` + the normaliser from #3.
-- [ ] **4. Branch a conversation.** `forkSession({upToMessageId, title})` plus the
+- [x] **4. Branch a conversation.** `forkSession({upToMessageId, title})` plus the
   `resumeSessionAt` option. Claude.ai's edit-and-retry. **Needs #3** — forking into an
   empty conversation view is worse than not forking. `renameSession()` is right there too,
   for renaming in the rail.

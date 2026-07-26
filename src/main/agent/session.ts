@@ -82,8 +82,9 @@ export class Session {
   private readonly ready: Promise<void>
 
   constructor(init: SessionInit) {
+    const id = randomUUID()
     this.meta = {
-      id: randomUUID(),
+      id,
       title: init.title ?? basename(init.cwd) ?? 'session',
       cwd: init.cwd,
       status: 'starting',
@@ -93,6 +94,10 @@ export class Session {
       outputTokens: 0,
       permissionMode: init.permissionMode ?? 'default',
       createdAt: Date.now(),
+      // Fresh: we mint the id and hand it to the SDK, so the two agree.
+      // Resume: `init.resume` IS the SDK's session id, and ours differs.
+      // Either way this is the id that addresses the session on disk.
+      sdkSessionId: init.resume ?? id,
     }
 
     // Must be kicked off before the agent can touch anything, so that whatever
@@ -314,7 +319,10 @@ export class Session {
     for (const block of msg.message?.content ?? []) {
       if (block.type === 'text') {
         const id = this.streamingText ?? randomUUID()
-        this.emit({ id, kind: 'assistant', text: block.text })
+        // msg.uuid is the SDK's id for this assistant turn — the one
+        // resumeSessionAt takes. Our own `id` keys the streaming upsert and is
+        // unrelated to it.
+        this.emit({ id, kind: 'assistant', text: block.text, uuid: msg.uuid })
         this.streamingText = null
       } else if (block.type === 'tool_use') {
         const itemId = randomUUID()
@@ -390,6 +398,9 @@ export class Session {
       id,
       kind: 'user',
       text,
+      // Same value as `id` by construction — see queue.push. Carried explicitly
+      // so consumers don't have to know that coincidence.
+      uuid: id,
       ...(images.length ? { images } : {}),
       ...(busy ? { queued: true } : {}),
     })
@@ -397,6 +408,10 @@ export class Session {
     // picks it up immediately and onDequeue flips the status, which is the same
     // signal for a first message and a released one.
     this.queue.push(content, id)
+  }
+
+  setTitle(title: string): void {
+    this.patchMeta({ title })
   }
 
   /** Withdraw a message that hasn't reached the SDK yet. */

@@ -1464,3 +1464,69 @@ select {
   border-radius: var(--r-sm);
   margin-bottom: 6px;
 }
+
+/* ─────────────────────────────────────────────────────── history / rail */
+
+.rail-note {
+  padding: 8px 9px;
+  color: rgb(var(--text-faint));
+  font-size: 12px;
+}
+.rail-section {
+  padding: 12px 9px 5px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgb(var(--text-faint));
+}
+.rail-search,
+.rename-input {
+  width: 100%;
+  padding: 6px 9px;
+  margin: 6px 0 2px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgb(var(--border));
+  background: rgb(var(--surface-3) / 0.6);
+  color: rgb(var(--text));
+  font-size: 12px;
+  outline: none;
+}
+.rail-search:focus,
+.rename-input:focus {
+  border-color: rgb(var(--accent));
+}
+.rename-input {
+  margin: 0;
+}
+
+/* Snippets wrap to two lines; the rest of the row stays single-line, so a long
+   match can't push the date and count out of the rail. */
+.session-snippet {
+  font-size: 11px;
+  color: rgb(var(--text-dim));
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  margin: 2px 0;
+}
+
+.branch-btn {
+  display: block;
+  margin-top: 4px;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: rgb(var(--accent-fg) / 0.55);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+/* Revealed on hover so it doesn't clutter every message, but focus-visible
+   keeps it reachable without a mouse. */
+.msg-user:hover .branch-btn,
+.branch-btn:focus-visible {
+  opacity: 1;
+}
+.branch-btn:hover {
+  color: rgb(var(--accent-fg));
+}

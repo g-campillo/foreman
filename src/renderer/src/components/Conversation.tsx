@@ -82,7 +82,7 @@ function Item({
             <img key={i} className="msg-image" src={src} alt="attachment" />
           ))}
           {item.text}
-          {item.queued && (
+          {item.queued ? (
             <button
               className="queued-cancel"
               title="Cancel this queued message"
@@ -90,6 +90,18 @@ function Item({
             >
               queued ✕
             </button>
+          ) : (
+            item.uuid && (
+              // Branches into a new session sliced at this message — the
+              // edit-and-retry shape, without disturbing this conversation.
+              <button
+                className="branch-btn"
+                title="Branch a new session from this point"
+                onClick={() => void useStore.getState().fork(item.uuid)}
+              >
+                ⑂ branch
+              </button>
+            )
           )}
         </div>
       )
