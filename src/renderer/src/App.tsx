@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { activeSession, useStore } from './store'
 import SessionRail from './components/SessionRail'
 import Conversation from './components/Conversation'
@@ -6,6 +6,8 @@ import Composer from './components/Composer'
 import DiffPanel from './components/DiffPanel'
 import TerminalPane from './components/TerminalPane'
 import Appearance from './components/Appearance'
+import TodoStrip from './components/TodoStrip'
+import CommandPalette, { type PaletteActions } from './components/CommandPalette'
 
 type Tab = 'diff' | 'terminal'
 
@@ -15,9 +17,16 @@ export default function App(): React.JSX.Element {
   const newSession = useStore((s) => s.newSession)
   const [tab, setTab] = useState<Tab>('diff')
   const [showAppearance, setShowAppearance] = useState(false)
+  const [showPalette, setShowPalette] = useState(false)
 
   // Opening the initial project lives in the store's bootstrap(), not here: it
   // has to run after the session rehydration it would otherwise race.
+
+  // Identity-stable, or the palette's entry list rebuilds on every keystroke.
+  const paletteActions = useMemo<PaletteActions>(
+    () => ({ showTab: setTab, showAppearance: () => setShowAppearance(true) }),
+    [],
+  )
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
@@ -25,13 +34,11 @@ export default function App(): React.JSX.Element {
       if (e.key === 'n') {
         e.preventDefault()
         void newSession()
-      } else if (e.key === 'k') {
-        // Cycle sessions. A full palette is overkill for a rail you can click.
+      } else if (e.key === 'p' || e.key === 'k') {
+        // ⌘K used to cycle sessions; the palette is that, done properly. Both
+        // keys open it, since muscle memory splits between the two.
         e.preventDefault()
-        const { sessions, activeId, select } = useStore.getState()
-        if (sessions.length < 2) return
-        const i = sessions.findIndex((s) => s.id === activeId)
-        select(sessions[(i + 1) % sessions.length].id)
+        setShowPalette((v) => !v)
       }
     }
     window.addEventListener('keydown', onKey)
@@ -54,6 +61,7 @@ export default function App(): React.JSX.Element {
 
         {session ? (
           <>
+            <TodoStrip sessionId={session.id} />
             <Conversation sessionId={session.id} />
             <Composer session={session} />
           </>
@@ -101,6 +109,10 @@ export default function App(): React.JSX.Element {
           )}
         </div>
       </section>
+
+      {showPalette && (
+        <CommandPalette actions={paletteActions} onClose={() => setShowPalette(false)} />
+      )}
     </div>
   )
 }

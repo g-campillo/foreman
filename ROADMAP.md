@@ -28,7 +28,7 @@ seam boundary, not duplication — the halves land in different batches on purpo
 | # | Batch | Features | Seam | Size |
 |---|---|---|---|---|
 | 1 | ✅ One sitting | 15, 9, 13, 5a, 21 | S1 + S6 | ½ day |
-| 2 | Looks finished | 16, 20, 22 | S6 | 1–2 d |
+| 2 | ✅ Looks finished | 16, 20, 22 | S6 | 1–2 d |
 | 3 | Read-only panels | 2, 14, 11, 10a | S2 | 1–2 d |
 | 4 | Composer | 1, 18, 19, 17 | S4 | 2–3 d |
 | 5 | History | 3, 23, 4 | S5 | 2–3 d |
@@ -90,13 +90,16 @@ No SDK at all. Pure renderer work, and the largest perceived-quality gap in the 
 
 **Files:** `src/renderer/src/components/Conversation.tsx`, `App.tsx`, `theme.css`
 
-- [ ] **16. Markdown + syntax-highlighted code blocks.** `Conversation.tsx` currently
+- [x] **16. Markdown + syntax-highlighted code blocks.** `Conversation.tsx` currently
   renders `{item.text}` raw. Add copy buttons and collapse long blocks while you're in
   there. All three of Claude, Codex and Gemini do this; it's why they read as finished.
-- [ ] **20. Todo/plan strip.** The `TodoWrite` tool stream is already flowing through your
-  tool cards. Pin the latest list to a header strip instead of burying it in scrollback.
+- [x] **20. Todo/plan strip.** ~~The `TodoWrite` tool stream~~ **this SDK has no `TodoWrite`** —
+  it emits `TaskCreate` (one call per task, id returned in the *result* text) plus
+  `TaskUpdate` (one call per status change), so the strip folds those events. `TodoWrite`
+  is still handled as a whole-list rewrite in case another config emits it. The tool stream
+  is already flowing through your tool cards. Pin the latest list to a header strip instead of burying it in scrollback.
   No new plumbing — read the last `TodoWrite` item out of the existing store.
-- [ ] **22. Command palette (⌘P).** Sessions, files, and later slash commands. Today ⌘K
+- [x] **22. Command palette (⌘P).** Sessions, files, and later slash commands. Today ⌘K
   cycles sessions, which is the placeholder version of this.
 
 > Batch 7 also edits the `Item` switch in `Conversation.tsx`. Land this first.

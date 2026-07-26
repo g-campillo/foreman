@@ -54,6 +54,16 @@
 
   --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   --mono: 'SF Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* Syntax highlighting. Declared as tokens rather than importing one of
+     highlight.js's stylesheets, because those hardcode a single palette and
+     would strand light mode on dark-mode colours. */
+  --syn-key: 255 121 198;
+  --syn-str: 126 231 135;
+  --syn-num: 189 147 249;
+  --syn-comment: 132 132 148;
+  --syn-fn: 102 187 255;
+  --syn-type: 255 198 109;
 }
 
 /* Only the palette flips. Geometry, fonts and the user alpha knobs are
@@ -92,6 +102,15 @@
   --add-bg: 48 209 88 / 0.17;
   --del-fg: 173 32 26;
   --del-bg: 255 69 58 / 0.14;
+
+  /* Same reasoning as the diff foregrounds: the dark-mode syntax pastels are
+     unreadable on a light fill, so these are proper darkened hues. */
+  --syn-key: 175 26 130;
+  --syn-str: 24 118 56;
+  --syn-num: 106 62 186;
+  --syn-comment: 122 122 136;
+  --syn-fn: 20 96 191;
+  --syn-type: 152 92 12;
 }
 
 * {
@@ -376,9 +395,11 @@ select {
   overflow-wrap: anywhere;
 }
 
+/* No `white-space: pre-wrap` here, unlike the user and thinking bubbles: the
+   markdown renderer emits real block elements, and preserving the source
+   newlines on top of them double-spaces every paragraph. */
 .msg-assistant {
   max-width: 92%;
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
   line-height: 1.62;
 }
@@ -770,4 +791,331 @@ select {
 .pop input[type='range'] {
   width: 100%;
   accent-color: rgb(var(--accent));
+}
+
+/* ─────────────────────────────────────────────────────── markdown */
+
+/* Vertical rhythm comes from a single margin on adjacent siblings, so the first
+   and last child never add stray space inside the bubble. */
+.md > * + * {
+  margin-top: 0.72em;
+}
+.md ul,
+.md ol {
+  padding-left: 1.35em;
+}
+.md li + li {
+  margin-top: 0.28em;
+}
+.md h1,
+.md h2,
+.md h3,
+.md h4 {
+  font-size: 1em;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+.md h1 {
+  font-size: 1.18em;
+}
+.md h2 {
+  font-size: 1.08em;
+}
+.md a {
+  color: rgb(var(--accent));
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.md blockquote {
+  border-left: 2px solid rgb(var(--border-strong));
+  padding-left: 11px;
+  color: rgb(var(--text-dim));
+}
+.md hr {
+  border: 0;
+  border-top: 1px solid rgb(var(--border));
+}
+
+/* Inline code only. The :not() keeps this off code inside a fenced block, which
+   .code-wrap pre already styles. */
+.md :not(pre) > code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: rgb(var(--surface-3) / 0.75);
+  border-radius: var(--r-sm);
+  padding: 0.12em 0.36em;
+}
+
+.md table {
+  border-collapse: collapse;
+  display: block;
+  overflow-x: auto;
+  font-size: 12px;
+}
+.md th,
+.md td {
+  border: 1px solid rgb(var(--border));
+  padding: 4px 9px;
+  text-align: left;
+}
+.md th {
+  background: rgb(var(--surface-2) / 0.6);
+  font-weight: 600;
+}
+
+/* ──────────────────────────────────────────────────── code blocks */
+
+.code-wrap {
+  position: relative;
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--r-md);
+  background: rgb(var(--surface-2) / 0.6);
+  overflow: hidden;
+}
+.code-wrap pre {
+  margin: 0;
+  padding: 11px 13px;
+  overflow-x: auto;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.code-wrap pre code {
+  font-family: inherit;
+}
+
+/* Collapsed blocks clip rather than scroll, and fade out so the cut reads as
+   deliberate instead of as a rendering bug. */
+.code-wrap[data-collapsed] pre {
+  max-height: 20em;
+  overflow-y: hidden;
+  -webkit-mask-image: linear-gradient(to bottom, #000 72%, transparent 100%);
+  mask-image: linear-gradient(to bottom, #000 72%, transparent 100%);
+}
+
+.code-bar {
+  position: absolute;
+  top: 5px;
+  right: 6px;
+  display: flex;
+  gap: 5px;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+/* Keyboard users never hover, so focus-within has to reveal it too. */
+.code-wrap:hover .code-bar,
+.code-wrap:focus-within .code-bar {
+  opacity: 1;
+}
+/* A collapsed block's toggle is the only way to see the rest, so it stays put. */
+.code-wrap[data-collapsed] .code-bar {
+  opacity: 1;
+}
+.code-btn {
+  font-size: 10.5px;
+  padding: 2px 7px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgb(var(--border-strong));
+  background: rgb(var(--surface-3) / 0.92);
+  color: rgb(var(--text-dim));
+}
+.code-btn:hover {
+  color: rgb(var(--text));
+}
+
+/* highlight.js token classes, mapped onto the theme tokens. Only the ones the
+   common-language set actually emits often enough to matter. */
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-built_in {
+  color: rgb(var(--syn-key));
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: rgb(var(--syn-str));
+}
+.hljs-number,
+.hljs-symbol {
+  color: rgb(var(--syn-num));
+}
+.hljs-comment,
+.hljs-quote {
+  color: rgb(var(--syn-comment));
+  font-style: italic;
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-section {
+  color: rgb(var(--syn-fn));
+}
+.hljs-type,
+.hljs-class .hljs-title,
+.hljs-attr,
+.hljs-attribute,
+.hljs-variable,
+.hljs-template-variable {
+  color: rgb(var(--syn-type));
+}
+.hljs-emphasis {
+  font-style: italic;
+}
+.hljs-strong {
+  font-weight: 600;
+}
+
+/* ────────────────────────────────────────────────────── todo strip */
+
+.todos {
+  flex-shrink: 0;
+  border-bottom: 1px solid rgb(var(--border));
+  background: rgb(var(--surface-2) / 0.4);
+}
+.todos-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 22px;
+  font-size: 12px;
+  text-align: left;
+}
+.todos-count {
+  font-variant-numeric: tabular-nums;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: rgb(var(--text-faint));
+  flex-shrink: 0;
+}
+.todos-now {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: rgb(var(--text-dim));
+}
+.todos-chev {
+  color: rgb(var(--text-faint));
+  flex-shrink: 0;
+}
+.todos-list {
+  list-style: none;
+  padding: 0 22px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 30vh;
+  overflow-y: auto;
+  font-size: 12px;
+}
+.todos-list li {
+  display: flex;
+  gap: 8px;
+  color: rgb(var(--text-dim));
+}
+.todos-list li[data-status='completed'] {
+  color: rgb(var(--text-faint));
+  text-decoration: line-through;
+}
+.todos-list li[data-status='in_progress'] {
+  color: rgb(var(--text));
+}
+.todos-mark {
+  flex-shrink: 0;
+  width: 1em;
+}
+.todos-list li[data-status='completed'] .todos-mark {
+  color: rgb(var(--ok));
+}
+.todos-list li[data-status='in_progress'] .todos-mark {
+  color: rgb(var(--accent));
+}
+
+/* ─────────────────────────────────────────────────── command palette */
+
+.palette-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 14vh;
+  background: rgb(0 0 0 / 0.32);
+}
+.palette {
+  width: min(620px, 82vw);
+  max-height: 62vh;
+  display: flex;
+  flex-direction: column;
+  background: rgb(var(--surface) / 0.97);
+  border: 1px solid rgb(var(--border-strong));
+  border-radius: var(--r-lg);
+  box-shadow: 0 24px 70px rgb(0 0 0 / 0.5);
+  overflow: hidden;
+}
+.palette-input {
+  padding: 13px 16px;
+  font-size: 14px;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid rgb(var(--border));
+  color: rgb(var(--text));
+  outline: none;
+}
+.palette-list {
+  overflow-y: auto;
+  padding: 5px;
+}
+.palette-row {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  width: 100%;
+  padding: 7px 11px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  font-size: 13px;
+  color: rgb(var(--text-dim));
+}
+.palette-row[data-sel] {
+  background: rgb(var(--accent) / 0.9);
+  color: rgb(var(--accent-fg));
+}
+.palette-group {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgb(var(--text-faint));
+  width: 62px;
+  flex-shrink: 0;
+}
+.palette-row[data-sel] .palette-group,
+.palette-row[data-sel] .palette-hint {
+  color: rgb(var(--accent-fg) / 0.75);
+}
+.palette-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: inherit;
+}
+.palette-hint {
+  font-size: 11px;
+  color: rgb(var(--text-faint));
+  flex-shrink: 0;
+  max-width: 42%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.palette-empty {
+  padding: 16px;
+  text-align: center;
+  color: rgb(var(--text-faint));
+  font-size: 12px;
 }

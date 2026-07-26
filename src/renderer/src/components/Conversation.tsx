@@ -3,6 +3,7 @@ import type { ChatItem } from '../../../shared/types'
 import { useStore } from '../store'
 import ToolCard from './ToolCard'
 import ApprovalCard from './ApprovalCard'
+import Markdown from './Markdown'
 
 export default function Conversation({ sessionId }: { sessionId: string }): React.JSX.Element {
   const items = useStore((s) => s.items[sessionId] ?? EMPTY)
@@ -62,7 +63,14 @@ function Item({ item }: { item: ChatItem }): React.JSX.Element | null {
     case 'user':
       return <div className="msg-user">{item.text}</div>
     case 'assistant':
-      return <div className="msg-assistant">{item.text}</div>
+      // User and thinking text stay literal on purpose: a prompt should read back
+      // exactly as typed, and markdown headings inside the small italic thinking
+      // block fight its styling.
+      return (
+        <div className="msg-assistant">
+          <Markdown text={item.text} />
+        </div>
+      )
     case 'thinking':
       return <div className="msg-thinking">{item.text}</div>
     case 'tool':

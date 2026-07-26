@@ -8,7 +8,8 @@ const CURRENT = '__current__'
 /** Drop a trailing context-window suffix: 'claude-opus-5[1m]' -> 'claude-opus-5'. */
 const bareModel = (id: string | null | undefined): string => (id ?? '').replace(/\[[^\]]*\]$/, '')
 
-const MODES: { value: PermissionMode; label: string }[] = [
+/** Exported so the command palette offers the same modes, spelled the same way. */
+export const MODES: { value: PermissionMode; label: string }[] = [
   { value: 'default', label: 'Ask' },
   { value: 'acceptEdits', label: 'Accept edits' },
   { value: 'plan', label: 'Plan' },

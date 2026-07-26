@@ -11,6 +11,9 @@
     "allowSyntheticDefaultImports": true,
     "noEmit": true,
     "composite": true,
+    // Same reason as tsconfig.node.json: derive.mts is imported by its real
+    // extension so `npm run check:derive` can run it under bare node.
+    "allowImportingTsExtensions": true,
     "paths": { "@/*": ["./src/renderer/src/*"] }
   },
   "include": ["src/renderer/src/**/*", "src/preload/*.d.ts", "src/shared/**/*"]

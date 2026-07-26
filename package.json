@@ -13,7 +13,8 @@
     "icon": "qlmanage -t -s 1024 -o build build/icon.svg >/dev/null && mv build/icon.svg.png build/icon.png",
     "dist": "electron-vite build && electron-builder --mac",
     "dist:release": "electron-vite build && electron-builder --mac -c.mac.notarize=true",
-    "check:policy": "node src/main/agent/policy.check.mts"
+    "check:policy": "node src/main/agent/policy.check.mts",
+    "check:derive": "node src/renderer/src/derive.check.mts"
   },
   "keywords": [],
   "author": "",
@@ -27,6 +28,9 @@
     "electron-liquid-glass": "^1.1.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
+    "react-markdown": "^10.1.0",
+    "rehype-highlight": "^7.0.2",
+    "remark-gfm": "^4.0.1",
     "zustand": "^5.0.14"
   },
   "devDependencies": {
