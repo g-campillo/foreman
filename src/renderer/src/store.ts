@@ -22,9 +22,13 @@ interface State {
   /** appearance.theme with 'auto' already resolved against the OS. */
   resolvedTheme: 'dark' | 'light'
 
+  /** Transient one-liner shown above the rail — a kept worktree, a failed open. */
+  notice: string | null
+  setNotice(notice: string | null): void
+
   select(id: string): void
-  openPath(cwd: string): Promise<void>
-  newSession(): Promise<void>
+  openPath(cwd: string, worktreeBranch?: string): Promise<void>
+  newSession(worktreeBranch?: string): Promise<void>
   resume(sessionId: string, cwd: string, title: string): Promise<void>
   hydrate(meta: SessionMeta): Promise<void>
   fork(upToMessageId?: string): Promise<void>
@@ -67,6 +71,21 @@ function resolveTheme(t: Appearance['theme']): 'dark' | 'light' {
  */
 function fillFor(alpha: number, theme: 'dark' | 'light'): number {
   return theme === 'light' ? 0.72 + alpha * 0.28 : alpha
+}
+
+/**
+ * The message a main-process throw was actually raised with.
+ *
+ * Electron re-wraps it on the way across the bridge as
+ * `Error invoking remote method 'session:create': Error: <the real message>`,
+ * so showing `err.message` verbatim buries a perfectly good sentence like
+ * "Branch foreman/x already exists." behind IPC plumbing. Splitting on the LAST
+ * `Error: ` unwraps that without caring how many layers deep it went.
+ */
+function ipcMessage(err: unknown): string {
+  const raw = String((err as Error)?.message ?? err)
+  const at = raw.lastIndexOf('Error: ')
+  return at === -1 ? raw : raw.slice(at + 'Error: '.length)
 }
 
 let booted = false
@@ -141,6 +160,11 @@ export const useStore = create<State>((set, get) => ({
   models: [],
   appearance: INITIAL_APPEARANCE,
   resolvedTheme: resolveTheme(INITIAL_APPEARANCE.theme),
+  notice: null,
+
+  setNotice(notice) {
+    set({ notice })
+  },
 
   select(id) {
     set({ activeId: id })
@@ -149,16 +173,25 @@ export const useStore = create<State>((set, get) => ({
     })
   },
 
-  async openPath(cwd) {
-    const meta: SessionMeta = await window.foreman.createSession({ cwd })
-    set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id }))
+  async openPath(cwd, worktreeBranch) {
+    let meta: SessionMeta
+    try {
+      meta = await window.foreman.createSession({ cwd, worktreeBranch })
+    } catch (err) {
+      // Worktree creation is the one failure mode here that happens for ordinary
+      // reasons (branch taken, no commits yet), so it needs saying rather than
+      // leaving the New button looking dead.
+      set({ notice: ipcMessage(err) })
+      return
+    }
+    set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id, notice: null }))
     get().select(meta.id)
   },
 
-  async newSession() {
+  async newSession(worktreeBranch) {
     const cwd = await window.foreman.pickDirectory()
     if (!cwd) return
-    await get().openPath(cwd)
+    await get().openPath(cwd, worktreeBranch)
   },
 
   async resume(sessionId, cwd, title) {
@@ -251,7 +284,9 @@ export const useStore = create<State>((set, get) => ({
   },
 
   async close(id) {
-    await window.foreman.closeSession(id)
+    // Closing a worktree session may leave the checkout behind on purpose, and
+    // that only comes back from main — the renderer can't tell if it was dirty.
+    const { notice } = (await window.foreman.closeSession(id)) ?? {}
     set((s) => {
       const sessions = s.sessions.filter((x) => x.id !== id)
       const { [id]: _drop, ...items } = s.items
@@ -259,6 +294,7 @@ export const useStore = create<State>((set, get) => ({
         sessions,
         items,
         activeId: s.activeId === id ? (sessions[0]?.id ?? null) : s.activeId,
+        notice: notice ?? s.notice,
       }
     })
   },

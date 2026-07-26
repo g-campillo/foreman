@@ -54,8 +54,11 @@ export default function App(): React.JSX.Element {
         <header className="pane-head drag">
           <span>{session ? session.title : 'Foreman'}</span>
           {session && (
-            <span style={{ textTransform: 'none', letterSpacing: 0, fontWeight: 400 }}>
-              {session.cwd}
+            /* A worktree path is long and says nothing useful — it lives under
+               userData with a disambiguating suffix. The branch is what the user
+               thinks of this session as; the full path stays in the tooltip. */
+            <span className="pane-path" title={session.cwd}>
+              {session.worktree ? `${session.worktree.repoRoot} · ${session.worktree.branch}` : session.cwd}
             </span>
           )}
         </header>

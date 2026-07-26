@@ -7,7 +7,15 @@
  * blocked waiting for them.
  */
 import { strict as assert } from 'node:assert'
-import { MAX_BUDGET_USD, MAX_TURNS, cap, resultText, notifyBody, normaliseSend } from './policy.mts'
+import {
+  MAX_BUDGET_USD,
+  MAX_TURNS,
+  branchSlug,
+  cap,
+  resultText,
+  notifyBody,
+  normaliseSend,
+} from './policy.mts'
 
 // ------------------------------------------------------------------------ cap
 
@@ -120,5 +128,54 @@ assert.ok(notifyBody('running', 'awaiting-approval', 2)?.includes('2'))
 assert.equal(notifyBody('awaiting-approval', 'running', 0), null)
 assert.equal(notifyBody('idle', 'idle', 0), null)
 assert.equal(notifyBody('running', 'running', 0), null)
+
+// ---------------------------------------------------------------- branchSlug
+//
+// This string becomes BOTH a git ref and a directory under userData, so a hole
+// here is either a confusing `git worktree add` failure or a path escape.
+
+// The ordinary case survives intact, including the characters git does allow.
+assert.equal(branchSlug('Fix the parser'), 'fix-the-parser')
+assert.equal(branchSlug('feat_v2.1-x'), 'feat_v2.1-x')
+
+// Path separators and traversal must not survive in something used as a dirname.
+assert.equal(branchSlug('../../etc/passwd'), 'etc-passwd')
+assert.equal(branchSlug('a/b/c'), 'a-b-c')
+for (const evil of ['../..', '..', '.', './/.', '/'])
+  assert.ok(
+    !branchSlug(evil).includes('/') && !branchSlug(evil).includes('..'),
+    `escapes: ${evil}`,
+  )
+
+// git check-ref-format: no leading/trailing dot or dash, no '..' anywhere.
+for (const raw of ['.hidden', 'trailing.', '-flag', 'a..b', 'a...b', '..x..', 'x.', '-']) {
+  const s = branchSlug(raw)
+  assert.ok(!s.startsWith('.') && !s.startsWith('-'), `leads badly: ${raw} -> ${s}`)
+  assert.ok(!s.endsWith('.') && !s.endsWith('-'), `trails badly: ${raw} -> ${s}`)
+  assert.ok(!s.includes('..'), `has '..': ${raw} -> ${s}`)
+}
+
+// Ref-breaking metacharacters are replaced, never dropped silently into the ref.
+for (const raw of ['a~b', 'a^b', 'a:b', 'a?b', 'a*b', 'a[b', 'a\\b', 'a b', 'a\tb'])
+  assert.ok(/^[a-z0-9._-]+$/.test(branchSlug(raw)), `not ref-safe: ${raw}`)
+
+// Never empty: 'foreman/' is not a valid ref, and the resulting git error would
+// point nowhere near the empty input that caused it.
+for (const raw of ['', '   ', '!!!', '///', '...', '---'])
+  assert.equal(branchSlug(raw), 'agent', `empty case: ${JSON.stringify(raw)}`)
+
+// Bounded, and still well-formed after truncation — slicing mid-name must not
+// leave a trailing dot or dash that then fails check-ref-format.
+{
+  const long = branchSlug('x'.repeat(200))
+  assert.equal(long.length, 60)
+  const cut = branchSlug(`${'y'.repeat(59)}.tail`)
+  assert.ok(cut.length <= 60 && !cut.endsWith('.') && !cut.endsWith('-'), `bad cut: ${cut}`)
+}
+
+// Idempotent: re-slugging an already-slugged name is a no-op, so a round trip
+// through the UI can't drift the branch away from the directory.
+for (const raw of ['Fix the parser', '../etc', 'a..b', 'x'.repeat(200), ''])
+  assert.equal(branchSlug(branchSlug(raw)), branchSlug(raw), `not idempotent: ${raw}`)
 
 console.log('policy: ok')

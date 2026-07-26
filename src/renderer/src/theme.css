@@ -230,6 +230,25 @@ select {
   color: rgb(var(--text-faint));
 }
 
+/* The header is a fixed-height flex row, so a long path doesn't grow it — it
+   wraps and overflows into the row below. Truncate instead; `title` keeps the
+   full path. `min-width: 0` is what actually allows it: a flex item won't shrink
+   below its content width without it, so the ellipsis never triggers.
+
+   Deliberately NOT `direction: rtl` (which .diff-path uses to elide the front of
+   a path): an absolute path starts with `/`, and `/` is bidi-neutral, so rtl
+   moves it to the far end and renders `/private/tmp/x` as `private/tmp/x/`.
+   .diff-path gets away with it only because its paths are repo-relative. */
+.pane-path {
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 400;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* -------------------------------------------------------------------- rail */
 
 .rail {
@@ -284,6 +303,34 @@ select {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Which worktree an agent is editing. Accent-coloured because it is the one
+   thing distinguishing otherwise-identical rows for the same project. */
+.session-branch {
+  font-size: 10.5px;
+  font-family: var(--mono);
+  color: rgb(var(--accent));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  /* No `direction: rtl` here, unlike .diff-path: it would elide the useless
+     `foreman/` prefix, but it also reorders the leading ⑂ to the far right. */
+}
+
+/* A worktree left behind, or a failed open. Full-width and dismissible; it has
+   to carry a path, so it wraps rather than truncating. */
+.rail-notice {
+  margin: 0 8px 6px;
+  padding: 7px 9px;
+  text-align: left;
+  font-size: 11px;
+  line-height: 1.45;
+  color: rgb(var(--warn));
+  background: rgb(var(--warn) / 0.1);
+  border: 1px solid rgb(var(--warn) / 0.35);
+  border-radius: var(--r-md);
+  overflow-wrap: anywhere;
 }
 
 .dot {
@@ -706,6 +753,50 @@ select {
   backdrop-filter: blur(12px);
   z-index: 1;
 }
+/* ---------------------------------------------------------------- commit bar */
+
+.commit-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgb(var(--border));
+}
+.commit-msg {
+  flex: 1;
+  min-width: 0;
+  font-size: 12px;
+  padding: 5px 9px;
+  border-radius: var(--r-sm);
+  border: 1px solid rgb(var(--border-strong));
+  background: rgb(var(--surface-2) / 0.6);
+  color: rgb(var(--text));
+}
+.commit-msg:focus {
+  outline: none;
+  border-color: rgb(var(--accent) / 0.7);
+}
+.commit-msg:disabled {
+  opacity: 0.55;
+}
+.commit-error {
+  padding: 7px 12px;
+  font-size: 11px;
+  font-family: var(--mono);
+  color: rgb(var(--danger));
+  background: rgb(var(--danger) / 0.1);
+  border-bottom: 1px solid rgb(var(--danger) / 0.3);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 120px;
+  overflow-y: auto;
+}
+.diff-pick {
+  flex: 0 0 auto;
+  accent-color: rgb(var(--accent));
+  cursor: pointer;
+}
+
 .diff-path {
   font-family: var(--mono);
   font-size: 11.5px;

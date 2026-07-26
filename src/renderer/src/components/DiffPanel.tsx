@@ -5,6 +5,13 @@ import { useStore } from '../store'
 export default function DiffPanel({ session }: { session: SessionMeta }): React.JSX.Element {
   const [diffs, setDiffs] = useState<FileDiff[]>([])
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
+  // Paths explicitly UNticked. Tracking exclusions rather than inclusions means
+  // a file the agent touches mid-review is included by default, which matches
+  // what "commit these changes" means to someone looking at a finished list.
+  const [excluded, setExcluded] = useState<Record<string, boolean>>({})
+  const [message, setMessage] = useState('')
+  const [committing, setCommitting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   const bump = useStore((s) => s.diffCounts[session.id] ?? 0)
   const status = session.status
 
@@ -15,6 +22,27 @@ export default function DiffPanel({ session }: { session: SessionMeta }): React.
   // Re-read on new snapshots and whenever a turn settles — the agent may have
   // written several times to a file we already had a baseline for.
   useEffect(refresh, [refresh, bump, status])
+
+  const picked = diffs.filter((d) => !excluded[d.path])
+
+  async function commit(): Promise<void> {
+    setCommitting(true)
+    setError(null)
+    const res = await window.foreman.commitFiles(
+      session.id,
+      session.cwd,
+      picked.map((d) => d.path),
+      message,
+    )
+    setCommitting(false)
+    if (!res.ok) {
+      setError(res.error ?? 'Commit failed.')
+      return
+    }
+    setMessage('')
+    setExcluded({})
+    refresh()
+  }
 
   if (diffs.length === 0) {
     return (
@@ -53,10 +81,52 @@ export default function DiffPanel({ session }: { session: SessionMeta }): React.
         </button>
       </div>
 
+      <div className="commit-bar">
+        <input
+          className="commit-msg"
+          placeholder={
+            picked.length
+              ? `Commit ${picked.length} file${picked.length === 1 ? '' : 's'}…`
+              : 'Tick a file to commit'
+          }
+          value={message}
+          disabled={picked.length === 0}
+          onChange={(e) => setMessage(e.target.value)}
+          onKeyDown={(e) => {
+            // Enter commits; it's a single-line field, so there's nothing else
+            // for the key to mean, and the button stays for discoverability.
+            if (e.key === 'Enter' && !committing && message.trim() && picked.length) void commit()
+          }}
+        />
+        <button
+          className="btn"
+          data-variant="accent"
+          disabled={committing || !message.trim() || picked.length === 0}
+          onClick={() => void commit()}
+          title={
+            session.worktree
+              ? `Commit to ${session.worktree.branch}`
+              : 'Commit the ticked files'
+          }
+        >
+          {committing ? 'Committing…' : 'Commit'}
+        </button>
+      </div>
+      {error && <div className="commit-error">{error}</div>}
+
       <div className="diff-scroll">
         {diffs.map((d) => (
           <div className="diff-file" key={d.path}>
             <div className="diff-file-head">
+              <input
+                type="checkbox"
+                className="diff-pick"
+                checked={!excluded[d.path]}
+                title="Include in the next commit"
+                onChange={(e) =>
+                  setExcluded((x) => ({ ...x, [d.path]: !e.target.checked }))
+                }
+              />
               <button
                 className="diff-path"
                 onClick={() => setCollapsed((c) => ({ ...c, [d.path]: !c[d.path] }))}

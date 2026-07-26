@@ -31,6 +31,17 @@ export interface RewindResult {
   skippedLinks?: number
 }
 
+/**
+ * An isolated checkout a session owns, so parallel agents on one repo don't
+ * collide. `repoRoot` is the *original* repository, which is what git commands
+ * about the worktree itself (add, remove, list) have to run against.
+ */
+export interface WorktreeInfo {
+  path: string
+  branch: string
+  repoRoot: string
+}
+
 export interface SessionMeta {
   id: string
   title: string
@@ -58,6 +69,8 @@ export interface SessionMeta {
    * needs this one, not `id`.
    */
   sdkSessionId: string | null
+  /** Set when this session runs in its own worktree instead of the project cwd. */
+  worktree?: WorktreeInfo
 }
 
 /**
@@ -365,6 +378,7 @@ export const IPC = {
   diffList: 'diff:list',
   diffRevert: 'diff:revert',
   diffClear: 'diff:clear',
+  diffCommit: 'diff:commit',
   evtDiffChanged: 'diff:changed',
 
   // terminal

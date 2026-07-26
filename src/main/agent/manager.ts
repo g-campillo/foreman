@@ -19,7 +19,9 @@ import {
   type SendContent,
   type SessionMeta,
   type TranscriptSearchHit,
+  type WorktreeInfo,
 } from '../../shared/types'
+import { createWorktree, removeWorktree } from './worktrees'
 import {
   normaliseTranscript,
   searchTranscript,
@@ -101,7 +103,15 @@ function get(id: string): Session | undefined {
   return sessions.get(id)
 }
 
-export function createSession(init: SessionInit): SessionMeta {
+/**
+ * `worktreeBranch` opts the session into its own isolated checkout instead of
+ * the project's real cwd — the one-agent-per-repo assumption this function used
+ * to hardcode. Everything downstream (snapshots, pty, @-mentions) keys off the
+ * resolved cwd, so isolation costs nothing beyond swapping it here.
+ */
+export async function createSession(
+  init: SessionInit & { worktreeBranch?: string },
+): Promise<SessionMeta> {
   // Canonicalise once, here, so cwd / snapshot paths / pty all agree. Tools
   // report real paths, so an un-resolved symlink (e.g. macOS /tmp ->
   // /private/tmp) makes every diff path render as ../../private/tmp/...
@@ -109,32 +119,72 @@ export function createSession(init: SessionInit): SessionMeta {
   // starts the session in the wrong project — and on resume the CLI then reports
   // "No conversation found" for a session that exists perfectly well elsewhere.
   if (!init.cwd) throw new Error('createSession: cwd is required')
-  let cwd = init.cwd
+
+  const { worktreeBranch, ...rest } = init
+  let base = init.cwd
+  let worktree: WorktreeInfo | undefined
+  let title = init.title
+
+  if (worktreeBranch) {
+    const made = await createWorktree(init.cwd, worktreeBranch)
+    // Throwing rejects the renderer's invoke with this message, which is the
+    // only channel that reaches the user before a session exists to show it in.
+    if (!made.ok || !made.worktree) throw new Error(made.error ?? 'Could not create worktree')
+    worktree = made.worktree
+    base = made.worktree.path
+    // Otherwise the title falls back to basename(cwd), which for a worktree is
+    // the disambiguated directory name — "foreman-bed8-add-tests-ms25p582".
+    // What the user typed is the useful label; the rail shows the full ref.
+    title ??= worktreeBranch.trim()
+  }
+
+  let cwd = base
   try {
-    cwd = realpathSync(init.cwd)
+    cwd = realpathSync(base)
   } catch {
     /* path may not exist yet; fall back to as-given */
   }
-  const s = new Session({ ...init, cwd })
+  // The worktree's own path must be canonical too, or `git worktree remove`
+  // is handed a path git doesn't recognise as the one it registered.
+  if (worktree) worktree = { ...worktree, path: cwd }
+
+  const s = new Session({ ...rest, cwd, ...(title ? { title } : {}), ...(worktree ? { worktree } : {}) })
   sessions.set(s.meta.id, s)
   return s.meta
 }
 
-export function closeSession(id: string): void {
+/**
+ * Returns a note when a worktree was deliberately left behind, so the renderer
+ * can say where the work went. Silent otherwise.
+ */
+export async function closeSession(id: string): Promise<{ notice?: string }> {
   const s = sessions.get(id)
-  if (!s) return
+  if (!s) return {}
+  const { worktree } = s.meta
   s.close()
   sessions.delete(id)
   send(IPC.evtRemoved, { sessionId: id })
+
+  if (!worktree) return {}
+  const { removed, reason } = await removeWorktree(worktree)
+  return removed ? {} : { notice: reason }
 }
 
+/**
+ * Quit path. Worktrees are deliberately NOT removed here: quit has no time to
+ * check each one for uncommitted work, and deleting a checkout during shutdown
+ * is unrecoverable if that check is wrong. They survive as ordinary git
+ * worktrees — `git worktree list` finds them, `git worktree remove` clears them.
+ */
 export function disposeAllSessions(): void {
   for (const s of sessions.values()) s.close()
   sessions.clear()
 }
 
 export function registerSessionIpc(): void {
-  ipcMain.handle(IPC.sessionCreate, (_e, init: SessionInit) => createSession(init))
+  ipcMain.handle(IPC.sessionCreate, (_e, init: SessionInit & { worktreeBranch?: string }) =>
+    createSession(init),
+  )
 
   ipcMain.handle(IPC.sessionResume, (_e, init: SessionInit & { resume: string }) =>
     createSession(init),

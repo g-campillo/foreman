@@ -19,6 +19,7 @@ import {
   type SkillInfo,
   type SlashCommandInfo,
   type UsageInfo,
+  type WorktreeInfo,
 } from '../../shared/types'
 import { notify, send } from '../bridge'
 import { createInputQueue, type InputQueue } from './queue'
@@ -58,6 +59,10 @@ export interface SessionInit {
   resume?: string
   permissionMode?: PermissionMode
   effort?: EffortLevel
+  /** Set by the manager once it has actually created the worktree. `cwd` is
+   *  already the worktree path by then; this is what the rail displays and what
+   *  close() needs to clean it up. */
+  worktree?: WorktreeInfo
 }
 
 export class Session {
@@ -109,6 +114,7 @@ export class Session {
       // Resume: `init.resume` IS the SDK's session id, and ours differs.
       // Either way this is the id that addresses the session on disk.
       sdkSessionId: init.resume ?? id,
+      ...(init.worktree ? { worktree: init.worktree } : {}),
     }
 
     // Must be kicked off before the agent can touch anything, so that whatever

@@ -89,6 +89,32 @@ async function git(root: string, args: string[]): Promise<string | null> {
   }
 }
 
+/**
+ * Same call, but keeping git's own error text.
+ *
+ * `git()` above swallows failures because its callers genuinely don't care why
+ * (no HEAD yet, not a repo, file absent). Anything the user *asked* for has to
+ * report why it didn't happen instead — "commit failed" with no reason is the
+ * worst possible outcome for the one operation here that writes history.
+ */
+async function gitTry(
+  root: string,
+  args: string[],
+): Promise<{ ok: boolean; stdout: string; error: string }> {
+  try {
+    const { stdout } = await exec('git', ['-C', root, ...args], { maxBuffer: 64 * 1024 * 1024 })
+    return { ok: true, stdout, error: '' }
+  } catch (err) {
+    const e = err as { stderr?: string; stdout?: string; message?: string }
+    return {
+      ok: false,
+      stdout: e.stdout ?? '',
+      // git puts the useful line on stderr; message is the bare exit code.
+      error: (e.stderr || e.message || 'git failed').trim(),
+    }
+  }
+}
+
 /** Absolute path -> git status code, for everything dirty in the worktree. */
 async function dirtyPaths(root: string): Promise<Map<string, string>> {
   const out = await git(root, ['status', '--porcelain', '-z', '--untracked-files=all'])
@@ -211,6 +237,48 @@ export async function revertFile(sessionId: string, path: string): Promise<void>
   send(IPC.evtDiffChanged, { sessionId, count: snaps.size })
 }
 
+/**
+ * Commit exactly the selected files, and stop tracking them as pending changes.
+ *
+ * `add` then `commit -- <paths>` rather than `commit -a`: the pathspec keeps the
+ * commit to what the user ticked, so anything else they had staged by hand — or
+ * that another session in this same worktree is mid-edit on — is left alone. The
+ * `add` is required because a file the agent created is untracked, and `commit`
+ * refuses a pathspec that matches nothing in the index.
+ */
+export async function commitFiles(
+  sessionId: string,
+  cwd: string,
+  paths: string[],
+  message: string,
+): Promise<{ ok: boolean; error?: string; sha?: string; committed: number }> {
+  if (paths.length === 0) return { ok: false, error: 'Nothing selected.', committed: 0 }
+  if (!message.trim()) return { ok: false, error: 'A commit message is required.', committed: 0 }
+
+  const top = await git(cwd, ['rev-parse', '--show-toplevel'])
+  const root = top?.trim()
+  if (!root) return { ok: false, error: 'Not a git repository.', committed: 0 }
+
+  const staged = await gitTry(root, ['add', '--', ...paths])
+  if (!staged.ok) return { ok: false, error: staged.error, committed: 0 }
+
+  // `--` before the paths, and `-m` taking the message as its own argv entry, so
+  // a message starting with a dash or a path containing one is never read as a flag.
+  const done = await gitTry(root, ['commit', '-m', message, '--', ...paths])
+  if (!done.ok) return { ok: false, error: done.error, committed: 0 }
+
+  // Committed files are no longer pending changes. Drop them from the panel
+  // without touching disk — this is `Mark reviewed` scoped to what was committed.
+  const snaps = store.get(sessionId)
+  if (snaps) {
+    for (const p of paths) snaps.delete(p)
+    send(IPC.evtDiffChanged, { sessionId, count: snaps.size })
+  }
+
+  const sha = (await git(root, ['rev-parse', '--short', 'HEAD']))?.trim()
+  return { ok: true, sha, committed: paths.length }
+}
+
 export function clearSnapshots(sessionId: string): void {
   store.delete(sessionId)
   baselines.delete(sessionId)
@@ -226,6 +294,14 @@ export function registerDiffIpc(): void {
   )
   ipcMain.handle(IPC.diffClear, (_e, { sessionId }: { sessionId: string }) =>
     clearSnapshots(sessionId),
+  )
+  ipcMain.handle(
+    IPC.diffCommit,
+    (
+      _e,
+      { sessionId, cwd, paths, message }:
+        { sessionId: string; cwd: string; paths: string[]; message: string },
+    ) => commitFiles(sessionId, cwd, paths, message),
   )
 }
 

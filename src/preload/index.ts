@@ -79,6 +79,8 @@ const api = {
   revertFile: (sessionId: string, path: string) =>
     ipcRenderer.invoke(IPC.diffRevert, { sessionId, path }),
   clearDiffs: (sessionId: string) => ipcRenderer.invoke(IPC.diffClear, { sessionId }),
+  commitFiles: (sessionId: string, cwd: string, paths: string[], message: string) =>
+    ipcRenderer.invoke(IPC.diffCommit, { sessionId, cwd, paths, message }),
 
   // terminal
   startPty: (sessionId: string, cwd: string, cols: number, rows: number) =>

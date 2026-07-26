@@ -34,7 +34,7 @@ seam boundary, not duplication — the halves land in different batches on purpo
 | 5 | ✅ History | 3, 23, 4 | S5 | 2–3 d |
 | 6 | ✅ Time travel + actions | 5b, 7, 12, 8, 10b | S2 + S3 | 2 d |
 | 7 | ✅ Subagents | 6 | S3 | 2 d |
-| 8 | Git | 25, 24 | S6 | L |
+| 8 | ✅ Git | 25, 24 | S6 | L |
 
 **If you only do three:** 1, 2, 3. That's ~3 days and closes the "feels unfinished" gap.
 
@@ -281,12 +281,32 @@ below.
 **Files:** `src/main/agent/manager.ts`, `src/main/agent/snapshots.ts`,
 `src/renderer/src/components/DiffPanel.tsx`
 
-- [ ] **25. Stage / commit from the diff panel.** You already compute hunks against a git
-  baseline (`snapshots.ts`, `porcelain.ts`). "Commit these 4 files" is a short hop.
-- [ ] **24. Parallel agents per repo via git worktrees.** Previously deferred by choice.
-  It's the Codex-cloud / Antigravity "Agent Manager" shape: three agents on three branches
-  of one repo, diffed side by side. `additionalDirectories` covers the multi-root variant.
-  Large — `manager.ts` currently assumes one agent per project cwd, via `realpathSync`.
+- [x] **25. Stage / commit from the diff panel.** Was a short hop, as predicted. A tickbox
+  per file plus a message field; `git add -- <paths>` then `git commit -m … -- <paths>`.
+  The pathspec on `commit` is the load-bearing part — it keeps the commit to what was
+  ticked, so anything the user staged by hand, or another session is mid-edit on in the
+  same worktree, is left alone. Committed files then drop out of the panel (they are no
+  longer pending), which is `Mark reviewed` scoped to the commit. Errors are surfaced
+  verbatim: `git()` in `snapshots.ts` deliberately swallows failures, so this needed a
+  `gitTry()` that keeps stderr — verified against a real "Author identity unknown", where
+  the message is the entire value of the feature.
+- [x] **24. Parallel agents per repo via git worktrees.** `manager.ts`'s one-agent-per-cwd
+  assumption turned out to be the *only* thing in the way: everything downstream
+  (snapshots, pty, @-mentions, the git baseline) already keys off the resolved cwd, so
+  isolation cost a swap there plus `worktrees.ts`. Worktrees live under `userData`, on
+  `foreman/<slug>` branches cut from the **main** worktree's HEAD — `--git-common-dir`,
+  not `--show-toplevel`, so branching from an already-branched session doesn't record a
+  parent that can be deleted out from under it.
+  **The safety rule is the design:** a worktree is removed on close only when it has no
+  uncommitted changes. Committed work is never at risk either way — the branch ref
+  outlives the checkout — so a clean removal loses nothing, and a dirty one is kept with
+  its path reported in the rail. Feature 25 is how you get from dirty to clean, which is
+  why they belong in one batch.
+  **Not built:** the simultaneous side-by-side diff of three agents. Selecting a session
+  already switches the diff panel to that worktree's changes, so the comparison is
+  sequential rather than side-by-side. `additionalDirectories` (multi-root) also skipped.
+  Worktrees are deliberately not reaped at app quit — see the comment on
+  `disposeAllSessions`.
 
 **6 + 24 together is the biggest strategic bet in this document.** A subagent tree plus
 worktree isolation is the one thing none of Claude, Codex or Gemini ships well on the

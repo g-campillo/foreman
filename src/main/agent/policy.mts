@@ -132,6 +132,34 @@ export function normaliseSend(raw: unknown): SendContent | null {
 }
 
 /**
+ * Turn whatever the user typed into something usable as BOTH a git ref and a
+ * directory name.
+ *
+ * A trust boundary: this string is handed to `git worktree add -b` and becomes a
+ * path under userData. Git's own ref rules reject a long tail of things (spaces,
+ * `..`, `~^:?*[`, a leading or trailing dot, a trailing `.lock`, an empty
+ * component), and a path needs stricter treatment still — `/` would nest, `..`
+ * would escape. Allow-listing four characters is far shorter than encoding
+ * git-check-ref-format, and being stricter than git is harmless here.
+ *
+ * Never returns '' — an empty branch name would make `foreman/` a ref, which git
+ * rejects, and the error would point at git rather than at the empty input.
+ */
+export function branchSlug(raw: string): string {
+  const s = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    // Leading/trailing dots and dashes are the ref-format landmines: '.foo' and
+    // 'foo.' are both invalid, and '-foo' reads as a flag in argv.
+    .replace(/^[-.]+|[-.]+$/g, '')
+    // Collapsed last, because trimming the ends can expose a new '..' pair.
+    .replace(/\.{2,}/g, '.')
+    .slice(0, 60)
+    .replace(/[-.]+$/, '')
+  return s || 'agent'
+}
+
+/**
  * Body for a desktop notification on a status change, or null when the
  * transition isn't worth interrupting someone for.
  */

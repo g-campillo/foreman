@@ -28,6 +28,10 @@ export default function SessionRail(): React.JSX.Element {
   const [hits, setHits] = useState<TranscriptSearchHit[] | null>(null)
   const [searching, setSearching] = useState(false)
   const [renaming, setRenaming] = useState<string | null>(null)
+  const [branching, setBranching] = useState(false)
+  const notice = useStore((s) => s.notice)
+  const setNotice = useStore((s) => s.setNotice)
+  const openPath = useStore((s) => s.openPath)
 
   /**
    * Both browsing and search are scoped to the open project.
@@ -67,9 +71,27 @@ export default function SessionRail(): React.JSX.Element {
     if (t && sdkSessionId) void window.foreman.renameSession(sdkSessionId, t)
   }
 
+  /**
+   * Open a session in its own worktree. Scoped to the open project when there is
+   * one, so "three agents on this repo" is two clicks rather than re-picking the
+   * same directory each time; falls back to the picker when nothing is open.
+   */
+  const startBranch = (name: string): void => {
+    setBranching(false)
+    const n = name.trim()
+    if (!n) return
+    void (scope ? openPath(scope, n) : newSession(n))
+  }
+
   return (
     <aside className="pane rail glass">
       <header className="pane-head rail-head drag">Sessions</header>
+
+      {notice && (
+        <button className="rail-notice" onClick={() => setNotice(null)} title="Dismiss">
+          {notice}
+        </button>
+      )}
 
       <div className="rail-list">
         {sessions.map((s) =>
@@ -104,6 +126,9 @@ export default function SessionRail(): React.JSX.Element {
                   {s.status === 'awaiting-approval' ? 'needs approval' : s.status}
                   {s.costUsd > 0 && ` · $${s.costUsd.toFixed(3)}`}
                 </span>
+                {/* Which checkout this agent is editing. Without it, three
+                    sessions on one repo are indistinguishable in the rail. */}
+                {s.worktree && <span className="session-branch">⑂ {s.worktree.branch}</span>}
               </span>
             </button>
           ),
@@ -175,9 +200,29 @@ export default function SessionRail(): React.JSX.Element {
         )}
       </div>
 
+      {branching && (
+        <input
+          className="rename-input"
+          autoFocus
+          placeholder="Branch name…"
+          onBlur={(e) => startBranch(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') startBranch(e.currentTarget.value)
+            if (e.key === 'Escape') setBranching(false)
+          }}
+        />
+      )}
+
       <footer className="rail-foot">
         <button className="btn grow" data-variant="primary" onClick={() => void newSession()}>
           New
+        </button>
+        <button
+          className="btn"
+          onClick={() => setBranching(true)}
+          title="New agent in its own git worktree, on its own branch"
+        >
+          ⑂
         </button>
         <button
           className="btn"
