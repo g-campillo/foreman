@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { PlugZap, Power, RefreshCw, RotateCcw } from 'lucide-react'
 import type {
   AccountInfo,
   AgentInfo,
@@ -87,8 +88,16 @@ export default function SessionPanel({
     <div className="panel-scroll">
       <div className="sect-head">
         <span>Context</span>
-        <button className="code-btn" onClick={() => void refresh()} disabled={busy}>
-          {busy ? 'Refreshing…' : 'Refresh'}
+        {/* The busy state is `:disabled` (opacity .4) rather than a "Refreshing…"
+            word — there's no room for one beside a 12px glyph. */}
+        <button
+          className="code-btn"
+          onClick={() => void refresh()}
+          disabled={busy}
+          title="Refresh"
+          aria-label="Refresh"
+        >
+          <RefreshCw size={12} />
         </button>
       </div>
 
@@ -219,20 +228,24 @@ export default function SessionPanel({
                 <button
                   className="code-btn"
                   title={srv.status === 'disabled' ? 'Enable this server' : 'Disable this server'}
+                  aria-label={
+                    srv.status === 'disabled' ? 'Enable this server' : 'Disable this server'
+                  }
                   onClick={() =>
                     void window.foreman
                       .toggleMcp(session.id, srv.name, srv.status === 'disabled')
                       .then(refresh)
                   }
                 >
-                  {srv.status === 'disabled' ? 'Enable' : 'Disable'}
+                  <Power size={12} />
                 </button>
                 <button
                   className="code-btn"
                   title="Reconnect"
+                  aria-label="Reconnect"
                   onClick={() => void window.foreman.reconnectMcp(session.id, srv.name).then(refresh)}
                 >
-                  ↻
+                  <PlugZap size={12} />
                 </button>
                 {/* Tighten-only by construction — the SDK's override can restrict
                     a server's permission handling but never widen it. */}
@@ -262,9 +275,11 @@ export default function SessionPanel({
         <span>Agents &amp; skills</span>
         <button
           className="code-btn"
+          title="Reload skills"
+          aria-label="Reload skills"
           onClick={() => void window.foreman.reloadSkills(session.id).then(setSkills)}
         >
-          Reload skills
+          <RotateCcw size={12} />
         </button>
       </div>
       {!data?.agents.length ? (

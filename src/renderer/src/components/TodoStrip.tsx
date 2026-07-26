@@ -1,14 +1,17 @@
 import { useMemo, useState } from 'react'
+import { ChevronDown, ChevronRight, Circle, CircleCheck, CircleDot } from 'lucide-react'
 import { useStore } from '../store'
-import { latestTodos, type Todo } from '../derive.mts'
+import { latestTodos } from '../derive.mts'
 
 const EMPTY: never[] = []
 
-const MARK: Record<Todo['status'], string> = {
-  completed: '✓',
-  in_progress: '◐',
-  pending: '○',
-}
+/** Components, not glyphs. The per-status colour still comes from the
+ *  `.todos-list li[data-status]` rules — lucide strokes with currentColor. */
+const MARK = {
+  completed: CircleCheck,
+  in_progress: CircleDot,
+  pending: Circle,
+} as const
 
 /**
  * The agent's current plan, pinned above the transcript.
@@ -38,17 +41,24 @@ export default function TodoStrip({ sessionId }: { sessionId: string }): React.J
         <span className="todos-now">
           {current ? (current.activeForm ?? current.content) : 'Plan'}
         </span>
-        <span className="todos-chev">{open ? '▾' : '▸'}</span>
+        <span className="todos-chev">
+          {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </span>
       </button>
 
       {open && (
         <ol className="todos-list">
-          {todos.map((t, i) => (
-            <li key={i} data-status={t.status}>
-              <span className="todos-mark">{MARK[t.status]}</span>
-              {t.content}
-            </li>
-          ))}
+          {todos.map((t, i) => {
+            const Mark = MARK[t.status]
+            return (
+              <li key={i} data-status={t.status}>
+                <span className="todos-mark">
+                  <Mark size={11} />
+                </span>
+                {t.content}
+              </li>
+            )
+          })}
         </ol>
       )}
     </div>

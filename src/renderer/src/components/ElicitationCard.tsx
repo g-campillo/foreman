@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { Ban, SendHorizontal } from 'lucide-react'
 import type { ElicitationRequest } from '../../../shared/types'
 import { schemaFields } from '../derive.mts'
 
@@ -110,6 +111,7 @@ export default function ElicitationCard({
 
       <div className="elicit-actions">
         <button className="btn" onClick={() => respond('decline')}>
+          <Ban size={14} />
           Decline
         </button>
         <button
@@ -119,6 +121,7 @@ export default function ElicitationCard({
           onClick={() => respond('accept')}
           title={missing.length ? `Required: ${missing.map((f) => f.label).join(', ')}` : undefined}
         >
+          <SendHorizontal size={14} />
           Send
         </button>
       </div>

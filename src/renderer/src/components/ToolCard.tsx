@@ -1,4 +1,5 @@
 import { Children, useState } from 'react'
+import { ChevronDown, ChevronRight, Circle, CircleCheck, CircleX } from 'lucide-react'
 import type { ChatItem } from '../../../shared/types'
 import { ANSWER_PREFIX, askQuestions, planProposal, planTitle } from '../derive.mts'
 import Markdown from './Markdown'
@@ -53,7 +54,9 @@ export function summarise(name: string, input: unknown): string {
   }
 }
 
-const ICON: Record<Tool['status'], string> = { pending: '○', done: '●', error: '✕' }
+/** Components, not glyphs — rendered as `<Glyph />` below. Colour comes from the
+ *  wrapping span: lucide strokes with currentColor. */
+const ICON = { pending: Circle, done: CircleCheck, error: CircleX } as const
 
 export default function ToolCard({
   item,
@@ -76,6 +79,7 @@ export default function ToolCard({
   const status = item.status === 'error' && item.result?.startsWith(ANSWER_PREFIX)
     ? 'done'
     : item.status
+  const Glyph = ICON[status]
 
   return (
     <div className="tool" data-nested={nested ? '' : undefined}>
@@ -90,14 +94,16 @@ export default function ToolCard({
                   : 'rgb(var(--text-faint))',
           }}
         >
-          {ICON[status]}
+          <Glyph size={12} />
         </span>
         <span className="tool-name">{item.name}</span>
         {/* The rolling summary is the more useful line once there is one, and it
             replaces the gist rather than crowding it — the gist is the Task's
             static description, which the expanded input still shows. */}
         <span className="tool-arg">{item.progress || gist}</span>
-        <span style={{ color: 'rgb(var(--text-faint))' }}>{isOpen ? '▾' : '▸'}</span>
+        <span style={{ color: 'rgb(var(--text-faint))' }}>
+          {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </span>
       </button>
 
       {isOpen && (

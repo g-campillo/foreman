@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { GitBranch, GitBranchPlus, History, Plus, X } from 'lucide-react'
 import type { PastSession, TranscriptSearchHit } from '../../../shared/types'
 import { useStore } from '../store'
 
@@ -128,7 +129,12 @@ export default function SessionRail(): React.JSX.Element {
                 </span>
                 {/* Which checkout this agent is editing. Without it, three
                     sessions on one repo are indistinguishable in the rail. */}
-                {s.worktree && <span className="session-branch">⑂ {s.worktree.branch}</span>}
+                {s.worktree && (
+                  <span className="session-branch">
+                    <GitBranch size={11} />
+                    {s.worktree.branch}
+                  </span>
+                )}
               </span>
             </button>
           ),
@@ -214,26 +220,41 @@ export default function SessionRail(): React.JSX.Element {
       )}
 
       <footer className="rail-foot">
-        <button className="btn grow" data-variant="primary" onClick={() => void newSession()}>
+        <button
+          className="btn grow"
+          data-variant="primary"
+          title="New session  ⌘N"
+          onClick={() => void newSession()}
+        >
+          <Plus size={14} />
           New
         </button>
         <button
           className="btn"
           onClick={() => setBranching(true)}
           title="New agent in its own git worktree, on its own branch"
+          aria-label="New worktree session"
         >
-          ⑂
+          <GitBranchPlus size={14} />
         </button>
         <button
           className="btn"
+          data-active={showPast}
           onClick={() => setShowPast((v) => !v)}
-          title="Resume or search past sessions"
+          title={showPast ? 'Hide past sessions' : 'Resume or search past sessions'}
+          aria-label={showPast ? 'Hide past sessions' : 'Past sessions'}
         >
-          {showPast ? 'Hide' : 'Past'}
+          <History size={14} />
         </button>
         {activeId && (
-          <button className="btn" data-variant="danger" onClick={() => void close(activeId)}>
-            ✕
+          <button
+            className="btn"
+            data-variant="danger"
+            title="Close this session"
+            aria-label="Close this session"
+            onClick={() => void close(activeId)}
+          >
+            <X size={14} />
           </button>
         )}
       </footer>

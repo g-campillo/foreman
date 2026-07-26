@@ -200,6 +200,19 @@ select {
   overflow: hidden;
 }
 
+/* Right pane closed — the default. `display: none` generates no box at all, so
+   .side stops being a grid item and no implicit third column appears; gap:1px
+   then yields exactly one hairline (rail↔chat), which is what we want.
+   Driven off the attribute rather than a modifier class because the attribute
+   already IS the state: nothing to keep in sync, and per-panel width overrides
+   (`.app[data-panel='terminal']`) come for free without touching the TSX. */
+.app:not([data-panel]) {
+  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+}
+.app:not([data-panel]) > .side {
+  display: none;
+}
+
 .pane {
   min-width: 0;
   min-height: 0;
@@ -315,7 +328,7 @@ select {
   overflow: hidden;
   text-overflow: ellipsis;
   /* No `direction: rtl` here, unlike .diff-path: it would elide the useless
-     `foreman/` prefix, but it also reorders the leading ⑂ to the far right. */
+     `foreman/` prefix, but it also reorders the leading icon to the far right. */
 }
 
 /* A worktree left behind, or a failed open. Full-width and dismissible; it has
@@ -402,6 +415,12 @@ select {
 }
 .btn[data-variant='danger']:hover {
   background: rgb(var(--danger) / 0.14);
+}
+/* Toggle buttons that lost their Past/Hide-style label to an icon still need to
+   say which way they're set. */
+.btn[data-active='true'] {
+  background: rgb(var(--surface-3) / 0.9);
+  color: rgb(var(--text));
 }
 .btn:disabled {
   opacity: 0.4;
@@ -710,7 +729,8 @@ select {
   margin-left: auto;
 }
 .tab {
-  padding: 4px 10px;
+  position: relative; /* anchors the diff count */
+  padding: 5px 8px; /* squarer than the old 4px 10px — these are icons now */
   border-radius: var(--r-sm);
   font-size: 11px;
   font-weight: 600;
@@ -721,6 +741,10 @@ select {
 .tab[data-active='true'] {
   background: rgb(var(--surface-3) / 0.9);
   color: rgb(var(--text));
+}
+.tab:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 
 .badge {
@@ -736,6 +760,21 @@ select {
   align-items: center;
   justify-content: center;
   font-variant-numeric: tabular-nums;
+}
+
+/* The diff count has nowhere to sit beside an icon-only tab's glyph, so it
+   corner-anchors and shrinks. pointer-events:none so it never eats the click.
+   The -3px overhang lands inside .pane-head's 12px padding, and the header is
+   44px against a ~25px button, so nothing clips against .pane's overflow. */
+.tab .badge {
+  position: absolute;
+  top: -3px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  font-size: 9px;
+  pointer-events: none;
 }
 
 /* -------------------------------------------------------------------- diff */
@@ -908,30 +947,31 @@ select {
   color: rgb(var(--text-dim));
 }
 
-/* ------------------------------------------------------------- appearance */
+/* --------------------------------------------------------------- settings */
 
-.pop {
-  position: absolute;
-  right: 12px;
-  top: calc(var(--titlebar-h) + 6px);
-  width: 240px;
-  border: 1px solid rgb(var(--border-strong));
-  border-radius: var(--r-md);
-  padding: 12px;
+/* Settings reuses the plan modal's scrim/frame/head wholesale — it only needs
+   to be narrower and to lay its sliders out. The old `.pop` rules lived here;
+   these last two are those, renamed. It used to be right-anchored inside the
+   side pane, which is no longer a place that reliably exists. */
+/* Two classes, not one: .plan-modal sets width too and is defined LATER in this
+   file, so a bare `.settings` loses the specificity tie on source order. */
+.plan-modal.settings {
+  width: min(400px, 90vw); /* four sliders, not an 860px plan document */
+}
+.settings-body {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  z-index: 20;
-  box-shadow: 0 12px 40px rgb(0 0 0 / 0.45);
+  gap: 14px;
+  padding: 16px 20px 20px;
 }
-.pop label {
+.settings-body label {
   display: flex;
   flex-direction: column;
   gap: 5px;
   font-size: 11px;
   color: rgb(var(--text-dim));
 }
-.pop input[type='range'] {
+.settings-body input[type='range'] {
   width: 100%;
   accent-color: rgb(var(--accent));
 }
@@ -1953,4 +1993,52 @@ select {
 .plan-feedback:focus {
   outline: none;
   border-color: rgb(var(--accent) / 0.7);
+}
+
+/* ─────────────────────────────────────────────────────────────────── icons */
+
+/* Must stay LAST in the file: these beat .branch-btn and .queued-cancel, both
+   of which set `display: block` earlier, at equal specificity.
+
+   One stroke weight app-wide. lucide writes stroke-width as a presentation
+   attribute (specificity 0), so this single rule outranks all ~45 of them and
+   no call site has to repeat `strokeWidth`. Colour needs nothing at all:
+   lucide defaults to stroke="currentColor", so every glyph already inherits
+   its button's colour and its :hover. Unscoped — the app renders no other SVG. */
+svg {
+  stroke-width: 1.75;
+  flex: none;
+}
+
+/* Buttons that now hold a glyph. inline-flex centres the SVG instead of letting
+   it sit on the text baseline, which adds descender space and drops the label a
+   pixel; gap spaces icon from label; justify-content replaces the text-align
+   that .btn.grow used to centre with. No new .icon-btn class: .btn, .tab and
+   .code-btn already give a square-enough, hover- and disabled-correct box for
+   every icon-only site, so a fourth class would add naming, not behaviour. */
+.btn,
+.tab,
+button.code-btn,
+.plan-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+.chip button,
+.branch-btn,
+.todos-mark {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  vertical-align: -2px; /* ignored where the element is itself a flex item */
+}
+
+/* These two keep their original `display` and align their icon inline instead:
+   .queued-cancel is block so it gets its own line under the message, and
+   .session-branch's text-overflow: ellipsis only applies to a non-flex box. */
+.queued-cancel svg,
+.session-branch svg {
+  vertical-align: -2px;
+  margin-right: 3px;
 }

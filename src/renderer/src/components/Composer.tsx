@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { Cog, ListPlus, SendHorizontal, SendToBack, Square, X } from 'lucide-react'
 import type {
   EffortLevel,
   ImageMediaType,
@@ -30,8 +31,11 @@ const EFFORTS: { value: EffortLevel | ''; label: string }[] = [
 /** Cap on suggestions rendered at once — a 4000-file repo must not build 4000 rows. */
 const MAX_SUGGESTIONS = 50
 
-/** Drop a trailing context-window suffix: 'claude-opus-5[1m]' -> 'claude-opus-5'. */
-const bareModel = (id: string | null | undefined): string => (id ?? '').replace(/\[[^\]]*\]$/, '')
+/** Drop a trailing context-window suffix: 'claude-opus-5[1m]' -> 'claude-opus-5'.
+ *  Exported so the empty chat state resolves a display name the same way the
+ *  model picker below does. */
+export const bareModel = (id: string | null | undefined): string =>
+  (id ?? '').replace(/\[[^\]]*\]$/, '')
 
 /** Exported so the command palette offers the same modes, spelled the same way. */
 export const MODES: { value: PermissionMode; label: string }[] = [
@@ -175,8 +179,12 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
             <span key={a.id} className="chip">
               <img src={`data:${a.mediaType};base64,${a.data}`} alt="" />
               {a.name}
-              <button onClick={() => setAttachments((list) => list.filter((x) => x.id !== a.id))}>
-                ✕
+              <button
+                title={`Remove ${a.name}`}
+                aria-label={`Remove ${a.name}`}
+                onClick={() => setAttachments((list) => list.filter((x) => x.id !== a.id))}
+              >
+                <X size={12} />
               </button>
             </span>
           ))}
@@ -273,12 +281,13 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         <div className="bg-tray">
           {session.backgroundTasks.map((t) => (
             <span key={t.taskId} className="chip" title={t.description}>
-              ⚙ {t.description || t.taskType}
+              <Cog size={12} /> {t.description || t.taskType}
               <button
                 title="Stop this background task"
+                aria-label="Stop this background task"
                 onClick={() => void window.foreman.stopTask(session.id, t.taskId)}
               >
-                ✕
+                <X size={12} />
               </button>
             </span>
           ))}
@@ -360,26 +369,36 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
             <button
               className="btn"
               title="Run in-flight work in the background"
+              aria-label="Run in-flight work in the background"
               onClick={() => void window.foreman.backgroundTasks(session.id)}
             >
-              ⇢ bg
+              <SendToBack size={14} />
             </button>
+            {/* A red square is the most universally-read control glyph there is,
+                and it only exists while running, so its context is unambiguous. */}
             <button
               className="btn"
               data-variant="danger"
+              title="Stop the agent"
+              aria-label="Stop the agent"
               onClick={() => void window.foreman.interrupt(session.id)}
             >
-              Stop
+              <Square size={14} />
             </button>
           </>
         )}
+        {/* Icon-only: this is the core loop, bound to ⏎ and pressed hundreds of
+            times a session — the two glyphs read the state better than the two
+            words did, and the word was pure chrome. */}
         <button
           className="btn"
           data-variant="primary"
           onClick={submit}
           disabled={!text.trim() && attachments.length === 0}
+          title={busy ? 'Queue this message  ⏎' : 'Send  ⏎'}
+          aria-label={busy ? 'Queue this message' : 'Send'}
         >
-          {busy ? 'Queue' : 'Send'}
+          {busy ? <ListPlus size={14} /> : <SendHorizontal size={14} />}
         </button>
       </div>
     </div>

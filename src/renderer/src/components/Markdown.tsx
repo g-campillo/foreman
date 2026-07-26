@@ -1,4 +1,5 @@
 import { memo, useEffect, useRef, useState } from 'react'
+import { Check, Copy } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeHighlight from 'rehype-highlight'
@@ -45,8 +46,14 @@ function CodeBlock(props: React.HTMLAttributes<HTMLPreElement>): React.JSX.Eleme
             {expanded ? 'Collapse' : `Show all ${lines} lines`}
           </button>
         )}
-        <button className="code-btn" onClick={copy}>
-          {copied ? 'Copied' : 'Copy'}
+        {/* `Show all N lines` above keeps its text — an icon can't render N. */}
+        <button
+          className="code-btn"
+          onClick={copy}
+          title={copied ? 'Copied' : 'Copy'}
+          aria-label={copied ? 'Copied' : 'Copy'}
+        >
+          {copied ? <Check size={12} /> : <Copy size={12} />}
         </button>
       </div>
     </div>

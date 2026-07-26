@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Check, ChevronLeft, FileText, Pencil, SendHorizontal, X, Zap } from 'lucide-react'
 import type { PermissionMode, PermissionRequest } from '../../../shared/types'
 import { PLAN_FEEDBACK_PREFIX, planTitle, type PlanProposal } from '../derive.mts'
 import Markdown from './Markdown'
@@ -62,6 +63,7 @@ export default function PlanCard({
           {title}
         </span>
         <button className="btn" data-variant="primary" onClick={() => setOpen(true)}>
+          <FileText size={14} />
           Review plan
         </button>
       </div>
@@ -80,9 +82,10 @@ export default function PlanCard({
               <button
                 className="plan-close"
                 title="Close — the plan stays pending, reopen from the transcript"
+                aria-label="Close plan"
                 onClick={() => setOpen(false)}
               >
-                ✕
+                <X size={14} />
               </button>
             </header>
 
@@ -107,7 +110,10 @@ export default function PlanCard({
                     }}
                   />
                   <div className="plan-buttons">
+                    {/* Back keeps its word for row balance — a lone ‹ beside
+                        "Send feedback" reads as a broken glyph. */}
                     <button className="btn" onClick={() => setWriting(false)}>
+                      <ChevronLeft size={14} />
                       Back
                     </button>
                     <button
@@ -116,6 +122,7 @@ export default function PlanCard({
                       disabled={!feedback.trim()}
                       onClick={revise}
                     >
+                      <SendHorizontal size={14} />
                       Send feedback
                     </button>
                   </div>
@@ -128,10 +135,15 @@ export default function PlanCard({
                     </span>
                   )}
                   <div className="plan-buttons">
+                    {/* All three keep their words. Two of them are Approve —
+                        telling those apart by glyph alone is a coin flip on an
+                        irreversible choice. */}
                     <button className="btn" onClick={() => setWriting(true)}>
+                      <Pencil size={14} />
                       Request changes
                     </button>
                     <button className="btn" onClick={() => approve('default')}>
+                      <Check size={14} />
                       Approve · ask per edit
                     </button>
                     <button
@@ -140,6 +152,7 @@ export default function PlanCard({
                       onClick={() => approve('acceptEdits')}
                       title="Approve, and stop asking about each edit"
                     >
+                      <Zap size={14} />
                       Approve · auto-accept
                     </button>
                   </div>

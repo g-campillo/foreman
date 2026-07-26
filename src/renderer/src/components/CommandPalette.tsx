@@ -13,8 +13,10 @@ interface Entry {
 }
 
 export interface PaletteActions {
-  showTab(tab: 'diff' | 'terminal' | 'session'): void
-  showAppearance(): void
+  /** Opens the side panel. Deliberately not a toggle — "Show diff" from the
+   *  palette must never close a diff that's already open. */
+  showPanel(panel: 'diff' | 'terminal' | 'session'): void
+  showSettings(): void
 }
 
 /**
@@ -55,10 +57,10 @@ export default function CommandPalette({
 
     out.push(
       { id: 'new', label: 'New session…', hint: '⌘N', group: 'Session', run: () => void newSession() },
-      { id: 'appearance', label: 'Appearance', group: 'View', run: actions.showAppearance },
-      { id: 'diff', label: 'Show diff', group: 'View', run: () => actions.showTab('diff') },
-      { id: 'term', label: 'Show terminal', group: 'View', run: () => actions.showTab('terminal') },
-      { id: 'sess', label: 'Show session info', group: 'View', run: () => actions.showTab('session') },
+      { id: 'settings', label: 'Settings', hint: '⌘,', group: 'View', run: actions.showSettings },
+      { id: 'diff', label: 'Show diff', hint: '⌘1', group: 'View', run: () => actions.showPanel('diff') },
+      { id: 'term', label: 'Show terminal', hint: '⌘2', group: 'View', run: () => actions.showPanel('terminal') },
+      { id: 'sess', label: 'Show session info', hint: '⌘3', group: 'View', run: () => actions.showPanel('session') },
     )
 
     if (activeId) {

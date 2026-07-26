@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef } from 'react'
+import { GitBranch, HardHat, RotateCcw, Undo2, X } from 'lucide-react'
 import type { ChatItem } from '../../../shared/types'
 import { useStore } from '../store'
 import ToolCard from './ToolCard'
@@ -8,13 +9,17 @@ import QuestionCard from './QuestionCard'
 import PlanCard from './PlanCard'
 import { askQuestions, planProposal } from '../derive.mts'
 import Markdown from './Markdown'
+import { MODES, bareModel } from './Composer'
 
 export default function Conversation({ sessionId }: { sessionId: string }): React.JSX.Element {
   const items = useStore((s) => s.items[sessionId] ?? EMPTY)
   // Select the raw array and narrow in a memo — filtering inside the selector
   // returns a fresh array on every snapshot read, which zustand reads as a
-  // changed store and spins into an infinite render loop.
-  const status = useStore((s) => s.sessions.find((x) => x.id === sessionId)?.status)
+  // changed store and spins into an infinite render loop. `.find` is safe: it
+  // returns an existing object, not a new one, so its identity is stable.
+  const session = useStore((s) => s.sessions.find((x) => x.id === sessionId))
+  const status = session?.status
+  const models = useStore((s) => s.models)
   const allApprovals = useStore((s) => s.approvals)
   const approvals = useMemo(
     () => allApprovals.filter((a) => a.sessionId === sessionId),
@@ -41,6 +46,24 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
   }, [items])
   const roots = useMemo(() => items.filter((it) => !parentOf(it)), [items])
 
+  // Free renderer data only, no git IPC: a non-worktree session genuinely has no
+  // branch to report, so the line just omits it. cwd is the *worktree* path for
+  // worktree sessions — a userData directory with a disambiguating suffix — so
+  // repoRoot is what you actually want to name.
+  const root = session?.worktree?.repoRoot ?? session?.cwd ?? ''
+  const context = [
+    root.split('/').filter(Boolean).pop(),
+    session?.worktree?.branch,
+    // null until the first turn lands. The SDK drops the '[1m]' suffix on the
+    // wire, so both sides get stripped before comparing.
+    session?.model &&
+      (models.find((m) => bareModel(m.resolvedModel) === bareModel(session.model))?.displayName ??
+        session.model),
+    MODES.find((m) => m.value === session?.permissionMode)?.label,
+  ]
+    .filter(Boolean)
+    .join(' · ')
+
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
 
@@ -60,6 +83,18 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
         pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
       }}
     >
+      {/* `.empty` is flex:1 and centred on both axes already; it beats
+          `.convo > * { flex-shrink: 0 }` on source order at equal specificity,
+          which is what lets it fill the scroller. The 'starting' guard covers
+          resume: the session appears and select()s before hydrate()'s async
+          transcript read prepends, so items is [] for at least one frame. */}
+      {items.length === 0 && status !== 'starting' && (
+        <div className="empty">
+          <HardHat size={44} />
+          <h2>Foreman</h2>
+          <p>{context}</p>
+        </div>
+      )}
       {roots.map((item) => (
         <Item key={item.id} item={item} sessionId={sessionId} byParent={byParent} />
       ))}
@@ -147,10 +182,12 @@ function RewindCard(): React.JSX.Element | null {
 
       <div className="ask-actions">
         <button className="btn" onClick={cancelRewind}>
+          <X size={14} />
           Cancel
         </button>
         {result.canRewind && files.length > 0 && (
           <button className="btn" data-variant="danger" onClick={() => void confirmRewind()}>
+            <Undo2 size={14} />
             Restore files
           </button>
         )}
@@ -187,7 +224,8 @@ function Item({
               title="Cancel this queued message"
               onClick={() => void window.foreman.cancelQueued(sessionId, item.id)}
             >
-              queued ✕
+              <X size={12} />
+              queued
             </button>
           ) : (
             item.uuid && (
@@ -199,14 +237,16 @@ function Item({
                   title="Branch a new session from this point"
                   onClick={() => void useStore.getState().fork(item.uuid)}
                 >
-                  ⑂ branch
+                  <GitBranch size={12} />
+                  branch
                 </button>
                 <button
                   className="branch-btn"
                   title="Restore files to their state at this message"
                   onClick={() => void useStore.getState().rewind(item.uuid!)}
                 >
-                  ↺ rewind
+                  <RotateCcw size={12} />
+                  rewind
                 </button>
               </span>
             )

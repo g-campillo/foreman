@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
+import { ClipboardCheck, GitCommitHorizontal, Undo2 } from 'lucide-react'
 import type { FileDiff, SessionMeta } from '../../../shared/types'
 import { useStore } from '../store'
 
@@ -77,6 +78,7 @@ export default function DiffPanel({ session }: { session: SessionMeta }): React.
           }}
           title="Forget these changes without touching the files"
         >
+          <ClipboardCheck size={14} />
           Mark reviewed
         </button>
       </div>
@@ -109,6 +111,7 @@ export default function DiffPanel({ session }: { session: SessionMeta }): React.
               : 'Commit the ticked files'
           }
         >
+          <GitCommitHorizontal size={14} />
           {committing ? 'Committing…' : 'Commit'}
         </button>
       </div>
@@ -146,6 +149,7 @@ export default function DiffPanel({ session }: { session: SessionMeta }): React.
                 }}
                 title={d.before === null ? 'Delete this new file' : 'Restore original contents'}
               >
+                <Undo2 size={12} />
                 Revert
               </button>
             </div>

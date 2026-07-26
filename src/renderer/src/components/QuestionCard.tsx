@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Check, SkipForward } from 'lucide-react'
 import type { PermissionRequest } from '../../../shared/types'
 import { ANSWER_PREFIX, askQuestions, type AskQuestion } from '../derive.mts'
 import Markdown from './Markdown'
@@ -83,6 +84,7 @@ export default function QuestionCard({
           className="btn"
           onClick={() => void window.foreman.respondPermission(req.requestId, 'deny')}
         >
+          <SkipForward size={14} />
           Skip
         </button>
         <button
@@ -91,6 +93,7 @@ export default function QuestionCard({
           disabled={answered === 0}
           onClick={submit}
         >
+          <Check size={14} />
           {answered < questions.length ? `Answer (${answered}/${questions.length})` : 'Answer'}
         </button>
       </div>
