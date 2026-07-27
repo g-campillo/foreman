@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Clock, FolderOpen, HardHat, Search } from 'lucide-react'
 import type { PastSession } from '../../../shared/types'
 import { useStore } from '../store'
-import { filterEntries } from '../derive.mts'
+import { filterEntries, recentProjects } from '../derive.mts'
 
 /** Enough to cover what anyone actually switches between. */
 const MAX_RECENTS = 10
@@ -23,9 +23,11 @@ const MAX_RECENTS = 10
 export default function ProjectChooser(): React.JSX.Element {
   const openPath = useStore((s) => s.openPath)
   const openProject = useStore((s) => s.openProject)
-  const current = useStore((s) => s.sessions.find((x) => x.id === s.activeId)?.cwd)
+  const sessions = useStore((s) => s.sessions)
+  const hiddenProjects = useStore((s) => s.hiddenProjects)
   const cancelDraft = useStore((s) => s.cancelDraft)
   const hasSession = useStore((s) => s.sessions.length > 0)
+  const home = useStore((s) => s.home)
   const [past, setPast] = useState<PastSession[] | null>(null)
   const [query, setQuery] = useState('')
 
@@ -35,33 +37,27 @@ export default function ProjectChooser(): React.JSX.Element {
     void window.foreman.listPastSessions(undefined).then(setPast)
   }, [])
 
-  // Escape backs out — but only when there is a session to back out TO.
+  // Escape backs out — but only when there is somewhere to back out TO.
   // Otherwise this is the app's only screen and dismissing it strands the user.
+  // Home counts: showHome leaves `home` set while a draft is up, so clearing the
+  // draft lands there even with no sessions open.
   useEffect(() => {
-    if (!hasSession) return
+    if (!hasSession && !home) return
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') cancelDraft()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [hasSession, cancelDraft])
+  }, [hasSession, home, cancelDraft])
 
-  const recents = useMemo(() => {
-    const seen = new Set<string>()
-    const out: { label: string; hint: string }[] = []
-    // The project you are already in first, so it is one click even when it has
-    // no history yet.
-    if (current) {
-      seen.add(current)
-      out.push({ label: current.split('/').filter(Boolean).pop() ?? current, hint: current })
-    }
-    for (const p of past ?? []) {
-      if (!p.cwd || seen.has(p.cwd)) continue
-      seen.add(p.cwd)
-      out.push({ label: p.cwd.split('/').filter(Boolean).pop() ?? p.cwd, hint: p.cwd })
-    }
-    return out.slice(0, MAX_RECENTS)
-  }, [past, current])
+  // Shared with Home, so the two cannot disagree about what was removed. It
+  // also seeds from EVERY live session rather than just the active one, and
+  // resolves a worktree to its repoRoot — the raw cwd there is a scratch
+  // checkout under userData, and picking it would start an agent inside it.
+  const recents = useMemo(
+    () => recentProjects(sessions, past ?? [], hiddenProjects).slice(0, MAX_RECENTS),
+    [sessions, past, hiddenProjects],
+  )
 
   // Matches the name or the path — `filterEntries` already ranks hint matches
   // below label matches, which is what makes typing a repo name work.

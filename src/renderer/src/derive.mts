@@ -653,6 +653,186 @@ export function workingVerb(sessionId: string, tick: number): string {
   return WORKING_VERBS[(seed + tick) % WORKING_VERBS.length]
 }
 
+/**
+ * Elapsed time, the way the CLI spells it: `19s`, `5m 1s`, `1h 2m`.
+ *
+ * Seconds are dropped past an hour, where they have stopped being information
+ * and only make the line twitch.
+ */
+export function hms(ms: number): string {
+  const s = Math.floor(Math.max(0, ms) / 1000)
+  if (s < 60) return `${s}s`
+  const m = Math.floor(s / 60)
+  if (m < 60) return `${m}m ${s % 60}s`
+  return `${Math.floor(m / 60)}h ${m % 60}m`
+}
+
+/**
+ * Compact token counts: `842`, `4.2k`, `42k`, `1M`.
+ *
+ * One decimal below 10k and none above, because at five significant digits the
+ * decimal is noise. Shared by the session panel and the context strip so the
+ * same number never renders two ways in one window.
+ */
+export function fmt(n: number): string {
+  if (n >= 1e6) return `${+(n / 1e6).toFixed(1)}M`
+  return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n)
+}
+
+// -------------------------------------------------------------------- projects
+
+/**
+ * Comparison key for a project directory.
+ *
+ * Deliberately NOT a realpath: the renderer has no fs. Main canonicalises with
+ * realpathSync when it creates a session, but `PastSession.cwd` comes straight
+ * from the SDK and is left as written — so this normalises only what a string
+ * can, the trailing slash and the case (APFS is case-insensitive by default).
+ * Two paths that differ through a symlink still read as two projects.
+ *
+ * The case-lowering is wrong on a case-sensitive volume, where it would merge
+ * two genuinely distinct directories. Rare enough to accept knowingly.
+ */
+export function projectKey(path: string): string {
+  return path.replace(/\/+$/, '').toLowerCase()
+}
+
+/** A project row on Home or in the chooser. */
+export interface RecentProject extends Matchable {
+  /** Full path. `label` is the basename. */
+  hint: string
+  /** Has a live session. Never hidden, and never removable — see below. */
+  open: boolean
+}
+
+/**
+ * The recents list, shared by Home and ProjectChooser so the two cannot
+ * disagree about what the user removed.
+ *
+ * `hidden` is a display filter and nothing else — `~/.claude/projects` belongs
+ * to the Claude CLI as much as to us, so a removed project must still be
+ * resumable from the CLI, from the rail's history browser, and from search.
+ *
+ * A project with a live session is pushed first and can never be filtered out:
+ * hiding the directory you are currently working in would produce a row you can
+ * neither explain nor get rid of. The guard lives here rather than in the UI so
+ * it cannot be bypassed by a caller that forgets it.
+ */
+export function recentProjects(
+  sessions: readonly Pick<SessionMeta, 'cwd' | 'worktree'>[],
+  past: readonly { cwd?: string }[],
+  hidden: readonly string[],
+): RecentProject[] {
+  const hide = new Set(hidden.map(projectKey))
+  const seen = new Set<string>()
+  const out: RecentProject[] = []
+
+  const push = (path: string, open: boolean): void => {
+    if (!path) return
+    const key = projectKey(path)
+    if (seen.has(key)) return
+    if (!open && hide.has(key)) return
+    seen.add(key)
+    out.push({ label: path.split('/').filter(Boolean).pop() ?? path, hint: path, open })
+  }
+
+  // The worktree path is a scratch checkout; repoRoot is the project the user
+  // thinks in — and opening the scratch dir would start an agent inside it.
+  for (const s of sessions) push(s.worktree?.repoRoot ?? s.cwd, true)
+  for (const p of past) if (p.cwd) push(p.cwd, false)
+  return out
+}
+
+/** Live sessions grouped by the project they belong to, worktrees folded in. */
+export function groupSessions(
+  sessions: readonly SessionMeta[],
+): { root: string; sessions: SessionMeta[] }[] {
+  const by = new Map<string, { root: string; sessions: SessionMeta[] }>()
+  for (const s of sessions) {
+    const root = s.worktree?.repoRoot ?? s.cwd
+    const key = projectKey(root)
+    const g = by.get(key) ?? { root, sessions: [] }
+    g.sessions.push(s)
+    by.set(key, g)
+  }
+  return [...by.values()]
+}
+
+/** One session's persisted spend, as `listUsage` returns it. */
+export interface UsageRow {
+  sdkSessionId: string
+  costUsd: number
+  inputTokens: number
+  outputTokens: number
+  /** Absent on sidecars an older build wrote; those fall back to the id join. */
+  cwd?: string
+}
+
+export interface UsageTotals {
+  costUsd: number
+  inputTokens: number
+  outputTokens: number
+  /**
+   * Sidecars found — conversations that have taken at least one turn *in
+   * Foreman*. Sessions started from the Claude CLI never get one, so this is
+   * not a machine-wide total and the UI must not claim it is.
+   */
+  sessions: number
+  byProject: { root: string; costUsd: number; sessions: number }[]
+  /** Spend with no project attached. Counted in the totals, not in byProject. */
+  unattributed: { costUsd: number; sessions: number }
+}
+
+/**
+ * Roll the per-session sidecars up into headline figures and a per-project split.
+ *
+ * Safe to sum: a resume writes back to the SAME sdkSessionId, and `restoredCost`
+ * seeds the running total, so each file already holds that conversation's
+ * lifetime cost exactly once. A fork mints a new id and accrues independently.
+ */
+export function aggregateUsage(
+  rows: readonly UsageRow[],
+  past: readonly { sessionId: string; cwd?: string }[],
+): UsageTotals {
+  // Fallback only, for rows written before `cwd` moved into the sidecar. Bounded
+  // by whatever listPastSessions returned, which is why cwd is written at the
+  // source rather than resolved here.
+  const cwdOf = new Map<string, string>()
+  for (const p of past) if (p.cwd) cwdOf.set(p.sessionId, p.cwd)
+
+  const byRoot = new Map<string, { root: string; costUsd: number; sessions: number }>()
+  const out: UsageTotals = {
+    costUsd: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    sessions: 0,
+    byProject: [],
+    unattributed: { costUsd: 0, sessions: 0 },
+  }
+
+  for (const r of rows) {
+    out.costUsd += r.costUsd
+    out.inputTokens += r.inputTokens
+    out.outputTokens += r.outputTokens
+    out.sessions += 1
+
+    const cwd = r.cwd ?? cwdOf.get(r.sdkSessionId)
+    if (!cwd) {
+      out.unattributed.costUsd += r.costUsd
+      out.unattributed.sessions += 1
+      continue
+    }
+    const key = projectKey(cwd)
+    const g = byRoot.get(key) ?? { root: cwd, costUsd: 0, sessions: 0 }
+    g.costUsd += r.costUsd
+    g.sessions += 1
+    byRoot.set(key, g)
+  }
+
+  out.byProject = [...byRoot.values()].sort((a, b) => b.costUsd - a.costUsd)
+  return out
+}
+
 // ----------------------------------------------------------------- palette
 
 export interface Matchable {

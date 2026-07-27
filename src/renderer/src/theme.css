@@ -271,6 +271,12 @@ select {
 .rail-head {
   padding-left: 84px; /* clears the traffic lights */
 }
+/* With the buttons hidden that reservation is an 84px hole, so fall back to
+   .pane-head's own padding. Set by applyAppearance, same mechanism as
+   data-theme. */
+:root[data-no-traffic-lights] .rail-head {
+  padding-left: 12px;
+}
 
 .rail-list {
   flex: 1;
@@ -471,6 +477,12 @@ select {
 .convo {
   flex: 1;
   overflow-y: auto;
+  /* Not redundant with overflow-y: per the CSS overflow spec, when one axis is
+     not `visible` the other computes to `auto` — so overflow-y alone leaves a
+     latent full-column horizontal scroller. Safe to clip because everything
+     that legitimately overflows sideways scrolls itself: `.code-wrap pre` and
+     `.md table` both carry their own overflow-x. */
+  overflow-x: hidden;
   padding: 18px 22px 8px;
   display: flex;
   flex-direction: column;
@@ -573,6 +585,12 @@ select {
   color: rgb(var(--text-faint));
   font-size: 12px;
   padding: 2px 0 6px;
+}
+/* tabular-nums is not cosmetic here: this line reprints every second, and
+   proportional digits make the whole readout twitch as the width changes. */
+.working-stats {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
 }
 .working-dots {
   display: inline-flex;
@@ -927,15 +945,9 @@ select {
   flex: 0 1 auto;
   min-width: 88px;
 }
-/* The cost readout is the one thing worth dropping first — it also lives in
-   the Session panel. */
-.composer-row .cost {
-  flex-shrink: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* The `.composer-row .cost` shrink rule lived here. The cost readout moved to
+   .ctx-strip below the composer, so the row no longer has anything to drop
+   first — the selects above are now the only things that give. */
 
 .select {
   background: rgb(var(--surface-2) / 0.75);
@@ -1066,6 +1078,34 @@ select {
   font-size: 11px;
   color: rgb(var(--text-faint));
   font-variant-numeric: tabular-nums;
+}
+
+/* Below the composer rather than in it: how big the window is and what is left
+   of it are session facts, not controls, and .composer-row had no width left. */
+.ctx-strip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid rgb(var(--border));
+}
+.ctx-strip-model {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: rgb(var(--text-dim));
+}
+/* Reuses the session panel's bar container, but with a single fill instead of
+   its seven category segments — at this width those are unreadable slivers. */
+.ctx-strip .ctx-bar {
+  flex: 0 1 120px;
+  height: 5px;
+}
+.ctx-strip .cost {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* -------------------------------------------------------------------- side */
@@ -1272,14 +1312,45 @@ select {
    line numbers — and without that gutter they need their own left padding. */
 .diff-body[data-bare] {
   padding: 4px 0;
+  /* Wrap instead of scroll. `.diff-body` is overflow-x:auto and `.diff-line` is
+     pre + min-width:max-content, which together put a 10px scrollbar under every
+     edit card whose code overran the column — the transcript is a reading
+     surface, and a scrollbar per card is noise. The review panel keeps pre +
+     auto: alignment matters there and there is width to use.
+     Clipping is not an option here — with the scrollbar gone there would be
+     nothing left to recover the hidden text with. */
+  overflow-x: hidden;
+}
+.diff-body[data-bare] .diff-line {
+  min-width: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+/* Load-bearing: `.diff-line` is display:flex and a flex item's min-width is
+   auto, so `.diff-text` would refuse to shrink below its content and pre-wrap
+   alone would never wrap. `.diff-sign` keeps its fixed basis below, so wrapped
+   continuations hang-indent under the code rather than under the +/−. */
+.diff-body[data-bare] .diff-text {
+  flex: 1;
+  min-width: 0;
 }
 .diff-body[data-bare] .diff-sign {
   flex: 0 0 18px;
 }
+/* Either a static "+N more" div or, when the card can expand, a button. The
+   global button reset already drops the border/background/cursor, so only the
+   block layout and the hover are needed to make the two forms look identical. */
 .diff-more {
+  display: block;
+  width: 100%;
   padding: 3px 12px;
+  text-align: left;
   font-size: 10.5px;
   color: rgb(var(--text-faint));
+}
+button.diff-more:hover {
+  color: rgb(var(--accent));
+  background: rgb(var(--surface-3) / 0.4);
 }
 
 /* ---------------------------------------------------------------- terminal */
@@ -2265,6 +2336,247 @@ select {
   text-overflow: ellipsis;
 }
 
+/* ──────────────────────────────────────────────────────────────────── home */
+
+/* min-height:0 is load-bearing: .pane is overflow:hidden, so without it this
+   grows the pane instead of scrolling inside it and the bottom silently clips. */
+.home {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  padding: 18px 24px 32px;
+}
+
+.home-hero {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 12px 0 4px;
+  color: rgb(var(--text-faint));
+}
+.home-hero h1 {
+  font-size: 19px;
+  font-weight: 600;
+  color: rgb(var(--text));
+}
+.home-hero p {
+  font-size: 12px;
+}
+.home-cta {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.home-section {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+/* .pane-head's type treatment without its fixed height or border. */
+.home-section-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgb(var(--text-faint));
+}
+.home-search {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--r-sm);
+  background: rgb(var(--surface-2) / 0.5);
+}
+.home-search input {
+  width: 110px;
+  background: none;
+  border: none;
+  outline: none;
+  color: rgb(var(--text));
+  font-size: 11px;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+.home-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+}
+.home-group-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+  color: rgb(var(--text-faint));
+}
+.home-group-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgb(var(--text-dim));
+}
+/* Not `direction: rtl` like .chooser-path: this sits beside the basename, so the
+   head of the path is the part that disambiguates here. */
+.home-group-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: var(--mono);
+  font-size: 10px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.home-card {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 9px;
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--r-sm);
+  background: rgb(var(--surface-2) / 0.4);
+  text-align: left;
+}
+.home-card:hover {
+  background: rgb(var(--surface-3) / 0.6);
+  border-color: rgb(var(--border-strong));
+}
+.home-card[data-active] {
+  border-color: rgb(var(--accent) / 0.6);
+}
+.home-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  flex: 1;
+}
+.home-card-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: rgb(var(--text-faint));
+}
+.home-card-meta > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.home-recent {
+  display: flex;
+  align-items: center;
+}
+.home-recent .chooser-row {
+  flex: 1;
+  min-width: 0;
+}
+/* Revealed on focus-visible as well as hover, or it is keyboard-invisible. */
+.home-remove {
+  flex: 0 0 auto;
+  padding: 4px 6px;
+  border-radius: var(--r-sm);
+  color: rgb(var(--text-faint));
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+.home-recent:hover .home-remove,
+.home-remove:focus-visible {
+  opacity: 1;
+}
+.home-remove:hover {
+  color: rgb(var(--danger));
+  background: rgb(var(--danger) / 0.12);
+}
+.home-link {
+  color: rgb(var(--accent));
+  text-decoration: underline;
+  font-size: inherit;
+}
+
+.home-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+.home-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 11px;
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--r-sm);
+  background: rgb(var(--surface-2) / 0.4);
+}
+.home-stat-n {
+  font-size: 17px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.home-stat-k {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgb(var(--text-faint));
+}
+
+.home-spend {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 3px 2px;
+  font-size: 11.5px;
+}
+.home-spend-name {
+  flex: 0 0 130px;
+  color: rgb(var(--text-dim));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.home-bar {
+  flex: 1;
+  height: 6px;
+  border-radius: 99px;
+  overflow: hidden;
+  background: rgb(var(--surface-3) / 0.7);
+}
+.home-bar > i {
+  display: block;
+  height: 100%;
+}
+.home-spend-n {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--text-faint));
+}
+
 /* ────────────────────────────────────────── time travel + actions */
 
 /* Ghost text sits over the empty textarea, so it must not eat the click that
@@ -2416,10 +2728,65 @@ select {
   display: block;
   margin-top: 6px;
 }
+/* Used by RewindCard, not by QuestionCard — the question modal puts its buttons
+   in .plan-actions instead. Same for .ask, .ask-head above. */
 .ask-actions {
   display: flex;
   gap: 7px;
   justify-content: flex-end;
+}
+
+/* The paged question modal reuses PlanCard's whole frame; only the pager and
+   the option shortcut are new. Narrower than a plan: one question and its
+   options is far less content than a 20KB document. */
+.plan-modal.ask-modal {
+  width: min(620px, 92vw);
+}
+/* .ask-q is now the page — one question's options, nothing else. */
+.ask-q {
+  display: flex;
+  flex-direction: column;
+}
+.ask-key {
+  float: right;
+  margin-left: 8px;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: rgb(var(--text-faint));
+}
+.ask-opt[data-on] .ask-key {
+  color: rgb(var(--accent));
+}
+/* margin-right:auto puts the pager where .plan-path sits, so .plan-buttons stays
+   right-aligned and .plan-actions needs no change. */
+.ask-dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-right: auto;
+}
+.ask-dot {
+  width: 7px;
+  height: 7px;
+  padding: 0;
+  border-radius: 99px;
+  border: 1px solid rgb(var(--border-strong));
+  background: transparent;
+}
+.ask-dot[data-answered] {
+  background: rgb(var(--accent) / 0.55);
+  border-color: rgb(var(--accent) / 0.55);
+}
+.ask-dot[data-on] {
+  background: rgb(var(--accent));
+  border-color: rgb(var(--accent));
+  transform: scale(1.4);
+}
+.ask-count {
+  margin-left: 4px;
+  font-size: 10px;
+  color: rgb(var(--text-faint));
+  font-variant-numeric: tabular-nums;
 }
 
 /* ─────────────────────────────────────────────────────────────── plan review */

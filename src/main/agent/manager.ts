@@ -75,9 +75,26 @@ function toPastSession(s: SDKSessionInfo, dir?: string): PastSession {
   return {
     sessionId: s.sessionId,
     summary: s.customTitle ?? s.summary ?? 'Untitled session',
-    cwd: s.cwd ?? dir,
+    cwd: canonical(s.cwd ?? dir),
     lastModified: s.lastModified,
     gitBranch: s.gitBranch,
+  }
+}
+
+/**
+ * Resolve symlinks so a past session's cwd compares equal to a live one's.
+ *
+ * `createSession` realpaths what it is given, but the SDK returns the path as
+ * it was written — so without this the same project can appear twice in
+ * recents, and Home's per-project spend can split across the two spellings.
+ * Non-fatal: a deleted directory keeps whatever string it had.
+ */
+function canonical(path: string | undefined): string | undefined {
+  if (!path) return path
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
   }
 }
 

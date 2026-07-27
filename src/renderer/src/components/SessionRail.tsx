@@ -6,6 +6,7 @@ import {
   FolderPlus,
   GitBranch,
   GitBranchPlus,
+  HardHat,
   History,
   LoaderCircle,
   MessageCircleQuestion,
@@ -14,7 +15,7 @@ import {
   X,
 } from 'lucide-react'
 import type { PastSession, SessionMeta, TranscriptSearchHit } from '../../../shared/types'
-import { useStore } from '../store'
+import { onHome, useStore } from '../store'
 import { activityOf, type Activity } from '../derive.mts'
 
 /** Debounce on search: each keystroke otherwise re-reads up to 40 transcripts. */
@@ -48,7 +49,7 @@ const ACTIVITY_TIP: Record<Activity, string> = {
   idle: 'Idle',
 }
 
-function ActivityIcon({ session }: { session: SessionMeta }): React.JSX.Element {
+export function ActivityIcon({ session }: { session: SessionMeta }): React.JSX.Element {
   const activity = activityOf(session)
   const Glyph = ACTIVITY_ICON[activity]
   return (
@@ -70,6 +71,8 @@ const when = (ms?: number): string => {
 export default function SessionRail(): React.JSX.Element {
   const sessions = useStore((s) => s.sessions)
   const activeId = useStore((s) => s.activeId)
+  const home = useStore(onHome)
+  const showHome = useStore((s) => s.showHome)
   const select = useStore((s) => s.select)
   const close = useStore((s) => s.close)
   const newSession = useStore((s) => s.newSession)
@@ -155,6 +158,22 @@ export default function SessionRail(): React.JSX.Element {
       )}
 
       <div className="rail-list">
+        {/* Reuses `.session` so it matches the rows below with no new CSS. */}
+        <button
+          className="session"
+          data-active={home}
+          onClick={showHome}
+          data-tip="Home — sessions, projects, usage  ⌘0"
+          data-tip-start=""
+        >
+          <span className="activity" data-activity="idle">
+            <HardHat size={12} />
+          </span>
+          <span className="session-body">
+            <span className="session-title">Home</span>
+          </span>
+        </button>
+
         {sessions.map((s) =>
           renaming === s.id ? (
             <input
@@ -172,7 +191,8 @@ export default function SessionRail(): React.JSX.Element {
             <button
               key={s.id}
               className="session"
-              data-active={s.id === activeId}
+              // `&& !home` or two rows look selected at once.
+              data-active={s.id === activeId && !home}
               onClick={() => select(s.id)}
               onDoubleClick={() => setRenaming(s.id)}
               onAuxClick={(e) => {

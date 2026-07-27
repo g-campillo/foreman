@@ -11,6 +11,9 @@ type Tool = Extract<ChatItem, { kind: 'tool' }>
 /** Inline edit diffs are a glance, not a review — the diff panel is the review. */
 const MAX_INLINE_DIFF_LINES = 12
 
+/** Expanded is still a transcript, not the diff panel. One click, one ceiling. */
+const MAX_EXPANDED_DIFF_LINES = 200
+
 /** One-line gist of a tool call. The card is only ever this one line. */
 export function summarise(name: string, input: unknown): string {
   if (!input || typeof input !== 'object') return ''
@@ -77,10 +80,17 @@ function editHunks(name: string, input: unknown): DiffHunk[] | null {
   if (!input || typeof input !== 'object') return null
   const i = input as Record<string, unknown>
   const s = (k: string): string => (typeof i[k] === 'string' ? (i[k] as string) : '')
-  const path = s('file_path')
+  const path = s('file_path') || s('notebook_path')
 
   if (name === 'Edit') return toHunks(s('old_string'), s('new_string'), path)
   if (name === 'Write') return toHunks('', s('content'), path)
+  if (name === 'NotebookEdit') {
+    // Same shape as Write: the input carries the new cell source and no previous
+    // text, so it reads as pure additions. A delete carries no source at all —
+    // showing nothing beats inventing a before-image to strike through.
+    if (s('edit_mode') === 'delete') return null
+    return toHunks('', s('new_source'), path)
+  }
   if (name === 'MultiEdit') {
     const edits = Array.isArray(i.edits) ? (i.edits as Record<string, unknown>[]) : []
     return edits.flatMap((e) =>
@@ -113,6 +123,10 @@ export default function ToolCard({
   // as JSON, and a Task card auto-expanded purely because it had children.
   const expandable = nested || Boolean(plan)
   const [open, setOpen] = useState(false)
+
+  // One-way: once the ceiling is raised there is no "more" row left to click,
+  // and a separate collapse control buys little at a 200-line cap.
+  const [allLines, setAllLines] = useState(false)
 
   // An answered question comes back flagged is_error, because the answer had to
   // travel as a permission deny — see ANSWER_PREFIX. It succeeded; don't paint
@@ -169,7 +183,14 @@ export default function ToolCard({
       {/* Not behind the chevron: an edit's diff IS its summary, the way Claude
           Code shows it, and hiding it behind a click defeats the point. */}
       {hunks && hunks.length > 0 && (
-        <DiffLines hunks={hunks} numbers={false} maxLines={MAX_INLINE_DIFF_LINES} />
+        <DiffLines
+          hunks={hunks}
+          numbers={false}
+          maxLines={allLines ? MAX_EXPANDED_DIFF_LINES : MAX_INLINE_DIFF_LINES}
+          // Dropped once expanded, so past the second ceiling the row degrades
+          // to a static count rather than offering a click that does nothing.
+          onMore={allLines ? undefined : () => setAllLines(true)}
+        />
       )}
 
       {open && (

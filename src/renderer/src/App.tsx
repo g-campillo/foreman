@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { GitCompare, Gauge, SlidersHorizontal, SquareTerminal, X } from 'lucide-react'
-import { activeSession, useStore } from './store'
+import { activeSession, onHome, useStore } from './store'
 import SessionRail from './components/SessionRail'
 import Conversation from './components/Conversation'
 import Composer from './components/Composer'
@@ -10,6 +10,7 @@ import Settings from './components/Settings'
 import TodoStrip from './components/TodoStrip'
 import SessionPanel from './components/SessionPanel'
 import ProjectChooser from './components/ProjectChooser'
+import Home from './components/Home'
 import CommandPalette, { type PaletteActions } from './components/CommandPalette'
 
 export type Panel = 'diff' | 'terminal' | 'session'
@@ -41,6 +42,9 @@ export default function App(): React.JSX.Element {
   // A conversation with no project yet. Takes over the pane, so the chooser is
   // the conversation until a directory is picked.
   const draft = useStore((s) => s.draft)
+  // Derived, so "no session at all" counts as Home without anyone setting a flag.
+  const home = useStore(onHome)
+  const showHome = useStore((s) => s.showHome)
   const [panel, setPanel] = useState<Panel | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [showPalette, setShowPalette] = useState(false)
@@ -79,6 +83,12 @@ export default function App(): React.JSX.Element {
         e.preventDefault()
         if (e.shiftKey) startDraft()
         else void newSession()
+      } else if (e.key === '0') {
+        // Not in PANEL_KEYS, which only claims 1/2/3. Electron's default menu
+        // binds ⌘0 to resetZoom — harmless here since the app never zooms, and
+        // preventDefault keeps it from firing.
+        e.preventDefault()
+        showHome()
       } else if (e.key === 'p' || e.key === 'k') {
         // ⌘K used to cycle sessions; the palette is that, done properly. Both
         // keys open it, since muscle memory splits between the two.
@@ -88,7 +98,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [newSession, startDraft, toggle])
+  }, [newSession, startDraft, toggle, showHome])
 
   return (
     <div className="app" data-panel={panel ?? undefined}>
@@ -96,8 +106,10 @@ export default function App(): React.JSX.Element {
 
       <section className="pane glass">
         <header className="pane-head drag">
-          <span>{draft ? 'New conversation' : session ? session.title : 'Foreman'}</span>
-          {session && !draft && (
+          <span>
+            {draft ? 'New conversation' : home ? 'Home' : session ? session.title : 'Foreman'}
+          </span>
+          {session && !draft && !home && (
             /* A worktree path is long and says nothing useful — it lives under
                userData with a disambiguating suffix. The branch is what the user
                thinks of this session as; the full path stays in the tooltip. */
@@ -167,17 +179,21 @@ export default function App(): React.JSX.Element {
           </div>
         </header>
 
-        {/* The chooser IS the conversation until a project is picked — and it
-            also replaces the old bare "no active session" state, which offered
-            a native folder dialog as the only way in. */}
-        {session && !draft ? (
-          <>
-            <TodoStrip sessionId={session.id} />
-            <Conversation sessionId={session.id} />
-            <Composer session={session} />
-          </>
-        ) : (
+        {/* Three states, in priority order. The chooser IS the conversation
+            until a project is picked, so a draft outranks Home; Home in turn
+            covers both the explicit ⌘0 and the old bare "no active session". */}
+        {draft ? (
           <ProjectChooser />
+        ) : home ? (
+          <Home />
+        ) : (
+          session && (
+            <>
+              <TodoStrip sessionId={session.id} />
+              <Conversation sessionId={session.id} />
+              <Composer session={session} />
+            </>
+          )
         )}
       </section>
 

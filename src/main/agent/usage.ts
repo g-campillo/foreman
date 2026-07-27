@@ -1,4 +1,5 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { readdir, readFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 /**
@@ -14,13 +15,29 @@ import { join } from 'node:path'
  * conversation that had cost real money. This is the sidecar that fixes it: one
  * small JSON per SDK session id, written as each turn settles.
  *
- * ponytail: a file per session, no index and no compaction. These are ~80 bytes
- * each; revisit only if the directory ever needs listing rather than lookup.
+ * A file per session, no index and no compaction. `listUsage` below is the
+ * directory listing this once said to revisit if it were ever needed — Home's
+ * usage panel is that case. Still no index: these are ~80 bytes each, so a
+ * readdir plus overlapped reads is tens of milliseconds even at a few thousand.
  */
 export interface StoredUsage {
   costUsd: number
   inputTokens: number
   outputTokens: number
+  /**
+   * The project this conversation ran in.
+   *
+   * Written so Home can attribute spend per project without joining against
+   * `listSessions()`, which is hard-capped at 40 rows and would leave almost
+   * everything unattributed. Absent on sidecars an older build wrote; those
+   * backfill the next time that conversation takes a turn.
+   */
+  cwd?: string
+}
+
+/** One sidecar, as `listUsage` returns it. */
+export interface UsageRow extends StoredUsage {
+  sdkSessionId: string
 }
 
 const EMPTY: StoredUsage = { costUsd: 0, inputTokens: 0, outputTokens: 0 }
@@ -54,11 +71,48 @@ export function readUsage(sdkSessionId: string): StoredUsage {
       costUsd: Number(raw.costUsd) || 0,
       inputTokens: Number(raw.inputTokens) || 0,
       outputTokens: Number(raw.outputTokens) || 0,
+      ...(typeof raw.cwd === 'string' ? { cwd: raw.cwd } : {}),
     }
   } catch {
     // Missing is the normal case — every session that has never had a turn.
     return EMPTY
   }
+}
+
+/**
+ * Every sidecar on disk, for Home's usage panel.
+ *
+ * One unreadable file must not sink the list — a half-written JSON from a crash
+ * mid-write should cost that one conversation's figures, not the whole readout.
+ */
+export async function listUsage(): Promise<UsageRow[]> {
+  let names: string[]
+  try {
+    names = await readdir(dir())
+  } catch {
+    // No directory until the first turn settles anywhere. Normal on a fresh install.
+    return []
+  }
+  const rows = await Promise.all(
+    names.map(async (name): Promise<UsageRow | null> => {
+      if (!name.endsWith('.json')) return null
+      const id = safe(name.slice(0, -'.json'.length))
+      if (!id) return null
+      try {
+        const raw = JSON.parse(await readFile(join(dir(), name), 'utf8')) as Partial<StoredUsage>
+        return {
+          sdkSessionId: id,
+          costUsd: Number(raw.costUsd) || 0,
+          inputTokens: Number(raw.inputTokens) || 0,
+          outputTokens: Number(raw.outputTokens) || 0,
+          ...(typeof raw.cwd === 'string' ? { cwd: raw.cwd } : {}),
+        }
+      } catch {
+        return null
+      }
+    }),
+  )
+  return rows.filter((r): r is UsageRow => r !== null)
 }
 
 export function writeUsage(sdkSessionId: string, usage: StoredUsage): void {

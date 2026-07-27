@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { Bell, Gauge, Server, ShieldCheck, Sparkles, Sparkle, Wallet, X } from 'lucide-react'
 import type {
   AgentLifetime,
@@ -7,7 +7,7 @@ import type {
   PermissionMode,
 } from '../../../shared/types'
 import { useStore } from '../store'
-import { EFFORTS, MODES, modelLabel } from './Composer'
+import { EFFORTS, MODES, modelLabels } from './Composer'
 
 const THEMES: { label: string; value: AppearanceSettings['theme'] }[] = [
   { label: 'Auto', value: 'auto' },
@@ -50,6 +50,7 @@ export default function Settings({ onClose }: { onClose: () => void }): React.JS
   const setPrefs = useStore((s) => s.setPrefs)
   // Cached from the last live session, so this has options on a cold start.
   const models = useStore((s) => s.models)
+  const modelRows = useMemo(() => modelLabels(models), [models])
   const idx = Math.max(
     0,
     BLUR.findIndex((b) => b.value === a.vibrancy),
@@ -117,9 +118,9 @@ export default function Settings({ onClose }: { onClose: () => void }): React.JS
               {/* '' is not one of the SDK's aliases — it means "don't pass a
                   model at all", which is not the same as the 'default' row. */}
               <option value="">Leave to the SDK</option>
-              {models.map((m) => (
+              {models.map((m, i) => (
                 <option key={m.displayName} value={m.id}>
-                  {modelLabel(m)}
+                  {modelRows[i]}
                 </option>
               ))}
             </select>
@@ -312,6 +313,24 @@ export default function Settings({ onClose }: { onClose: () => void }): React.JS
             />
             <span style={{ color: 'rgb(var(--text-faint))', fontSize: 10 }}>
               Any blur replaces the Liquid Glass material with a macOS vibrancy one.
+            </span>
+          </label>
+
+          <label>
+            Window buttons
+            {/* A two-stop range rather than a checkbox, to match the sliders it
+                sits between — the theme picker already does the same thing. */}
+            <input
+              type="range"
+              min={0}
+              max={1}
+              value={a.trafficLights ? 1 : 0}
+              onChange={(e) => set({ trafficLights: e.target.value === '1' })}
+            />
+            <span style={{ color: 'rgb(var(--text-faint))', fontSize: 10 }}>
+              {a.trafficLights
+                ? 'Shown. The window has no title bar, so these are its only close and zoom controls.'
+                : 'Hidden. ⌘W closes and ⌘Q quits.'}
             </span>
           </label>
         </div>

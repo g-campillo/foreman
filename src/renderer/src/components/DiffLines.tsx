@@ -13,11 +13,17 @@ function DiffLines({
   hunks,
   numbers = true,
   maxLines,
+  onMore,
 }: {
   hunks: DiffHunk[]
   numbers?: boolean
   /** Clip past this many lines and say how many were hidden. */
   maxLines?: number
+  /**
+   * Makes the clipped-line row a button. Omit for a static count — the diff
+   * panel passes no `maxLines` at all, so it never reaches either form.
+   */
+  onMore?: () => void
 }): React.JSX.Element {
   const total = hunks.reduce((n, h) => n + h.lines.length, 0)
   let budget = maxLines ?? Infinity
@@ -52,9 +58,15 @@ function DiffLines({
           </div>
         )
       })}
-      {maxLines !== undefined && total > maxLines && (
-        <div className="diff-more">+{total - maxLines} more</div>
-      )}
+      {maxLines !== undefined &&
+        total > maxLines &&
+        (onMore ? (
+          <button className="diff-more" onClick={onMore}>
+            Show all {total} lines
+          </button>
+        ) : (
+          <div className="diff-more">+{total - maxLines} more</div>
+        ))}
     </div>
   )
 }

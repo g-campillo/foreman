@@ -41,7 +41,7 @@ export default function CommandPalette({
   const listRef = useRef<HTMLDivElement>(null)
 
   const entries = useMemo<Entry[]>(() => {
-    const { select, newSession, openProject, close, startDraft } = useStore.getState()
+    const { select, newSession, openProject, close, startDraft, showHome } = useStore.getState()
     const out: Entry[] = []
 
     for (const s of sessions) {
@@ -75,6 +75,13 @@ export default function CommandPalette({
         label: 'Open project…',
         group: 'Session',
         run: () => void openProject(),
+      },
+      {
+        id: 'home',
+        label: 'Home',
+        hint: '⌘0 · sessions, projects, usage',
+        group: 'View',
+        run: showHome,
       },
       { id: 'settings', label: 'Settings', hint: '⌘,', group: 'View', run: actions.showSettings },
       { id: 'diff', label: 'Show diff', hint: '⌘1', group: 'View', run: () => actions.showPanel('diff') },

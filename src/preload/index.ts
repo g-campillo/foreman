@@ -57,6 +57,7 @@ const api = {
 
   // read-only panels
   contextUsage: (sessionId: string) => ipcRenderer.invoke(IPC.sessionContextUsage, { sessionId }),
+  listUsage: () => ipcRenderer.invoke(IPC.usageList),
   accountInfo: (sessionId: string) => ipcRenderer.invoke(IPC.sessionAccount, { sessionId }),
   usageInfo: (sessionId: string) => ipcRenderer.invoke(IPC.sessionUsage, { sessionId }),
   supportedAgents: (sessionId: string) => ipcRenderer.invoke(IPC.sessionAgents, { sessionId }),
@@ -101,6 +102,7 @@ const api = {
   pickDirectory: () => ipcRenderer.invoke(IPC.pickDirectory),
   initialProject: () => ipcRenderer.invoke('app:initialProject'),
   setVibrancy: (v: string | null) => ipcRenderer.invoke('app:vibrancy', { v }),
+  setTrafficLights: (on: boolean) => ipcRenderer.invoke('app:trafficLights', { on }),
   setAgentPolicy: (policy: {
     lifetime: 'persist' | 'stop'
     idleMinutes: number

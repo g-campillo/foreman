@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem, SessionMeta } from '../../shared/types'
-import { activityOf, answeredQuestions, ANSWER_PREFIX, latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, planProposal, planTitle, toolLabel, toolRender, transcriptRows, workingVerb, WORKING_VERBS } from './derive.mts'
+import { activityOf, answeredQuestions, ANSWER_PREFIX, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, projectKey, recentProjects, groupSessions, aggregateUsage, planProposal, planTitle, toolLabel, toolRender, transcriptRows, workingVerb, WORKING_VERBS } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -573,5 +573,121 @@ assert.equal(answeredQuestions({}, undefined), null, 'not a question set')
 assert.ok(WORKING_VERBS.includes(workingVerb('', 0)), 'empty session id is still in range')
 assert.ok(WORKING_VERBS.includes(workingVerb('abc', 99999)), 'tick wraps rather than overflowing')
 assert.notEqual(workingVerb('abc', 0), workingVerb('abc', 1), 'the verb actually rotates')
+
+// ----------------------------------------------------------------- hms / fmt
+
+// These reprint every second under a running turn, so a wrong branch is a
+// visible twitch rather than a silent bug — but the boundaries are still easy
+// to get wrong by one.
+assert.equal(hms(0), '0s')
+assert.equal(hms(19_000), '19s')
+assert.equal(hms(59_999), '59s', 'rounds down, so it never prints 60s')
+assert.equal(hms(60_000), '1m 0s')
+assert.equal(hms(301_000), '5m 1s')
+assert.equal(hms(3_599_000), '59m 59s')
+assert.equal(hms(3_600_000), '1h 0m')
+assert.equal(hms(3_720_000), '1h 2m')
+assert.equal(hms(-5), '0s', 'clock skew must not print a negative')
+
+assert.equal(fmt(0), '0')
+assert.equal(fmt(842), '842')
+assert.equal(fmt(1000), '1.0k')
+assert.equal(fmt(4210), '4.2k')
+assert.equal(fmt(42_100), '42k', 'no decimal past 10k — it is noise at 5 digits')
+assert.equal(fmt(1_000_000), '1M', 'not 1000k, and not 1.0M')
+assert.equal(fmt(1_500_000), '1.5M')
+
+// ------------------------------------------------------- projects and usage
+
+{
+  assert.equal(projectKey('/a/b/'), '/a/b', 'trailing slash normalised')
+  assert.equal(projectKey('/A/B'), '/a/b', 'case normalised — APFS is insensitive')
+
+  const live = [{ cwd: '/repo/one', worktree: undefined }] as Parameters<
+    typeof recentProjects
+  >[0]
+  const past = [{ cwd: '/repo/one' }, { cwd: '/repo/two' }, { cwd: '/repo/three' }]
+
+  const all = recentProjects(live, past, [])
+  assert.deepEqual(
+    all.map((r) => r.hint),
+    ['/repo/one', '/repo/two', '/repo/three'],
+    'live project first, then past, deduped',
+  )
+  assert.equal(all[0].open, true, 'the live one is flagged open')
+  assert.equal(all[0].label, 'one', 'label is the basename')
+
+  const hidden = recentProjects(live, past, ['/repo/two'])
+  assert.deepEqual(
+    hidden.map((r) => r.hint),
+    ['/repo/one', '/repo/three'],
+    'a hidden project drops out',
+  )
+
+  // The invariant the UI depends on: you cannot hide the directory you are
+  // working in, or you get a row you can neither explain nor remove.
+  const cannotHide = recentProjects(live, past, ['/repo/one'])
+  assert.equal(cannotHide[0].hint, '/repo/one', 'an OPEN project is never hidden')
+
+  // Hiding is key-based, so case and trailing slash still match.
+  assert.equal(
+    recentProjects([], past, ['/REPO/TWO/']).some((r) => r.hint === '/repo/two'),
+    false,
+    'hide-list matches on the normalised key',
+  )
+
+  // A worktree session contributes its repoRoot, not its scratch checkout —
+  // opening the scratch dir would start an agent inside it.
+  const wt = recentProjects(
+    [{ cwd: '/tmp/wt-x', worktree: { path: '/tmp/wt-x', branch: 'b', repoRoot: '/repo/four' } }],
+    [],
+    [],
+  )
+  assert.equal(wt[0].hint, '/repo/four', 'worktree resolves to repoRoot')
+}
+
+{
+  const s = (id: string, cwd: string, worktree?: SessionMeta['worktree']): SessionMeta =>
+    ({ id, cwd, worktree }) as SessionMeta
+  const groups = groupSessions([
+    s('a', '/repo/one'),
+    s('b', '/repo/two'),
+    s('c', '/tmp/wt', { path: '/tmp/wt', branch: 'x', repoRoot: '/repo/one' }),
+  ])
+  assert.equal(groups.length, 2, 'a worktree groups under its repo, not on its own')
+  assert.deepEqual(
+    groups.find((g) => g.root === '/repo/one')?.sessions.map((x) => x.id),
+    ['a', 'c'],
+  )
+}
+
+{
+  const rows = [
+    { sdkSessionId: 's1', costUsd: 1, inputTokens: 10, outputTokens: 5, cwd: '/repo/one' },
+    { sdkSessionId: 's2', costUsd: 2, inputTokens: 20, outputTokens: 6, cwd: '/repo/one' },
+    { sdkSessionId: 's3', costUsd: 4, inputTokens: 30, outputTokens: 7 },
+  ]
+  // s3 has no cwd of its own, so it falls back to the id join against `past`.
+  const t = aggregateUsage(rows, [{ sessionId: 's3', cwd: '/repo/two' }])
+  assert.equal(t.costUsd, 7, 'totals sum every row')
+  assert.equal(t.inputTokens, 60)
+  assert.equal(t.sessions, 3)
+  assert.deepEqual(
+    t.byProject.map((p) => [p.root, p.costUsd]),
+    [
+      ['/repo/two', 4],
+      ['/repo/one', 3],
+    ],
+    'sorted by spend, and the legacy row is attributed via the id join',
+  )
+  assert.equal(t.unattributed.sessions, 0)
+
+  // With no join available that row must land in unattributed, not vanish —
+  // the headline total has to keep adding up.
+  const orphan = aggregateUsage(rows, [])
+  assert.equal(orphan.costUsd, 7, 'unattributable spend still counts toward the total')
+  assert.equal(orphan.unattributed.sessions, 1)
+  assert.equal(orphan.unattributed.costUsd, 4)
+}
 
 console.log('derive: ok')

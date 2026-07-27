@@ -10,6 +10,7 @@ import type {
   SendContent,
   SessionMeta,
 } from '../../shared/types'
+import { projectKey } from './derive.mts'
 
 interface State {
   sessions: SessionMeta[]
@@ -45,6 +46,30 @@ interface State {
   startDraft(): void
   cancelDraft(): void
 
+  /**
+   * On the Home view — sessions across every project, recents, usage.
+   *
+   * In the store rather than App state because SessionRail takes no props and
+   * CommandPalette reaches actions through getState(); neither could navigate
+   * here otherwise. Read it through the `onHome` selector, not directly: the
+   * "no session at all" case counts as home too.
+   */
+  home: boolean
+  showHome(): void
+  leaveHome(): void
+
+  /**
+   * Projects the user removed from the recents list.
+   *
+   * A DISPLAY FILTER AND NOTHING ELSE. `~/.claude/projects` belongs to the
+   * Claude CLI as much as to us, so a removed project stays resumable from the
+   * CLI, from the rail's history browser, and from search. Nothing on disk is
+   * ever deleted.
+   */
+  hiddenProjects: string[]
+  hideProject(path: string): void
+  clearHiddenProjects(): void
+
   select(id: string): void
   openPath(cwd: string, worktreeBranch?: string): Promise<void>
   newSession(worktreeBranch?: string): Promise<void>
@@ -70,6 +95,7 @@ const DEFAULT_APPEARANCE: Appearance = {
   terminalAlpha: 0.45,
   theme: 'auto',
   vibrancy: 'under-window',
+  trafficLights: true,
 }
 
 /**
@@ -142,6 +168,9 @@ function loadAppearance(): Appearance {
       terminalAlpha: saved.terminalAlpha ?? DEFAULT_APPEARANCE.terminalAlpha,
       theme: saved.theme ?? DEFAULT_APPEARANCE.theme,
       vibrancy: saved.vibrancy !== undefined ? saved.vibrancy : DEFAULT_APPEARANCE.vibrancy,
+      // `??` is right even for a boolean: a persisted `false` survives, and only
+      // a missing key falls back to the default.
+      trafficLights: saved.trafficLights ?? DEFAULT_APPEARANCE.trafficLights,
     }
   } catch {
     return DEFAULT_APPEARANCE
@@ -200,6 +229,17 @@ function loadModels(): ModelInfo[] {
   }
 }
 
+function loadHiddenProjects(): string[] {
+  try {
+    const raw = localStorage.getItem('foreman.hiddenProjects')
+    const saved = raw ? (JSON.parse(raw) as unknown) : null
+    // Element-wise, same reasoning as loadModels: this is user-editable storage.
+    return Array.isArray(saved) ? saved.filter((x): x is string => typeof x === 'string') : []
+  } catch {
+    return []
+  }
+}
+
 /**
  * The subset of prefs a session is created with.
  *
@@ -233,6 +273,12 @@ export function applyAppearance(a: Appearance): void {
   useStore.setState({ resolvedTheme: theme })
   // Blur is a window-level vibrancy material, not CSS — see Appearance.vibrancy.
   void window.foreman.setVibrancy(a.vibrancy)
+  // Same shape: a window-level call, plus an attribute so .rail-head can drop
+  // the 84px it reserves for buttons that may not be there. toggleAttribute
+  // rather than dataset — assigning undefined writes the string "undefined",
+  // which an attribute selector reads as present.
+  void window.foreman.setTrafficLights(a.trafficLights)
+  document.documentElement.toggleAttribute('data-no-traffic-lights', !a.trafficLights)
 }
 
 /** Replace-by-id, but merge tool cards so a tool_result doesn't wipe name/input. */
@@ -275,6 +321,10 @@ export const useStore = create<State>((set, get) => ({
   prefs: loadPrefs(),
   notice: null,
   draft: false,
+  // Starts false and is raised by bootstrap only when there is nothing live and
+  // no project was asked for — so a reload lands back on its session.
+  home: false,
+  hiddenProjects: loadHiddenProjects(),
 
   setNotice(notice) {
     set({ notice })
@@ -288,6 +338,30 @@ export const useStore = create<State>((set, get) => ({
     set({ draft: false })
   },
 
+  showHome() {
+    // The draft goes with it, deliberately: Home offers the same project list
+    // plus everything else, so the chooser has nothing left to contribute.
+    set({ home: true, draft: false })
+  },
+
+  leaveHome() {
+    set({ home: false })
+  },
+
+  hideProject(path) {
+    const key = projectKey(path)
+    const cur = get().hiddenProjects
+    if (cur.includes(key)) return
+    const hiddenProjects = [...cur, key]
+    set({ hiddenProjects })
+    localStorage.setItem('foreman.hiddenProjects', JSON.stringify(hiddenProjects))
+  },
+
+  clearHiddenProjects() {
+    set({ hiddenProjects: [] })
+    localStorage.removeItem('foreman.hiddenProjects')
+  },
+
   setPrefs(patch) {
     const prefs = { ...get().prefs, ...patch }
     set({ prefs })
@@ -298,8 +372,10 @@ export const useStore = create<State>((set, get) => ({
   select(id) {
     // Clears the draft too: picking an existing conversation is a perfectly
     // good way to abandon a new one, and without this the chooser would stay
-    // up over whichever session you just clicked.
-    set({ activeId: id, draft: false })
+    // up over whichever session you just clicked. Same for `home` — and this is
+    // the ONLY place it is cleared, because every route into a conversation
+    // funnels through here (openPath, resume and newSession all call select).
+    set({ activeId: id, draft: false, home: false })
     void window.foreman.supportedModels(id).then((models: ModelInfo[]) => {
       if (!models?.length) return
       set({ models })
@@ -604,8 +680,20 @@ export const useStore = create<State>((set, get) => ({
           await window.foreman.replaySessions()
           return
         }
+        // Still inside this .then, so it still loses the race above. Do not lift.
         const p: string | null = await window.foreman.initialProject()
-        if (p) await get().openPath(p)
+        if (p) {
+          // `foreman <path>` / FOREMAN_OPEN is an explicit instruction. Honour it
+          // and land in the conversation — openPath calls select(), which clears
+          // `home` — rather than bouncing off Home first.
+          await get().openPath(p)
+          return
+        }
+        // Nothing live and nothing asked for: Home is the launch destination.
+        // Set explicitly rather than leaning on onHome's `!activeId` arm, so the
+        // rail highlights the Home row. Guarded on activeId because two awaits
+        // have passed and the user may have opened something in the meantime.
+        set((s) => (s.activeId ? s : { home: true }))
       })
       .catch(() => undefined)
 
@@ -652,3 +740,16 @@ window.matchMedia(DARK_QUERY).addEventListener('change', () => {
 
 export const activeSession = (s: State): SessionMeta | undefined =>
   s.sessions.find((x) => x.id === s.activeId)
+
+/**
+ * Whether Home is what's on screen.
+ *
+ * Derived rather than stored, so the two ways of getting there stay in sync:
+ * `home` is the explicit ask, and the `!session` arm folds in the old bare
+ * "no active session" state. That second arm is why close() and onRemoved need
+ * no repair of their own — closing the last session lands on Home for free.
+ *
+ * A draft outranks both: the chooser is a task you are in the middle of.
+ */
+export const onHome = (s: State): boolean =>
+  !s.draft && (s.home || !s.sessions.some((x) => x.id === s.activeId))

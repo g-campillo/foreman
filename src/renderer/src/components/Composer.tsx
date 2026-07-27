@@ -25,6 +25,7 @@ import { useStore } from '../store'
 import { filterEntries, triggerAt } from '../derive.mts'
 import Autocomplete, { type Suggestion } from './Autocomplete'
 import MarkdownInput from './MarkdownInput'
+import ContextStrip from './ContextStrip'
 
 /** Sentinel for "whatever the session is already running" when no alias matches. */
 const CURRENT = '__current__'
@@ -53,17 +54,76 @@ export const bareModel = (id: string | null | undefined): string =>
   (id ?? '').replace(/\[[^\]]*\]$/, '')
 
 /**
- * A model row that names its version: `Default (recommended) · claude-opus-5`.
+ * The model a wire id names: `claude-opus-5[1m]` -> `Opus 5`,
+ * `claude-haiku-4-5` -> `Haiku 4.5`, `claude-3-5-sonnet-20241022` -> `Sonnet 3.5`.
  *
- * `displayName` alone hides which model you are actually on — worst of all for
- * the 'default' row, whose whole content is the word "Default". `resolvedModel`
- * is the canonical wire id the alias expands to and already crosses the bridge,
- * so the version is free; the `[1m]` context suffix is dropped because it is a
- * window size, not a version.
+ * Name and version, nothing else. The `[1m]` bracket is a window size rather
+ * than a version, and how much window is left now has its own readout under the
+ * composer — repeating it in every label was noise.
+ *
+ * Derived from the wire id rather than the SDK's `displayName` because the wire
+ * id is what `SessionMeta.model` actually holds, so this answers "what am I
+ * running" with no lookup into the model list.
  */
-export const modelLabel = (m: ModelInfo): string => {
-  const wire = bareModel(m.resolvedModel)
-  return wire ? `${m.displayName} · ${wire}` : m.displayName
+export const modelName = (id: string | null | undefined): string => {
+  const parts = bareModel(id)
+    .replace(/^claude-/, '')
+    .split('-')
+    .filter(Boolean)
+  if (!parts.length) return ''
+  // First non-numeric part is the name: dated ids put the version first
+  // ('3-5-sonnet-…'), current ones put it last ('haiku-4-5').
+  const name = parts.find((p) => !/^\d+$/.test(p)) ?? parts[0]
+  // Five digits or more is a release datestamp, not a version component.
+  const version = parts.filter((p) => /^\d{1,4}$/.test(p)).join('.')
+  const cap = name[0].toUpperCase() + name.slice(1)
+  return version ? `${cap} ${version}` : cap
+}
+
+/** The context-window bracket as a badge: `claude-opus-5[1m]` -> `1M`. */
+const windowTag = (m: ModelInfo): string =>
+  ((m.resolvedModel || m.id) ?? '').match(/\[([^\]]+)\]$/)?.[1].toUpperCase() ?? ''
+
+/** A displayName without its parenthetical: `Opus 5 (1M context)` -> `Opus 5`. */
+const plainName = (s: string): string => s.replace(/\s*\([^)]*\)\s*$/, '').trim()
+
+/**
+ * Labels for every picker row, computed over the whole list — because two
+ * <option>s that render identically are indistinguishable, and uniqueness is not
+ * a property any single row can see.
+ *
+ * The base label is `modelName(resolvedModel)`, so a row is spelled exactly the
+ * way the context strip spells the running model. Two exceptions:
+ *
+ *  - When the SDK's own name says something the wire id cannot — the
+ *    `Default (recommended)` row, whose alias resolves to some other model — it
+ *    is kept as a prefix. Stripping it would leave Default rendering as a bare
+ *    `Opus 5` that both collides with the real Opus row and loses the one word
+ *    identifying it. The test is mechanical: if the SDK's name already names the
+ *    model, it adds nothing.
+ *  - When two rows still collapse — `Opus 5` and `Opus 5 (1M context)` both name
+ *    Opus 5 — the colliding rows get the window tag back. Only the colliding
+ *    ones: tagging unconditionally would re-add the suffix this exists to remove.
+ */
+export const modelLabels = (all: readonly ModelInfo[]): string[] => {
+  const base = all.map((m) => {
+    const name = modelName(m.resolvedModel)
+    if (!name) return m.displayName || m.id
+    const own = plainName(m.displayName)
+    // Containment, not equality: the alias rows are named 'Opus'/'Haiku', which
+    // an equality test treats as new information and renders 'Opus · Opus 5'.
+    // Only a name the derived one does NOT already contain is worth keeping —
+    // in practice that is the 'Default' row, whose whole identity is that word.
+    return name.toLowerCase().includes(own.toLowerCase()) ? name : `${own} · ${name}`
+  })
+  const counts = new Map<string, number>()
+  for (const b of base) counts.set(b, (counts.get(b) ?? 0) + 1)
+  // Only the row that actually HAS a window gets tagged — the standard-window
+  // twin stays bare, so a collision reads `Opus 5` / `Opus 5 · 1M` rather than
+  // tagging both and inventing a distinction for the ordinary one.
+  return base.map((b, i) =>
+    (counts.get(b) ?? 0) > 1 && windowTag(all[i]) ? `${b} · ${windowTag(all[i])}` : b,
+  )
 }
 
 /** Exported so the command palette offers the same modes, spelled the same way. */
@@ -87,6 +147,9 @@ interface Attachment {
 export default function Composer({ session }: { session: SessionMeta }): React.JSX.Element {
   const send = useStore((s) => s.send)
   const models = useStore((s) => s.models)
+  // Computed over the whole list rather than per row, because disambiguating a
+  // collision means knowing what the other rows render as.
+  const modelRows = useMemo(() => modelLabels(models), [models])
   const close = useStore((s) => s.close)
   const openPath = useStore((s) => s.openPath)
   // Only for the picker's pre-first-turn fallback: the session was created with
@@ -415,9 +478,9 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
             {!models.some(
               (m) => bareModel(m.resolvedModel) === bareModel(session.model),
             ) && <option value={CURRENT}>{session.model ?? 'Loading…'}</option>}
-            {models.map((m) => (
+            {models.map((m, i) => (
               <option key={m.displayName} value={m.id}>
-                {modelLabel(m)}
+                {modelRows[i]}
               </option>
             ))}
           </select>
@@ -470,13 +533,10 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
 
         <span className="spacer" />
 
-        {/* Always on, including while busy: the per-turn "done · $0.0231" rows
-            are gone from the transcript, so this is now the only place a running
-            cost appears. Two decimals — cents are the unit anyone actually reads,
-            and a sub-cent turn showing $0.00 is the accepted trade. */}
-        <span className="cost">
-          ${session.costUsd.toFixed(2)} · {session.inputTokens + session.outputTokens} tok
-        </span>
+        {/* The running cost used to sit here. It moved to ContextStrip below:
+            it is a readout rather than a control, and this row had no width left
+            for it. Two decimals there — cents are the unit anyone reads, and a
+            sub-cent turn showing $0.00 is the accepted trade. */}
 
         {/* Send stays available while running: the queue holds the message and
             the transcript shows it as cancellable until the agent picks it up. */}
@@ -528,6 +588,10 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
           {busy ? <ListPlus size={14} /> : <SendHorizontal size={14} />}
         </button>
       </div>
+
+      {/* Keyed: Composer is rendered unkeyed by App, so without this the strip's
+          fetched context would survive a tab switch onto the wrong session. */}
+      <ContextStrip key={session.id} session={session} />
     </div>
   )
 }

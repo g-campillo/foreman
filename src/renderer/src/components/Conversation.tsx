@@ -12,7 +12,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react'
-import type { ChatItem } from '../../../shared/types'
+import type { ChatItem, EffortLevel, SessionMeta } from '../../../shared/types'
 import { useStore } from '../store'
 import ToolCard from './ToolCard'
 import ApprovalCard from './ApprovalCard'
@@ -23,6 +23,8 @@ import ClaudeMark from './ClaudeMark'
 import {
   answeredQuestions,
   askQuestions,
+  fmt,
+  hms,
   planProposal,
   planTitle,
   toolLabel,
@@ -31,10 +33,14 @@ import {
   workingVerb,
 } from '../derive.mts'
 import Markdown from './Markdown'
-import { MODES, bareModel } from './Composer'
+import { EFFORTS, MODES, modelName } from './Composer'
 
 /** How long each fun verb stays up. Slow enough to read, quick enough to notice. */
 const VERB_MS = 2500
+
+/** 1s, because the readout counts seconds. The verb rotates off this same clock
+ *  rather than its own interval — one timer, and the rotation comes free. */
+const TICK_MS = 1000
 
 export default function Conversation({ sessionId }: { sessionId: string }): React.JSX.Element {
   const items = useStore((s) => s.items[sessionId] ?? EMPTY)
@@ -45,7 +51,6 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
   const session = useStore((s) => s.sessions.find((x) => x.id === sessionId))
   const status = session?.status
   const branch = useStore((s) => s.branches[sessionId] ?? null)
-  const models = useStore((s) => s.models)
   const allApprovals = useStore((s) => s.approvals)
   const approvals = useMemo(
     () => allApprovals.filter((a) => a.sessionId === sessionId),
@@ -88,12 +93,9 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
     { icon: <GitBranch size={11} />, text: branch ?? session?.worktree?.branch ?? '' },
     {
       icon: <Sparkles size={11} />,
-      // null until the first turn lands. The SDK drops the '[1m]' suffix on the
-      // wire, so both sides get stripped before comparing.
-      text: session?.model
-        ? (models.find((m) => bareModel(m.resolvedModel) === bareModel(session.model))
-            ?.displayName ?? session.model)
-        : '',
+      // null until the first turn lands. modelName reads the wire id directly,
+      // so this no longer needs the model list to resolve a display name.
+      text: modelName(session?.model),
     },
     {
       icon: <ShieldCheck size={11} />,
@@ -167,7 +169,7 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
       ))}
       {rewindPreview && <RewindCard />}
       {/* Without this there's dead air between sending and the first token. */}
-      {status === 'running' && <Working sessionId={sessionId} />}
+      {status === 'running' && session && <Working session={session} />}
     </div>
   )
 }
@@ -242,23 +244,40 @@ function parentOf(item: ChatItem): string | undefined {
   return 'parentId' in item ? item.parentId : undefined
 }
 
+/** null means the SDK's own default is in force — a level this session never
+ *  chose. Omitted rather than rendered as "auto", which would assert one. */
+const effortLabel = (e: EffortLevel | null): string | null =>
+  e ? (EFFORTS.find((x) => x.value === e)?.label.toLowerCase() ?? e) : null
+
 /**
- * The status line, with a rotating verb.
+ * The status line: a rotating verb, plus this turn's elapsed time, output tokens
+ * and reasoning effort — the shape the CLI uses.
  *
- * Its own component so the interval re-renders one line rather than the whole
- * transcript every 2.5 seconds — this sits under a list that is already
- * re-rendering per streamed token.
+ * Still its own component so the tick repaints one line rather than the whole
+ * transcript. Re-rendering a child never re-renders its parent, so the interval
+ * stays contained here even though it now runs 2.5x more often than the verb
+ * rotation needed.
  */
-function Working({ sessionId }: { sessionId: string }): React.JSX.Element {
-  const [tick, setTick] = useState(0)
+function Working({ session }: { session: SessionMeta }): React.JSX.Element {
+  const [now, setNow] = useState(() => Date.now())
   // Opt-out in Settings: the verbs are purely for fun, and the dots already say
-  // everything functional.
+  // everything functional. The stats are information rather than decoration, so
+  // they are deliberately NOT gated by it — and the clock has to tick either way.
   const verbs = useStore((s) => s.prefs.workingVerbs)
   useEffect(() => {
-    if (!verbs) return
-    const id = setInterval(() => setTick((t) => t + 1), VERB_MS)
+    const id = setInterval(() => setNow(Date.now()), TICK_MS)
     return () => clearInterval(id)
-  }, [verbs])
+  }, [])
+
+  // turnStartedAt comes from main rather than a mount timestamp because this
+  // component is not remounted per session: Conversation is rendered unkeyed, so
+  // a Working that survived a tab switch would still be timing the old turn.
+  const elapsed = session.turnStartedAt === null ? 0 : Math.max(0, now - session.turnStartedAt)
+  const stats = [
+    hms(elapsed),
+    session.turnTokens ? `↓ ${fmt(session.turnTokens)}` : null,
+    effortLabel(session.effort),
+  ].filter(Boolean)
 
   return (
     <div className="working">
@@ -267,7 +286,12 @@ function Working({ sessionId }: { sessionId: string }): React.JSX.Element {
         <i />
         <i />
       </span>
-      {verbs ? workingVerb(sessionId, tick) : 'Working'}
+      {/* Rotation is derived from the clock instead of its own counter, so the
+          cadence alternates 2s/3s rather than a flat 2.5s. Indistinguishable,
+          and it buys one timer instead of two. */}
+      {verbs ? workingVerb(session.id, Math.floor(elapsed / VERB_MS)) : 'Working'}
+      <span className="spacer" />
+      <span className="working-stats">{stats.join(' · ')}</span>
     </div>
   )
 }

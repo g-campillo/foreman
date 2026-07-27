@@ -4,6 +4,7 @@ import { IPC } from '../shared/types'
 import { setMainWindow } from './bridge'
 import { adoptHosts, registerSessionIpc, disposeAllSessions } from './agent/manager'
 import { registerPtyIpc, disposeAllPtys } from './pty'
+import { listUsage } from './agent/usage'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -13,6 +14,15 @@ let mainWindow: BrowserWindow | null = null
  * the app could never quit.
  */
 let quitting = false
+
+/**
+ * Last value the renderer pushed for Appearance.trafficLights.
+ *
+ * Kept here so a window recreated from the dock is built with the user's
+ * setting already applied. The renderer re-asserts it on boot anyway, but
+ * without this the buttons flash back on for the length of that round trip.
+ */
+let trafficLights = true
 
 /** Handle to the native glass view, so the Appearance popover can restyle it. */
 let glass: { mod: { unstable_setVariant(id: number, v: number): void }; id: number } | null = null
@@ -71,7 +81,7 @@ function createWindow(): void {
     },
   })
 
-  mainWindow.setWindowButtonVisibility(true)
+  mainWindow.setWindowButtonVisibility(trafficLights)
   setMainWindow(mainWindow)
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
@@ -156,6 +166,18 @@ app.whenReady().then(async () => {
     mainWindow?.setVibrancy(v as Parameters<BrowserWindow['setVibrancy']>[0])
     return true
   })
+  ipcMain.handle('app:trafficLights', (_e, { on }: { on: boolean }) => {
+    // macOS-only API, same guard as the Liquid Glass path. Elsewhere there are
+    // no window buttons to hide.
+    if (process.platform !== 'darwin') return false
+    // Remembered so a window recreated from the dock (see `activate`) comes back
+    // with the user's setting rather than flashing the buttons on until the
+    // renderer boots and applyAppearance re-asserts it.
+    trafficLights = on
+    mainWindow?.setWindowButtonVisibility(on)
+    return true
+  })
+  ipcMain.handle(IPC.usageList, () => listUsage())
   registerSessionIpc()
   registerPtyIpc()
 

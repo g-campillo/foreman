@@ -65,6 +65,25 @@ export interface SessionMeta {
   costUsd: number
   inputTokens: number
   outputTokens: number
+  /**
+   * Wall-clock start of the in-flight turn; null between turns.
+   *
+   * Main's clock rather than a renderer-side mount timestamp, because
+   * Conversation and Composer are rendered unkeyed — a status line that
+   * survives a tab switch would otherwise keep timing the old session's turn.
+   */
+  turnStartedAt: number | null
+  /**
+   * Output tokens seen so far in the in-flight turn.
+   *
+   * Deliberately NOT folded into inputTokens/outputTokens: those are the
+   * authoritative cumulative totals, written once from `result`, and mixing a
+   * running estimate into them would double-count when `r.usage` lands.
+   *
+   * Advances per assistant message, which is the finest granularity available —
+   * usage rides the message, not the token deltas — so it steps in chunks.
+   */
+  turnTokens: number
   permissionMode: PermissionMode
   createdAt: number
   /** null until set; the SDK's own default applies while it is. */
@@ -374,6 +393,16 @@ export interface Appearance {
    * vibrancy's look; blur off means pure Liquid Glass.
    */
   vibrancy: string | null
+  /**
+   * The macOS close/minimise/zoom buttons.
+   *
+   * macOS only, and safe to turn off only because the app installs no Menu of
+   * its own — Electron's default template is therefore active, so ⌘Q and ⌘W
+   * still work when the buttons are gone. If a custom Menu is ever added, keep
+   * the quit and close roles or this setting becomes a trap on a frameless
+   * window.
+   */
+  trafficLights: boolean
 }
 
 export const IPC = {
@@ -422,6 +451,10 @@ export const IPC = {
   sessionAgents: 'session:agents',
   sessionMcpStatus: 'session:mcpStatus',
   sessionReloadSkills: 'session:reloadSkills',
+
+  // Every persisted usage sidecar, for Home. NOT sessionUsage above, which is
+  // one live session's SDK-reported figures.
+  usageList: 'usage:list',
 
   // session → renderer events
   evtItem: 'session:item',

@@ -9,10 +9,7 @@ import type {
   SkillInfo,
   UsageInfo,
 } from '../../../shared/types'
-import { contextBreakdown } from '../derive.mts'
-
-const fmt = (n: number): string =>
-  n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n)
+import { contextBreakdown, fmt } from '../derive.mts'
 
 /** Our own palette, because the SDK's `color` is a CLI theme key, not CSS.
  *  All theme tokens, so the breakdown flips with light/dark like everything else. */
@@ -25,7 +22,7 @@ const SWATCHES = [
   'rgb(var(--syn-fn))',
   'rgb(var(--danger))',
 ]
-const swatch = (i: number): string => SWATCHES[i % SWATCHES.length]
+export const swatch = (i: number): string => SWATCHES[i % SWATCHES.length]
 
 interface Data {
   context: ContextUsage | null

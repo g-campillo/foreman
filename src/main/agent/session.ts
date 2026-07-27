@@ -67,12 +67,37 @@ export interface SessionInit {
   worktree?: WorktreeInfo
 }
 
+/**
+ * Total input for a turn, cache included.
+ *
+ * `input_tokens` alone is only the UNCACHED remainder — measured at 2 on a
+ * $0.11 turn, because prompt caching moves essentially all of it into the two
+ * cache counters. A "tokens in" readout built on it reads as broken, so both
+ * are folded in: cache reads are billed (at a discount) and are real context.
+ */
+function inputTokensOf(u: {
+  input_tokens?: number
+  cache_read_input_tokens?: number
+  cache_creation_input_tokens?: number
+} | null | undefined): number {
+  if (!u) return 0
+  return (
+    (u.input_tokens ?? 0) +
+    (u.cache_read_input_tokens ?? 0) +
+    (u.cache_creation_input_tokens ?? 0)
+  )
+}
+
 export class Session {
   readonly meta: SessionMeta
   // A message leaving the queue is the moment it stops being cancellable, and
   // the moment the session is genuinely working on it.
   private readonly queue: InputQueue = createInputQueue((itemId) => {
     send(IPC.evtQueue, { sessionId: this.meta.id, itemId, state: 'started' })
+    // Here rather than in setStatus: 'awaiting-approval' -> 'running' re-enters
+    // that method, so a permission prompt mid-turn would zero the clock. A
+    // message leaving the queue happens exactly once per turn.
+    this.patchMeta({ turnStartedAt: Date.now(), turnTokens: 0 })
     this.setStatus('running')
   })
   private readonly abort = new AbortController()
@@ -132,6 +157,8 @@ export class Session {
       costUsd: prior.costUsd,
       inputTokens: prior.inputTokens,
       outputTokens: prior.outputTokens,
+      turnStartedAt: null,
+      turnTokens: 0,
       permissionMode: init.permissionMode ?? 'default',
       createdAt: Date.now(),
       effort: init.effort ?? null,
@@ -428,13 +455,23 @@ export class Session {
           // the offset a reopened conversation would report only today's spend.
           costUsd: this.restoredCost + (r.total_cost_usd ?? 0),
           // usage, by contrast, IS per-turn, so these do accumulate.
-          inputTokens: this.meta.inputTokens + (r.usage?.input_tokens ?? 0),
+          inputTokens: this.meta.inputTokens + inputTokensOf(r.usage),
           outputTokens: this.meta.outputTokens + (r.usage?.output_tokens ?? 0),
+          // The turn is over: stop the clock, and let the authoritative figure
+          // replace the running estimate. `r.usage` is already per-turn, so this
+          // is a set rather than an add. Falls back to the estimate if the SDK
+          // sent no usage at all.
+          turnStartedAt: null,
+          turnTokens: r.usage?.output_tokens ?? this.meta.turnTokens,
         })
         // Cost is in no transcript the CLI writes, so it only survives a resume
         // if we record it ourselves. Cheap: one ~80-byte file per turn.
         if (this.meta.sdkSessionId) {
           writeUsage(this.meta.sdkSessionId, {
+            // The project, not the scratch worktree — attribution should survive
+            // the worktree being removed. Already canonical: createSession
+            // realpaths the cwd.
+            cwd: this.meta.worktree?.repoRoot ?? this.meta.cwd,
             costUsd: this.meta.costUsd,
             inputTokens: this.meta.inputTokens,
             outputTokens: this.meta.outputTokens,
@@ -509,6 +546,15 @@ export class Session {
     const model = msg.message?.model
     if (!msg.parent_tool_use_id && typeof model === 'string' && model !== this.meta.model) {
       this.patchMeta({ model })
+    }
+
+    // Main thread only, for the same reason as the model above: a subagent's
+    // output is billed to this turn, but counting it here makes the running
+    // total jump as subagents interleave. Their tokens still land in the
+    // authoritative `result` totals.
+    const out = msg.message?.usage?.output_tokens
+    if (!msg.parent_tool_use_id && typeof out === 'number') {
+      this.patchMeta({ turnTokens: this.meta.turnTokens + out })
     }
 
     for (const block of msg.message?.content ?? []) {
