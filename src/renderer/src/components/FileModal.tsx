@@ -4,6 +4,7 @@ import type { FileRead, SessionMeta } from '../../../shared/types'
 import { relPath } from '../derive.mts'
 import { useStore } from '../store'
 import { loadedMonaco } from '../editor/monaco'
+import { startLsp } from '../editor/lsp'
 import { attach, bufFor, detach, isDirty, loadBuffer, markSaved, relayout, retheme } from '../editor/models'
 
 /**
@@ -28,6 +29,7 @@ interface Props {
 export default function FileModal({ session }: Props): React.JSX.Element | null {
   const editorState = useStore((s) => s.editor)
   const closeFile = useStore((s) => s.closeFile)
+  const openFile = useStore((s) => s.openFile)
   const resolvedTheme = useStore((s) => s.resolvedTheme)
   const body = useRef<HTMLDivElement | null>(null)
   const [err, setErr] = useState<string | null>(null)
@@ -85,6 +87,11 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
       }
       await loadBuffer(path, res)
       if (cancelled || !body.current) return
+      // Start the language client before attaching, so its onDidCreateModel
+      // subscription is live when loadBuffer's model appears. Started lazily
+      // here rather than at session create: no editor, no reason to spawn a
+      // language server.
+      await startLsp(session.id, openFile)
       await attach(body.current, path, line)
       setDirty(isDirty(path))
       // Subscribe after attach so the initial load does not read as an edit.
@@ -95,7 +102,7 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
     return () => {
       cancelled = true
     }
-  }, [path, line, session.cwd])
+  }, [path, line, session.cwd, session.id, openFile])
 
   const disposers = useRef<(() => void)[]>([])
   useEffect(

@@ -20,8 +20,10 @@ import { appendFileSync, mkdirSync, writeFileSync, createReadStream, existsSync,
 import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
-import { setSink } from '../shared/sink'
+import { setSink, send } from '../shared/sink'
 import { serverPids, disposeAll } from '../lsp/registry.mts'
+import { handleFromRenderer, lspRequest } from '../lsp/proxy.mts'
+import { IPC } from '../shared/types'
 import { HOST_FILES, makeLineReader, type HostCall, type HostFrame, type HostMeta } from '../shared/hostwire'
 import { Session } from '../main/agent/session'
 import { hydrateInto } from './hydrate'
@@ -165,6 +167,16 @@ const METHODS: Record<string, (...a: never[]) => unknown> = {
   mcpStatus: () => session.mcpStatus(),
   reloadSkills: () => session.reloadSkills(),
   setTitle: (title: never) => session.setTitle(title),
+
+  /** A direct LSP request from the renderer, answered in the same round-trip. */
+  lspRequest: (method: never, params: never) => lspRequest(method, params),
+
+  /** One JSON-RPC frame from the renderer's Monaco LSP client. */
+  lspSend: async (msg: never) => {
+    const reply = await handleFromRenderer(msg)
+    if (reply) send(IPC.evtLspMessage, { sessionId: session.meta.id, msg: reply })
+    return true
+  },
 
   // Prompts park in THIS process now, so answering them happens here too.
   respondPermission: (answer: never) => respondPermission(answer),

@@ -157,6 +157,12 @@ export async function attach(mount: HTMLElement, path: string, line: number | nu
   // One frame late, deliberately. On the render that reveals the modal, layout
   // for the freshly-mounted subtree has not settled when effects run, so
   // measuring now caches the wrong cell size.
+  // Dev-only handle for driving the editor over CDP, mirroring the __store one
+  // in main.tsx. Stripped from production builds — and worth having, because
+  // Monaco's keybindings cannot be reached with synthetic DOM key events and
+  // F12 collides with DevTools, so this is the only way to test an action.
+  if (import.meta.env.DEV) (window as unknown as Record<string, unknown>).__editor = editor
+
   requestAnimationFrame(() => {
     if (!editor) return
     monaco.editor.remeasureFonts()

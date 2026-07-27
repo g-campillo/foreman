@@ -390,6 +390,18 @@ export function registerSessionIpc(): void {
     return s ? (await listProjectFiles(s.meta.cwd, FILE_LIMIT)).paths : []
   })
 
+  // Fire-and-forget from the renderer's point of view: replies come back as
+  // evtLspMessage pushes, because a JSON-RPC reply is just another frame.
+  ipcMain.handle(IPC.lspSend, (_e, { sessionId, msg }: { sessionId: string; msg: unknown }) =>
+    callOr(sessionId, null, 'lspSend', msg),
+  )
+
+  ipcMain.handle(
+    IPC.lspRequest,
+    (_e, { sessionId, method, params }: { sessionId: string; method: string; params: unknown }) =>
+      callOr(sessionId, null, 'lspRequest', method, params),
+  )
+
   ipcMain.handle(IPC.sessionInterrupt, (_e, { sessionId }: { sessionId: string }) =>
     callOr(sessionId, undefined, 'interrupt'),
   )

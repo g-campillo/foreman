@@ -84,6 +84,35 @@ export function loadMonaco(): Promise<Monaco> {
     // of undefined" rather than at build time.
     for (const d of [monaco.typescript.typescriptDefaults, monaco.typescript.javascriptDefaults]) {
       d.setDiagnosticsOptions({ noSemanticValidation: true, noSyntaxValidation: false })
+
+      // And turn off its PROVIDERS, which is the half that actually bites.
+      //
+      // Switching off diagnostics alone leaves the built-in worker registering
+      // hover, definition, references and the rest — and Monaco merges results
+      // from every registered provider. The built-in one sees a single file
+      // with no tsconfig and no node_modules, so on `render(...)` it answers
+      // with the import binding one line up instead of the declaration in
+      // another file. That is a *plausible* answer, which is why it took a raw
+      // probe to catch: the language server was returning format.ts:1:17 the
+      // whole time and go-to-definition still landed on the import.
+      //
+      // Everything below is now the real server's job. `codeLens: false` too:
+      // its reference counts would be single-file and therefore wrong.
+      d.setModeConfiguration({
+        completionItems: false,
+        hovers: false,
+        documentSymbols: false,
+        definitions: false,
+        references: false,
+        documentHighlights: false,
+        rename: false,
+        diagnostics: false,
+        documentRangeFormattingEdits: false,
+        signatureHelp: false,
+        onTypeFormattingEdits: false,
+        codeActions: false,
+        inlayHints: false,
+      })
     }
     // Before anything can call editor.create(). `editorOptions` names the theme
     // 'foreman', and Monaco silently falls back to its own `vs` default for a

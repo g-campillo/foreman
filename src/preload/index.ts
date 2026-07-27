@@ -101,6 +101,12 @@ const api = {
   statFiles: (cwd: string, paths: string[]) => ipcRenderer.invoke(IPC.fileStat, { cwd, paths }),
   fileTree: (cwd: string) => ipcRenderer.invoke(IPC.fileTree, { cwd }),
 
+  // lsp — raw JSON-RPC frames to and from the session's server fleet
+  lspSend: (sessionId: string, msg: unknown) =>
+    ipcRenderer.invoke(IPC.lspSend, { sessionId, msg }),
+  lspRequest: (sessionId: string, method: string, params: unknown) =>
+    ipcRenderer.invoke(IPC.lspRequest, { sessionId, method, params }),
+
   // terminal
   startPty: (sessionId: string, cwd: string, cols: number, rows: number) =>
     ipcRenderer.invoke(IPC.ptyStart, { sessionId, cwd, cols, rows }),
@@ -133,6 +139,7 @@ const api = {
   onElicitationRequest: (cb: (p: any) => void) => on(IPC.elicitRequest, cb),
   onElicitationResolved: (cb: (p: any) => void) => on(IPC.elicitResolved, cb),
   onDiffChanged: (cb: (p: any) => void) => on(IPC.evtDiffChanged, cb),
+  onLspMessage: (cb: (p: any) => void) => on(IPC.evtLspMessage, cb),
   onPtyData: (cb: (p: any) => void) => on(IPC.evtPtyData, cb),
   onPtyExit: (cb: (p: any) => void) => on(IPC.evtPtyExit, cb),
 }

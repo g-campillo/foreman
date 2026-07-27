@@ -541,6 +541,14 @@ export const IPC = {
   fileStat: 'file:stat',
   fileTree: 'file:tree',
 
+  // The renderer's LSP client, multiplexed onto the host's fleet by lsp/proxy.
+  // A raw JSON-RPC frame in each direction: the message IS the payload.
+  lspSend: 'lsp:send',
+  evtLspMessage: 'lsp:message',
+  /** Request/response for the hand-rolled location providers, which need a
+   *  promise rather than a frame that comes back later as an event. */
+  lspRequest: 'lsp:request',
+
   // terminal
   ptyStart: 'pty:start',
   ptyWrite: 'pty:write',

@@ -31,6 +31,8 @@ interface Doc {
   /** Refcount by purpose, so the editor closing a file cannot blind the
    *  diagnostics loop that also has it open, and vice versa. */
   owners: Set<'editor' | 'agent' | 'diag'>
+  /** The editor has unsaved changes; disk is stale and must not overwrite. */
+  dirty?: boolean
 }
 
 interface Entry {
@@ -87,7 +89,7 @@ export async function ensure(id: ServerId): Promise<Entry | null> {
   if (failed.has(id)) return null
 
   const resolved = resolveServer(id, root)
-  console.error(`[lsp] ensure(${id}) root=${root} -> ${resolved ? `${resolved.cmd} ${resolved.args.join(' ')} (${resolved.via})` : 'NOT FOUND'}`)
+  console.error(`[lsp] ${id}: ${resolved ? resolved.via : 'no server found'}`)
   if (!resolved) {
     failed.set(id, 'no server found')
     return null
@@ -202,6 +204,26 @@ export async function openDoc(
   return entry
 }
 
+/**
+ * The editor changed a document. Its buffer is authoritative until it saves.
+ *
+ * `dirty` is what stops `filesChanged` from overwriting an unsaved buffer with
+ * whatever is still on disk — without it, an agent edit to any file would drag
+ * every open editor document back to its saved contents inside the server.
+ */
+export async function editorChanged(path: string, text: string): Promise<void> {
+  const entry = await forPath(path)
+  const doc = entry?.docs.get(path)
+  if (!entry || !doc || doc.text === text) return
+  doc.text = text
+  doc.version += 1
+  doc.dirty = true
+  entry.client.notify('textDocument/didChange', {
+    textDocument: { uri: doc.uri, version: doc.version },
+    contentChanges: [{ text }],
+  })
+}
+
 export function closeDoc(path: string, owner: 'editor' | 'agent' | 'diag'): void {
   const id = serverFor(path)
   const entry = id ? servers.get(id) : undefined
@@ -245,6 +267,9 @@ export async function filesChanged(paths: string[]): Promise<void> {
 
     for (const p of bucket.open) {
       const doc = entry.docs.get(p)!
+      // An unsaved editor buffer outranks the file on disk. Reloading here
+      // would tell the server the user's in-progress edit never happened.
+      if (doc.dirty) continue
       const text = await readFile(p, 'utf8').catch(() => null)
       if (text === null) {
         // Deleted. didClose, then report it as a watched-file delete so the
