@@ -70,6 +70,22 @@ interface State {
   hideProject(path: string): void
   clearHiddenProjects(): void
 
+  /**
+   * The file the editor modal is showing, absolute path, or null when closed.
+   *
+   * In the store rather than App state for the same reason `home` is: a file row
+   * in the tree, a path on a diff row, a tool card six levels down in
+   * Conversation and the palette all need to open a file, and threading a
+   * callback to each of them is how prop drilling starts.
+   *
+   * `line` is a one-shot reveal target, not a stored cursor. The editor keeps
+   * view state per path and restores it when no line is given, so re-opening a
+   * file lands where you left it rather than at the top.
+   */
+  editor: { path: string; line: number | null } | null
+  openFile(path: string, line?: number): void
+  closeFile(): void
+
   select(id: string): void
   openPath(cwd: string, worktreeBranch?: string): Promise<void>
   newSession(worktreeBranch?: string): Promise<void>
@@ -337,9 +353,18 @@ export const useStore = create<State>((set, get) => ({
   // no project was asked for — so a reload lands back on its session.
   home: false,
   hiddenProjects: loadHiddenProjects(),
+  editor: null,
 
   setNotice(notice) {
     set({ notice })
+  },
+
+  openFile(path, line) {
+    set({ editor: { path, line: line ?? null } })
+  },
+
+  closeFile() {
+    set({ editor: null })
   },
 
   startDraft() {

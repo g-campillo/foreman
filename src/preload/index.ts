@@ -88,6 +88,19 @@ const api = {
   commitFiles: (sessionId: string, cwd: string, paths: string[], message: string) =>
     ipcRenderer.invoke(IPC.diffCommit, { sessionId, cwd, paths, message }),
 
+  // editor files
+  readFile: (cwd: string, path: string) => ipcRenderer.invoke(IPC.fileRead, { cwd, path }),
+  writeFile: (
+    sessionId: string,
+    cwd: string,
+    path: string,
+    text: string,
+    bom: boolean,
+    expectMtimeMs?: number,
+  ) => ipcRenderer.invoke(IPC.fileWrite, { sessionId, cwd, path, text, bom, expectMtimeMs }),
+  statFiles: (cwd: string, paths: string[]) => ipcRenderer.invoke(IPC.fileStat, { cwd, paths }),
+  fileTree: (cwd: string) => ipcRenderer.invoke(IPC.fileTree, { cwd }),
+
   // terminal
   startPty: (sessionId: string, cwd: string, cols: number, rows: number) =>
     ipcRenderer.invoke(IPC.ptyStart, { sessionId, cwd, cols, rows }),

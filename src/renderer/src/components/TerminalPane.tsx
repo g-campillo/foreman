@@ -3,20 +3,10 @@ import { Terminal, type ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import type { SessionMeta } from '../../../shared/types'
 import { useStore } from '../store'
-
-/**
- * xterm takes colour literals, not CSS vars, so this is the one place that has
- * to read the tokens out by hand. theme.css stores channels space-separated
- * ("10 132 255"); xterm's parser only understands the legacy comma forms, hence
- * the rejoin.
- */
-function token(css: CSSStyleDeclaration, name: string, alpha?: number): string {
-  const ch = css.getPropertyValue(name).trim().split(/\s+/).join(',')
-  return alpha === undefined ? `rgb(${ch})` : `rgba(${ch},${alpha})`
-}
+import { token, vars } from '../tokens'
 
 function termTheme(): ITheme {
-  const css = getComputedStyle(document.documentElement)
+  const css = vars()
   return {
     // Stays transparent in both themes: .term-host paints the themed fill
     // underneath, and the glass has to read through it.

@@ -3259,6 +3259,193 @@ button.diff-more:hover {
   border-color: rgb(var(--accent) / 0.7);
 }
 
+/* ────────────────────────────────────────────────────────────────── ⌘4 files */
+
+/* The tree wants more room than a diff does, and the grid contract above already
+   promised this comes free: --side-w is a custom property, so a per-panel
+   override needs no TSX. max() rather than a bare clamp so the default is wider
+   than the stored 520px WITHOUT overwriting what the user dragged — drag it
+   narrow and that still wins. */
+
+.app[data-panel='files'] {
+  --side-w: clamp(280px, max(var(--side-w-user), 560px), 60vw);
+}
+
+.ft {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ft-search {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 7px 11px;
+  border-bottom: 1px solid rgb(var(--border));
+  color: rgb(var(--text-faint));
+}
+.ft-search input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  outline: none;
+  color: rgb(var(--text));
+  font-size: 12.5px;
+}
+
+.ft-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 4px 0 10px;
+}
+
+.ft-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding-top: 3px;
+  padding-bottom: 3px;
+  padding-right: 10px;
+  border: 0;
+  background: none;
+  cursor: default;
+  text-align: left;
+  font-size: 12.5px;
+  color: rgb(var(--text-dim));
+}
+.ft-row:hover {
+  background: rgb(var(--surface-3) / 0.55);
+  color: rgb(var(--text));
+}
+.ft-row[data-active='true'] {
+  background: rgb(var(--accent) / 0.16);
+  color: rgb(var(--text));
+}
+.ft-row[data-dir] {
+  color: rgb(var(--text));
+}
+.ft-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Filter hits show the whole path, so the ellipsis has to bite at the FRONT —
+   `src/renderer/components/Fi…` tells you nothing, `…components/FileTree.tsx`
+   tells you everything. */
+.ft-path {
+  direction: rtl;
+  text-align: left;
+}
+.ft-file-icon {
+  color: rgb(var(--text-faint));
+  flex: none;
+}
+.ft-caret {
+  flex: none;
+  color: rgb(var(--text-faint));
+  transition: transform 0.12s ease;
+}
+.ft-caret[data-open] {
+  transform: rotate(90deg);
+}
+
+/* A dot, not a letter: the porcelain code means nothing at a glance and the ⌘1
+   panel is one keystroke away for anyone who wants the detail. */
+.ft-dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgb(var(--warn));
+}
+.ft-row[data-status='added'] .ft-dot {
+  background: rgb(var(--ok));
+}
+
+.ft-note {
+  flex: none;
+  padding: 7px 11px;
+  border-top: 1px solid rgb(var(--border));
+  color: rgb(var(--text-faint));
+  font-size: 11.5px;
+}
+
+/* --------------------------------------------------------------- file modal
+
+   Reuses .plan-scrim and the whole .plan-modal frame, exactly as Settings does
+   — so this is the only rule the feature needs. Two classes, not one, for the
+   reason .plan-modal.settings gives above: .plan-modal sets width too and is
+   defined later in the file, so a bare .file-modal loses the specificity tie on
+   source order.
+
+   The width ladder is now 400 (settings) / 760 (ask) / 1040 (plan) / 1400 here.
+
+   `height`, not `max-height`, and that is the one real departure from the other
+   modals: .plan-body is `flex: 1; min-height: 0`, which resolves to zero against
+   an auto-height parent — and Monaco measures its character cell on attach, so a
+   zero-height box poisons every metric it caches. The other modals grow to fit
+   their content; this one has to be told how big it is. */
+.plan-modal.file-modal {
+  width: min(1400px, 96vw);
+  height: 88vh;
+}
+
+/* A code editor wants the whole box; .plan-body's reading-width padding is for
+   prose. Position for the same reason Monaco needs a definite height. */
+.file-body {
+  padding: 0;
+  position: relative;
+  overflow: hidden;
+}
+.file-host {
+  position: absolute;
+  inset: 0;
+}
+
+.file-head {
+  align-items: center; /* one line, unlike a wrapping plan title */
+}
+.file-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* A dot rather than the usual bullet-in-a-tab: the filename is already
+   monospaced and a glyph before it would shift the whole title on every
+   keystroke. */
+.file-dirty {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 999px;
+  background: rgb(var(--accent));
+}
+
+/* Monaco's suggest, hover and find widgets, hoisted to <body> so .plan-modal's
+   overflow:hidden cannot clip them. Between the scrims (50/60) and the tooltip
+   (70), so a tip still paints over a suggest list and the list still paints over
+   its own modal. */
+.monaco-overflow {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 65;
+}
+
 /* ─────────────────────────────────────────────────────────────────── icons */
 
 /* Must stay LAST in the file: these beat .branch-btn and .queued-cancel, both

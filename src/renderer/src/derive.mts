@@ -960,3 +960,72 @@ export function filterEntries<T extends Matchable>(entries: readonly T[], query:
     .sort((a, b) => a.rank - b.rank)
     .map((x) => x.entry)
 }
+
+// --------------------------------------------------------------------- files
+
+/** A node in the file tree. Directories have `children`; files never do. */
+export interface TreeNode {
+  name: string
+  /** Repo-relative, POSIX separators — the spelling `git ls-files` gave us. */
+  path: string
+  children?: TreeNode[]
+}
+
+/** Directories first, then case-insensitive by name. */
+function cmpNodes(a: TreeNode, b: TreeNode): number {
+  return (a.children ? 0 : 1) - (b.children ? 0 : 1) || a.name.localeCompare(b.name)
+}
+
+/**
+ * Nest a flat path list into a tree.
+ *
+ * Flat, not lazy-per-directory, and that is a decision rather than a shortcut.
+ * Loading a directory at a time means either reimplementing .gitignore — the
+ * exact thing `listProjectFiles` exists to avoid — or one `git ls-files` per
+ * expansion. 4000 paths is ~160KB across the bridge, which is nothing, and the
+ * tree renders collapsed so only the root's children are ever in the DOM.
+ */
+export function buildTree(paths: readonly string[]): TreeNode[] {
+  interface Dir {
+    dirs: Map<string, Dir>
+    files: Set<string>
+  }
+  const root: Dir = { dirs: new Map(), files: new Set() }
+
+  for (const raw of paths) {
+    // Normalise rather than reject. A './' prefix, a doubled slash or a trailing
+    // one are all things a caller can plausibly hand us, and a path silently
+    // dropped from a tree reads as "the repo is missing a file" — which is the
+    // failure that looks like a bug in someone else's code.
+    const parts = raw.split('/').filter((p) => p !== '' && p !== '.')
+    if (!parts.length) continue
+
+    let dir = root
+    for (const part of parts.slice(0, -1)) {
+      let next = dir.dirs.get(part)
+      if (!next) {
+        next = { dirs: new Map(), files: new Set() }
+        dir.dirs.set(part, next)
+      }
+      dir = next
+    }
+    dir.files.add(parts[parts.length - 1]!)
+  }
+
+  const walk = (dir: Dir, prefix: string): TreeNode[] => {
+    const out: TreeNode[] = []
+    for (const [name, sub] of dir.dirs) {
+      out.push({ name, path: prefix + name, children: walk(sub, `${prefix}${name}/`) })
+    }
+    for (const name of dir.files) {
+      // A name can arrive as both a file and a directory — `foo` alongside
+      // `foo/bar`. Keep the directory: a directory node can carry children and
+      // a file node cannot, so dropping the directory loses every path under it
+      // while dropping the file loses one.
+      if (!dir.dirs.has(name)) out.push({ name, path: prefix + name })
+    }
+    return out.sort(cmpNodes)
+  }
+
+  return walk(root, '')
+}

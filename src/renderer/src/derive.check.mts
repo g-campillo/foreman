@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem, SessionMeta } from '../../shared/types'
-import { activityOf, answeredQuestions, ANSWER_PREFIX, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolRender, transcriptRows, workingVerb, WORKING_VERBS } from './derive.mts'
+import { activityOf, answeredQuestions, ANSWER_PREFIX, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolRender, transcriptRows, workingVerb, WORKING_VERBS, buildTree } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -772,6 +772,59 @@ for (const [p, cwd] of [
   assert.equal(orphan.costUsd, 7, 'unattributable spend still counts toward the total')
   assert.equal(orphan.unattributed.sessions, 1)
   assert.equal(orphan.unattributed.costUsd, 4)
+}
+
+// ------------------------------------------------------------------ buildTree
+
+{
+  assert.deepEqual(buildTree([]), [], 'empty in, empty out')
+
+  // One deep path has to materialise every intermediate directory, none of which
+  // appear in the input.
+  const deep = buildTree(['a/b/c/d.ts'])
+  assert.equal(deep.length, 1)
+  assert.equal(deep[0]!.name, 'a')
+  assert.equal(deep[0]!.children![0]!.children![0]!.children![0]!.path, 'a/b/c/d.ts')
+  assert.equal(
+    deep[0]!.children![0]!.children![0]!.children![0]!.children,
+    undefined,
+    'a file has no children key at all — that is how the UI tells them apart',
+  )
+
+  // Siblings share the parent rather than each growing their own.
+  const sib = buildTree(['src/a.ts', 'src/b.ts', 'src/deep/c.ts'])
+  assert.equal(sib.length, 1, 'one root directory')
+  assert.deepEqual(
+    sib[0]!.children!.map((n) => n.name),
+    ['deep', 'a.ts', 'b.ts'],
+    'directories first, then files, each alphabetical',
+  )
+
+  // Sort order is by name within each group, NOT by input order.
+  assert.deepEqual(
+    buildTree(['z.ts', 'a.ts', 'M.ts']).map((n) => n.name),
+    ['a.ts', 'M.ts', 'z.ts'],
+    'localeCompare, so case does not split the alphabet',
+  )
+
+  // The collision case: `foo` is both a file and a directory. Keeping the
+  // directory loses one path; keeping the file would lose every path under it.
+  const clash = buildTree(['foo', 'foo/bar.ts'])
+  assert.equal(clash.length, 1)
+  assert.ok(clash[0]!.children, 'the directory wins')
+  assert.deepEqual(clash[0]!.children!.map((n) => n.path), ['foo/bar.ts'])
+
+  // Normalisation: none of these may drop a path or invent an empty node.
+  assert.deepEqual(buildTree(['./a.ts']).map((n) => n.path), ['a.ts'], 'leading ./ stripped')
+  assert.deepEqual(buildTree(['a//b.ts']).map((n) => n.name), ['a'], 'doubled slash collapsed')
+  assert.deepEqual(buildTree(['']), [], 'an empty path yields no node')
+  assert.deepEqual(buildTree(['/']), [], 'a bare separator yields no node')
+
+  // Paths git actually emits: spaces and non-ASCII must survive intact.
+  assert.deepEqual(
+    buildTree(['my dir/café 🎉.ts']).map((n) => n.children![0]!.path),
+    ['my dir/café 🎉.ts'],
+  )
 }
 
 console.log('derive: ok')

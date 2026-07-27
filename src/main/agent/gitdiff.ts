@@ -81,7 +81,7 @@ interface GitStatus {
  * lose its root as well as its branch. `branch --show-current` prints nothing
  * on a detached HEAD instead of failing.
  */
-async function readStatus(cwd: string): Promise<GitStatus | null> {
+export async function readStatus(cwd: string): Promise<GitStatus | null> {
   const top = await git(cwd, ['rev-parse', '--show-toplevel'])
   const root = top?.trim()
   if (!root) return null
@@ -142,7 +142,7 @@ export async function computeDiffs(sessionId: string, cwd: string): Promise<File
  * Equal to `computeDiffs().length` by construction, because diffRow emits a row
  * per dirty path unconditionally.
  */
-async function emitCount(sessionId: string, cwd: string): Promise<void> {
+export async function emitCount(sessionId: string, cwd: string): Promise<void> {
   const st = await readStatus(cwd)
   send(IPC.evtDiffChanged, {
     sessionId,

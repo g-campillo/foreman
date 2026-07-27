@@ -415,6 +415,50 @@ export interface Appearance {
   trafficLights: boolean
 }
 
+/**
+ * A file read for the editor.
+ *
+ * A discriminated union rather than the neutral-empty shape the read-only
+ * panels use (`callOr(sessionId, [], 'agents')`). Neutral-empty is right when
+ * the worst case is a panel rendering "unavailable"; it is catastrophic here,
+ * because an empty read that opens a tab is one ⌘S away from truncating the
+ * file. The editor must be able to tell denied from missing from unreadable,
+ * and a tab never opens on `ok: false`.
+ */
+export type FileRead =
+  | {
+      ok: true
+      text: string
+      mtimeMs: number
+      size: number
+      /** Stripped on read, re-prepended on write. Monaco has no BOM concept. */
+      bom: boolean
+      /** The renderer sets the model's EOL from this — see files.ts. */
+      eol: 'lf' | 'crlf'
+    }
+  | { ok: false; reason: 'missing' | 'binary' | 'too-large' | 'outside' | 'io'; error: string }
+
+export type FileWrite =
+  | { ok: true; mtimeMs: number }
+  /** `stale` carries the mtime we found, so the conflict UI can re-read. */
+  | { ok: false; reason: 'stale' | 'outside' | 'io'; error: string; mtimeMs?: number }
+
+/** `truncated` matters for the tree: a clipped popover is invisible, a clipped
+ *  tree looks like the repo is missing files. */
+export interface FileList {
+  paths: string[]
+  truncated: boolean
+  /**
+   * Repo-relative paths git considers dirty, keyed to their porcelain code.
+   *
+   * Rides along on the tree's round-trip because `git status` is one more cheap
+   * call next to the `git ls-files` we are already making, and it is what turns
+   * the tree from a file picker into a view of what changed. Absent for the
+   * @-mention popover, which has no room to show it.
+   */
+  dirty?: Record<string, string>
+}
+
 export const IPC = {
   // session lifecycle
   sessionCreate: 'session:create',
@@ -489,6 +533,13 @@ export const IPC = {
   diffRevert: 'diff:revert',
   diffCommit: 'diff:commit',
   evtDiffChanged: 'diff:changed',
+
+  // editor file I/O. No event channel: reconciliation reuses evtDiffChanged,
+  // which the PostToolUse hook already fires on every agent write.
+  fileRead: 'file:read',
+  fileWrite: 'file:write',
+  fileStat: 'file:stat',
+  fileTree: 'file:tree',
 
   // terminal
   ptyStart: 'pty:start',

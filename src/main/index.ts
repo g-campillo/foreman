@@ -4,6 +4,7 @@ import { IPC } from '../shared/types'
 import { setMainWindow } from './bridge'
 import { adoptHosts, registerSessionIpc, disposeAllSessions } from './agent/manager'
 import { registerPtyIpc, disposeAllPtys } from './pty'
+import { registerFileIpc } from './files'
 import { listUsage } from './agent/usage'
 
 let mainWindow: BrowserWindow | null = null
@@ -180,6 +181,7 @@ app.whenReady().then(async () => {
   ipcMain.handle(IPC.usageList, () => listUsage())
   registerSessionIpc()
   registerPtyIpc()
+  registerFileIpc()
 
   // Re-attach to agents left running by a previous run — a clean quit, or a
   // crash. Awaited before the window loads so `session:list` already has them

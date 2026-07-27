@@ -1,11 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { GitCompare, Gauge, SlidersHorizontal, SquareTerminal, X } from 'lucide-react'
+import { FolderTree, GitCompare, Gauge, SlidersHorizontal, SquareTerminal, X } from 'lucide-react'
 import { activeSession, DEFAULT_APPEARANCE, onHome, useStore } from './store'
 import SessionRail from './components/SessionRail'
 import Conversation from './components/Conversation'
 import Composer from './components/Composer'
 import DiffPanel from './components/DiffPanel'
 import TerminalPane from './components/TerminalPane'
+import FileTree from './components/FileTree'
+import FileModal from './components/FileModal'
 import Settings from './components/Settings'
 import TodoStrip from './components/TodoStrip'
 import SessionPanel from './components/SessionPanel'
@@ -14,20 +16,22 @@ import Home from './components/Home'
 import CommandPalette, { type PaletteActions } from './components/CommandPalette'
 import Tooltip from './components/Tooltip'
 
-export type Panel = 'diff' | 'terminal' | 'session'
+export type Panel = 'diff' | 'terminal' | 'session' | 'files'
 
 const PANEL_LABEL: Record<Panel, string> = {
   diff: 'Diff',
   terminal: 'Terminal',
   session: 'Session',
+  files: 'Files',
 }
 
-/** ⌘1/⌘2/⌘3. `undefined` for every other key — that lookup IS the guard in onKey.
- *  A record rather than a `'1' <= key <= '3'` range, which also admits junk. */
+/** ⌘1-⌘4. `undefined` for every other key — that lookup IS the guard in onKey.
+ *  A record rather than a `'1' <= key <= '4'` range, which also admits junk. */
 const PANEL_KEYS: Record<string, Panel | undefined> = {
   '1': 'diff',
   '2': 'terminal',
   '3': 'session',
+  '4': 'files',
 }
 
 /** One size for every chrome glyph, so the toolbar stays optically even.
@@ -234,6 +238,17 @@ export default function App(): React.JSX.Element {
             </button>
             <button
               className="tab"
+              data-active={panel === 'files'}
+              aria-pressed={panel === 'files'}
+              aria-label="Files"
+              data-tip="Files — this project's tree  ⌘4"
+              disabled={!session}
+              onClick={() => toggle('files')}
+            >
+              <FolderTree size={ICON} />
+            </button>
+            <button
+              className="tab"
               data-active={panel === 'terminal'}
               aria-pressed={panel === 'terminal'}
               aria-label="Terminal"
@@ -318,6 +333,13 @@ export default function App(): React.JSX.Element {
             <div className="empty">No session</div>
           )}
         </div>
+        <div className="pane pane-body" style={{ display: panel === 'files' ? 'flex' : 'none' }}>
+          {session ? (
+            <FileTree session={session} visible={panel === 'files'} />
+          ) : (
+            <div className="empty">No session</div>
+          )}
+        </div>
         <div className="pane pane-body" style={{ display: panel === 'terminal' ? 'flex' : 'none' }}>
           {session ? (
             <TerminalPane session={session} visible={panel === 'terminal'} />
@@ -373,6 +395,11 @@ export default function App(): React.JSX.Element {
       {showPalette && (
         <CommandPalette actions={paletteActions} onClose={() => setShowPalette(false)} />
       )}
+      {/* Here for the strong version of the reason above, not the weak one:
+          PlanCard's scrim renders inside .convo and is therefore confined to the
+          chat pane. A file needs the whole window, so it mounts as a sibling of
+          Settings. Before Tooltip, so a tip still paints over a suggest list. */}
+      {session && <FileModal session={session} />}
       <Tooltip />
     </div>
   )
