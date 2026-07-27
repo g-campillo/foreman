@@ -14,6 +14,7 @@ const api = {
   closeSession: (sessionId: string) => ipcRenderer.invoke(IPC.sessionClose, { sessionId }),
   listSessions: () => ipcRenderer.invoke(IPC.sessionList),
   listPastSessions: (dir?: string) => ipcRenderer.invoke(IPC.sessionPastList, { dir }),
+  replaySessions: () => ipcRenderer.invoke(IPC.sessionReplay),
 
   // time travel + actions
   rewind: (sessionId: string, messageId: string, dryRun: boolean) =>
@@ -81,9 +82,8 @@ const api = {
   // diffs
   listDiffs: (sessionId: string, cwd: string) =>
     ipcRenderer.invoke(IPC.diffList, { sessionId, cwd }),
-  revertFile: (sessionId: string, path: string) =>
-    ipcRenderer.invoke(IPC.diffRevert, { sessionId, path }),
-  clearDiffs: (sessionId: string) => ipcRenderer.invoke(IPC.diffClear, { sessionId }),
+  revertFile: (sessionId: string, cwd: string, path: string) =>
+    ipcRenderer.invoke(IPC.diffRevert, { sessionId, cwd, path }),
   commitFiles: (sessionId: string, cwd: string, paths: string[], message: string) =>
     ipcRenderer.invoke(IPC.diffCommit, { sessionId, cwd, paths, message }),
 
@@ -97,9 +97,15 @@ const api = {
   killPty: (sessionId: string) => ipcRenderer.invoke(IPC.ptyKill, { sessionId }),
 
   // misc
+  pendingRequests: () => ipcRenderer.invoke(IPC.pendingList),
   pickDirectory: () => ipcRenderer.invoke(IPC.pickDirectory),
   initialProject: () => ipcRenderer.invoke('app:initialProject'),
   setVibrancy: (v: string | null) => ipcRenderer.invoke('app:vibrancy', { v }),
+  setAgentPolicy: (policy: {
+    lifetime: 'persist' | 'stop'
+    idleMinutes: number
+    notifications: boolean
+  }) => ipcRenderer.invoke(IPC.agentPolicy, policy),
 
   // events
   onItem: (cb: (p: any) => void) => on(IPC.evtItem, cb),

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { FolderOpen, GitCompare, Gauge, SlidersHorizontal, SquareTerminal, X } from 'lucide-react'
+import { GitCompare, Gauge, SlidersHorizontal, SquareTerminal, X } from 'lucide-react'
 import { activeSession, useStore } from './store'
 import SessionRail from './components/SessionRail'
 import Conversation from './components/Conversation'
@@ -9,6 +9,7 @@ import TerminalPane from './components/TerminalPane'
 import Settings from './components/Settings'
 import TodoStrip from './components/TodoStrip'
 import SessionPanel from './components/SessionPanel'
+import ProjectChooser from './components/ProjectChooser'
 import CommandPalette, { type PaletteActions } from './components/CommandPalette'
 
 export type Panel = 'diff' | 'terminal' | 'session'
@@ -34,7 +35,12 @@ const ICON = 14
 export default function App(): React.JSX.Element {
   const session = useStore(activeSession)
   const diffCount = useStore((s) => (s.activeId ? (s.diffCounts[s.activeId] ?? 0) : 0))
+  const branch = useStore((s) => (s.activeId ? (s.branches[s.activeId] ?? null) : null))
   const newSession = useStore((s) => s.newSession)
+  const startDraft = useStore((s) => s.startDraft)
+  // A conversation with no project yet. Takes over the pane, so the chooser is
+  // the conversation until a directory is picked.
+  const draft = useStore((s) => s.draft)
   const [panel, setPanel] = useState<Panel | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [showPalette, setShowPalette] = useState(false)
@@ -66,9 +72,13 @@ export default function App(): React.JSX.Element {
         // and Electron's default template has no Preferences role.
         e.preventDefault()
         setShowSettings((v) => !v)
-      } else if (e.key === 'n') {
+      } else if (e.key === 'n' || e.key === 'N') {
+        // ⌘N reuses the current project — the common case, and it stays one
+        // keystroke. ⇧⌘N is the "somewhere else" one and opens the chooser.
+        // Matching on both cases because Shift changes `key` to 'N'.
         e.preventDefault()
-        void newSession()
+        if (e.shiftKey) startDraft()
+        else void newSession()
       } else if (e.key === 'p' || e.key === 'k') {
         // ⌘K used to cycle sessions; the palette is that, done properly. Both
         // keys open it, since muscle memory splits between the two.
@@ -78,7 +88,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [newSession, toggle])
+  }, [newSession, startDraft, toggle])
 
   return (
     <div className="app" data-panel={panel ?? undefined}>
@@ -86,13 +96,17 @@ export default function App(): React.JSX.Element {
 
       <section className="pane glass">
         <header className="pane-head drag">
-          <span>{session ? session.title : 'Foreman'}</span>
-          {session && (
+          <span>{draft ? 'New conversation' : session ? session.title : 'Foreman'}</span>
+          {session && !draft && (
             /* A worktree path is long and says nothing useful — it lives under
                userData with a disambiguating suffix. The branch is what the user
                thinks of this session as; the full path stays in the tooltip. */
             <span className="pane-path" title={session.cwd}>
-              {session.worktree ? `${session.worktree.repoRoot} · ${session.worktree.branch}` : session.cwd}
+              {session.worktree ? session.worktree.repoRoot : session.cwd}
+              {/* The live branch, so a `git checkout` shows up and a plain
+                  session gets one too. worktree.branch is only the fallback now:
+                  it's frozen at creation and goes stale the moment you switch. */}
+              {(branch ?? session.worktree?.branch) && ` · ${branch ?? session.worktree?.branch}`}
             </span>
           )}
 
@@ -105,7 +119,8 @@ export default function App(): React.JSX.Element {
               data-active={panel === 'diff'}
               aria-pressed={panel === 'diff'}
               aria-label="Diff"
-              title="Diff  ⌘1"
+              data-tip="Diff — files this agent has changed  ⌘1"
+              data-tip-below=""
               disabled={!session}
               onClick={() => toggle('diff')}
             >
@@ -117,7 +132,8 @@ export default function App(): React.JSX.Element {
               data-active={panel === 'terminal'}
               aria-pressed={panel === 'terminal'}
               aria-label="Terminal"
-              title="Terminal  ⌘2"
+              data-tip="Terminal — a shell in this session's directory  ⌘2"
+              data-tip-below=""
               disabled={!session}
               onClick={() => toggle('terminal')}
             >
@@ -128,7 +144,8 @@ export default function App(): React.JSX.Element {
               data-active={panel === 'session'}
               aria-pressed={panel === 'session'}
               aria-label="Session info"
-              title="Session info  ⌘3"
+              data-tip="Session info — context window, cost, MCP servers, skills  ⌘3"
+              data-tip-below=""
               disabled={!session}
               onClick={() => toggle('session')}
             >
@@ -141,7 +158,8 @@ export default function App(): React.JSX.Element {
               data-active={showSettings}
               aria-pressed={showSettings}
               aria-label="Settings"
-              title="Settings  ⌘,"
+              data-tip="Settings  ⌘,"
+              data-tip-below=""
               onClick={() => setShowSettings((v) => !v)}
             >
               <SlidersHorizontal size={ICON} />
@@ -149,21 +167,17 @@ export default function App(): React.JSX.Element {
           </div>
         </header>
 
-        {session ? (
+        {/* The chooser IS the conversation until a project is picked — and it
+            also replaces the old bare "no active session" state, which offered
+            a native folder dialog as the only way in. */}
+        {session && !draft ? (
           <>
             <TodoStrip sessionId={session.id} />
             <Conversation sessionId={session.id} />
             <Composer session={session} />
           </>
         ) : (
-          <div className="empty">
-            <h2>No active session</h2>
-            <p>Open a project directory to start an agent.</p>
-            <button className="btn" data-variant="primary" onClick={() => void newSession()}>
-              <FolderOpen size={ICON} />
-              Open project…
-            </button>
-          </div>
+          <ProjectChooser />
         )}
       </section>
 
@@ -177,7 +191,9 @@ export default function App(): React.JSX.Element {
           <span className="spacer" />
           <button
             className="plan-close no-drag"
-            title="Close panel"
+            data-tip="Close panel"
+            data-tip-below=""
+            data-tip-end=""
             aria-label="Close panel"
             onClick={() => setPanel(null)}
           >
@@ -192,7 +208,11 @@ export default function App(): React.JSX.Element {
             is worse than three hidden subtrees. SessionPanel already no-ops
             while `visible` is false. */}
         <div className="pane pane-body" style={{ display: panel === 'diff' ? 'flex' : 'none' }}>
-          {session ? <DiffPanel session={session} /> : <div className="empty">No session</div>}
+          {session ? (
+            <DiffPanel session={session} visible={panel === 'diff'} />
+          ) : (
+            <div className="empty">No session</div>
+          )}
         </div>
         <div className="pane pane-body" style={{ display: panel === 'terminal' ? 'flex' : 'none' }}>
           {session ? (

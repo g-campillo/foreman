@@ -2,13 +2,17 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { join, resolve } from 'node:path'
 import { IPC } from '../shared/types'
 import { setMainWindow } from './bridge'
-import { registerSessionIpc, disposeAllSessions } from './agent/manager'
+import { adoptHosts, registerSessionIpc, disposeAllSessions } from './agent/manager'
 import { registerPtyIpc, disposeAllPtys } from './pty'
-import { registerDiffIpc } from './agent/snapshots'
-import { registerPermissionIpc } from './agent/permissions'
-import { registerElicitationIpc } from './agent/elicitation'
 
 let mainWindow: BrowserWindow | null = null
+
+/**
+ * Set by `before-quit`, which Electron fires ahead of the window closes it
+ * causes. Without it the close handler below would swallow ⌘Q's close too and
+ * the app could never quit.
+ */
+let quitting = false
 
 /** Handle to the native glass view, so the Appearance popover can restyle it. */
 let glass: { mod: { unstable_setVariant(id: number, v: number): void }; id: number } | null = null
@@ -71,6 +75,21 @@ function createWindow(): void {
   setMainWindow(mainWindow)
 
   mainWindow.on('ready-to-show', () => mainWindow?.show())
+
+  // ⌘W and the red traffic light hide the window instead of destroying it. A
+  // parked permission prompt lives in main's `waiting` map while its card lives
+  // only in the renderer, so tearing the renderer down orphans the request AND
+  // wedges the session — setStatus holds the input queue gate shut while it is
+  // 'awaiting-approval'. Mail and Music behave this way for the same reason.
+  //
+  // Off darwin there is no Dock to restore from and `window-all-closed` would
+  // never fire, so hiding would make the app unreachable.
+  mainWindow.on('close', (e) => {
+    if (quitting || process.platform !== 'darwin') return
+    e.preventDefault()
+    mainWindow?.hide()
+  })
+
   mainWindow.on('closed', () => {
     setMainWindow(null)
     mainWindow = null
@@ -125,17 +144,26 @@ if (!app.isPackaged) app.commandLine.appendSwitch('remote-debugging-port', '9222
  */
 if (!app.isPackaged) app.setName('Foreman Dev')
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
+  // Published rather than imported: agent code runs in detached host processes
+  // where `require('electron')` yields a path string, not the module. Hosts
+  // inherit this through spawn. Must be set before anything reads a userData
+  // path — see agent/usage.ts.
+  process.env.FOREMAN_USER_DATA = app.getPath('userData')
+
   ipcMain.handle('app:initialProject', () => initialProject())
   ipcMain.handle('app:vibrancy', (_e, { v }: { v: string | null }) => {
     mainWindow?.setVibrancy(v as Parameters<BrowserWindow['setVibrancy']>[0])
     return true
   })
   registerSessionIpc()
-  registerPermissionIpc()
-  registerElicitationIpc()
-  registerDiffIpc()
   registerPtyIpc()
+
+  // Re-attach to agents left running by a previous run — a clean quit, or a
+  // crash. Awaited before the window loads so `session:list` already has them
+  // and the renderer's bootstrap adopts them instead of opening a duplicate.
+  // Any host whose process is gone gets its orphaned agent killed here.
+  await adoptHosts().catch((err) => console.warn('[hosts] adopt failed:', err))
 
   ipcMain.handle(IPC.pickDirectory, async () => {
     const res = await dialog.showOpenDialog({
@@ -147,9 +175,9 @@ app.whenReady().then(() => {
 
   createWindow()
 
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
+  // The window now survives ⌘W, so `getAllWindows()` is never empty and the
+  // old length check would leave the Dock icon doing nothing. Show, don't rebuild.
+  app.on('activate', () => (mainWindow ? mainWindow.show() : createWindow()))
 })
 
 app.on('window-all-closed', () => {
@@ -157,6 +185,11 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  // First, so the close handler above lets the real quit through.
+  quitting = true
+  // Detaches from the agent hosts WITHOUT stopping them — quitting the app no
+  // longer throws away a turn in flight, and next launch adopts them back.
+  // The PTYs do die: a terminal is UI state, not agent state.
   disposeAllSessions()
   disposeAllPtys()
 })

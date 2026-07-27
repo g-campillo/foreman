@@ -50,7 +50,8 @@ function CodeBlock(props: React.HTMLAttributes<HTMLPreElement>): React.JSX.Eleme
         <button
           className="code-btn"
           onClick={copy}
-          title={copied ? 'Copied' : 'Copy'}
+          data-tip={copied ? 'Copied' : 'Copy this block'}
+      data-tip-end=""
           aria-label={copied ? 'Copied' : 'Copy'}
         >
           {copied ? <Check size={12} /> : <Copy size={12} />}

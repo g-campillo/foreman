@@ -1,16 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { Cog, ListPlus, SendHorizontal, SendToBack, Square, X } from 'lucide-react'
+import {
+  Cog,
+  Gauge,
+  GitBranch,
+  ListPlus,
+  SendHorizontal,
+  SendToBack,
+  ShieldCheck,
+  Sparkles,
+  Square,
+  X,
+} from 'lucide-react'
 import type {
   EffortLevel,
   ImageMediaType,
+  ModelInfo,
   PermissionMode,
   SendBlock,
   SessionMeta,
   SlashCommandInfo,
 } from '../../../shared/types'
+import type { EditorView } from '@codemirror/view'
 import { useStore } from '../store'
 import { filterEntries, triggerAt } from '../derive.mts'
 import Autocomplete, { type Suggestion } from './Autocomplete'
+import MarkdownInput from './MarkdownInput'
 
 /** Sentinel for "whatever the session is already running" when no alias matches. */
 const CURRENT = '__current__'
@@ -18,14 +32,15 @@ const CURRENT = '__current__'
 /** Mirrors ImageMediaType; anything else is silently not attachable. */
 const ACCEPTED: readonly ImageMediaType[] = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
 
-/** null = leave the SDK's own default alone. 'max' is session-scoped. */
-const EFFORTS: { value: EffortLevel | ''; label: string }[] = [
-  { value: '', label: 'auto' },
-  { value: 'low', label: 'low' },
-  { value: 'medium', label: 'medium' },
-  { value: 'high', label: 'high' },
-  { value: 'xhigh', label: 'xhigh' },
-  { value: 'max', label: 'max' },
+/** null = leave the SDK's own default alone. 'max' is session-scoped.
+ *  Values are the SDK's EffortLevel strings; only the labels are ours. */
+export const EFFORTS: { value: EffortLevel | ''; label: string }[] = [
+  { value: '', label: 'Auto' },
+  { value: 'low', label: 'Low' },
+  { value: 'medium', label: 'Medium' },
+  { value: 'high', label: 'High' },
+  { value: 'xhigh', label: 'Extra high' },
+  { value: 'max', label: 'Max' },
 ]
 
 /** Cap on suggestions rendered at once — a 4000-file repo must not build 4000 rows. */
@@ -36,6 +51,20 @@ const MAX_SUGGESTIONS = 50
  *  model picker below does. */
 export const bareModel = (id: string | null | undefined): string =>
   (id ?? '').replace(/\[[^\]]*\]$/, '')
+
+/**
+ * A model row that names its version: `Default (recommended) · claude-opus-5`.
+ *
+ * `displayName` alone hides which model you are actually on — worst of all for
+ * the 'default' row, whose whole content is the word "Default". `resolvedModel`
+ * is the canonical wire id the alias expands to and already crosses the bridge,
+ * so the version is free; the `[1m]` context suffix is dropped because it is a
+ * window size, not a version.
+ */
+export const modelLabel = (m: ModelInfo): string => {
+  const wire = bareModel(m.resolvedModel)
+  return wire ? `${m.displayName} · ${wire}` : m.displayName
+}
 
 /** Exported so the command palette offers the same modes, spelled the same way. */
 export const MODES: { value: PermissionMode; label: string }[] = [
@@ -58,15 +87,24 @@ interface Attachment {
 export default function Composer({ session }: { session: SessionMeta }): React.JSX.Element {
   const send = useStore((s) => s.send)
   const models = useStore((s) => s.models)
+  const close = useStore((s) => s.close)
+  const openPath = useStore((s) => s.openPath)
+  // Only for the picker's pre-first-turn fallback: the session was created with
+  // this model, but meta.model stays null until an assistant message reports one.
+  const prefs = useStore((s) => s.prefs)
+  /** Nothing said yet, so the session can still be recreated somewhere else. */
+  const fresh = useStore((s) => (s.items[session.id]?.length ?? 0) === 0)
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [caret, setCaret] = useState(0)
   const [cursor, setCursor] = useState(0)
   const [commands, setCommands] = useState<SlashCommandInfo[]>([])
   const [files, setFiles] = useState<string[]>([])
-  const box = useRef<HTMLTextAreaElement>(null)
+  const box = useRef<EditorView | null>(null)
 
   const busy = session.status === 'running' || session.status === 'awaiting-approval'
+  /** Nothing to send. Drives both the disabled state and its tooltip. */
+  const empty = !text.trim() && attachments.length === 0
 
   // Commands are fixed for the session's lifetime, so once is enough.
   useEffect(() => {
@@ -112,10 +150,9 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     const pos = trigger.start + s.value.length + 1
     setText(next)
     setCaret(pos)
-    requestAnimationFrame(() => {
-      box.current?.focus()
-      box.current?.setSelectionRange(pos, pos)
-    })
+    // The editor syncs both from props; it just needs the focus back, since the
+    // click that picked the suggestion took it.
+    requestAnimationFrame(() => box.current?.focus())
   }
 
   const submit = (): void => {
@@ -140,7 +177,6 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     setText('')
     setAttachments([])
     setCaret(0)
-    if (box.current) box.current.style.height = 'auto'
   }
 
   const addFiles = (list: FileList | File[]): void => {
@@ -168,8 +204,34 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     }
   }
 
-  const syncCaret = (e: { currentTarget: HTMLTextAreaElement }): void =>
-    setCaret(e.currentTarget.selectionStart)
+  /**
+   * Move this session into its own worktree.
+   *
+   * A session's cwd is decided by createSession and never changes, so "switch to
+   * a worktree" is really close-and-reopen. Safe only while nothing has been
+   * said yet, which is exactly when the toggle is offered.
+   *
+   * The branch name is derived rather than prompted: the rail's existing flow
+   * asks for one, but a checkbox that opens a text field isn't a checkbox.
+   * `startBranch` bails on empty and `branchSlug('')` would make a degenerate
+   * ref, so this must never pass a blank.
+   */
+  const goWorktree = async (): Promise<void> => {
+    if (!fresh || session.worktree) return
+    // Not a worktree yet, so cwd is the project directory — the right base.
+    const base = session.cwd
+    const name = session.title?.trim() || `session-${Date.now().toString(36)}`
+    await close(session.id)
+    await openPath(base, name)
+  }
+
+  /** Accepting the predicted prompt has to move the caret too, or it lands at 0. */
+  const acceptGhost = (): void => {
+    const s = session.promptSuggestion ?? ''
+    setText(s)
+    setCaret(s.length)
+    box.current?.focus()
+  }
 
   return (
     <div className="composer">
@@ -180,7 +242,8 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
               <img src={`data:${a.mediaType};base64,${a.data}`} alt="" />
               {a.name}
               <button
-                title={`Remove ${a.name}`}
+                data-tip={`Remove ${a.name}`}
+                data-tip-start=""
                 aria-label={`Remove ${a.name}`}
                 onClick={() => setAttachments((list) => list.filter((x) => x.id !== a.id))}
               >
@@ -197,11 +260,9 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         {ghost && (
           <button
             className="ghost"
-            title="Tab to use"
-            onClick={() => {
-              setText(session.promptSuggestion ?? '')
-              box.current?.focus()
-            }}
+            data-tip="Predicted next prompt — Tab to use"
+            data-tip-start=""
+            onClick={acceptGhost}
           >
             {session.promptSuggestion}
           </button>
@@ -209,33 +270,32 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         {suggestions.length > 0 && (
           <Autocomplete items={suggestions} cursor={cursor} onPick={pick} />
         )}
-        <textarea
-          ref={box}
+        <MarkdownInput
+          viewRef={box}
           value={text}
+          caret={caret}
           // The ghost is an overlay on this same box, so leaving the
           // placeholder on paints the two strings on top of each other.
           placeholder={
             ghost ? '' : busy ? 'Queue a message…' : `Message the agent in ${session.title}…`
           }
-          onChange={(e) => {
-            setText(e.target.value)
-            setCaret(e.target.selectionStart)
-            e.target.style.height = 'auto'
-            e.target.style.height = `${Math.min(e.target.scrollHeight, 220)}px`
+          // One channel for both, because in CodeMirror a caret move and an edit
+          // arrive as the same update — and `triggerAt` needs the pair in step.
+          onChange={(next, pos) => {
+            setText(next)
+            setCaret(pos)
           }}
-          onClick={syncCaret}
-          onSelect={syncCaret}
           onPaste={(e) => {
-            const imgs = Array.from(e.clipboardData.files).filter((f) =>
+            const imgs = Array.from(e.clipboardData?.files ?? []).filter((f) =>
               ACCEPTED.includes(f.type as ImageMediaType),
             )
             if (!imgs.length) return
-            e.preventDefault() // or the filename lands in the textarea too
+            e.preventDefault() // or the filename lands in the editor too
             addFiles(imgs)
           }}
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
-            if (!e.dataTransfer.files.length) return
+            if (!e.dataTransfer?.files.length) return
             e.preventDefault()
             addFiles(e.dataTransfer.files)
           }}
@@ -266,7 +326,7 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
             }
             if (e.key === 'Tab' && !text && session.promptSuggestion) {
               e.preventDefault()
-              setText(session.promptSuggestion)
+              acceptGhost()
               return
             }
             if (e.key === 'Enter' && !e.shiftKey) {
@@ -277,13 +337,28 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         />
       </div>
 
+      {/* Not just "three boxes are here": each chip carries the rolling AI
+          progress summary the SDK emits on task_progress, so backgrounded work
+          is watchable instead of opaque. The full summary is in the tooltip,
+          since a chip only has room for one line of it. */}
       {session.backgroundTasks.length > 0 && (
         <div className="bg-tray">
           {session.backgroundTasks.map((t) => (
-            <span key={t.taskId} className="chip" title={t.description}>
-              <Cog size={12} /> {t.description || t.taskType}
+            <span
+              key={t.taskId}
+              className="chip bg-task"
+              title={t.description}
+              data-tip={
+                [t.progress, t.lastTool && `last: ${t.lastTool}`].filter(Boolean).join('\n') ||
+                'Running — no progress reported yet'
+              }
+              data-tip-start=""
+            >
+              <Cog size={12} className="bg-spin" />
+              <span className="bg-desc">{t.description || t.taskType}</span>
+              {t.progress && <span className="bg-progress">{t.progress}</span>}
+              {t.tokens ? <span className="bg-tok">{Math.round(t.tokens / 1000)}k</span> : null}
               <button
-                title="Stop this background task"
                 aria-label="Stop this background task"
                 onClick={() => void window.foreman.stopTask(session.id, t.taskId)}
               >
@@ -295,70 +370,113 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
       )}
 
       <div className="composer-row">
-        <select
-          className="select"
-          value={session.permissionMode}
-          onChange={(e) =>
-            void window.foreman.setPermissionMode(session.id, e.target.value as PermissionMode)
-          }
-          title="Permission mode"
-        >
-          {MODES.map((m) => (
-            <option key={m.value} value={m.value}>
-              {m.label}
-            </option>
-          ))}
-        </select>
+        {/* Each select gets a glyph, because three unlabelled dropdowns say
+            nothing about what they control. A native <select> can't hold an
+            icon, so the glyph is a sibling and the select is padded to clear
+            it — see `.ctl` in theme.css. */}
+        <label className="ctl" data-tip="Permission mode — how much the agent may do without asking">
+          <ShieldCheck size={12} />
+          <select
+            className="select"
+            aria-label="Permission mode"
+            value={session.permissionMode}
+            onChange={(e) =>
+              void window.foreman.setPermissionMode(session.id, e.target.value as PermissionMode)
+            }
+          >
+            {MODES.map((m) => (
+              <option key={m.value} value={m.value}>
+                {m.label}
+              </option>
+            ))}
+          </select>
+        </label>
 
-        <select
-          className="select"
-          // Aliases ('opus', '') don't equal the running wire id, so match on
-          // resolvedModel and fall back to showing the raw id.
-          value={
-            (models.find((m) => m.resolvedModel === session.model) ??
-              (session.model
-                ? models.find((m) => bareModel(m.resolvedModel) === bareModel(session.model))
-                : models.find((m) => m.id === 'default')))?.id ?? CURRENT
-          }
-          onChange={(e) => {
-            if (e.target.value !== CURRENT) void window.foreman.setModel(session.id, e.target.value)
-          }}
-          title="Model"
-        >
-          {!models.some(
-            (m) => bareModel(m.resolvedModel) === bareModel(session.model),
-          ) && <option value={CURRENT}>{session.model ?? 'Loading…'}</option>}
-          {models.map((m) => (
-            <option key={m.displayName} value={m.id}>
-              {m.displayName}
-            </option>
-          ))}
-        </select>
+        <label className="ctl" data-tip="Model">
+          <Sparkles size={12} />
+          <select
+            className="select"
+            aria-label="Model"
+            // Aliases ('opus', '') don't equal the running wire id, so match on
+            // resolvedModel. Before the first turn there is no wire id at all,
+            // so fall back to the row for the user's configured default — which
+            // is what this session was actually created with.
+            value={
+              (models.find((m) => m.resolvedModel === session.model) ??
+                (session.model
+                  ? models.find((m) => bareModel(m.resolvedModel) === bareModel(session.model))
+                  : models.find((m) => m.id === (prefs.model || 'default'))))?.id ?? CURRENT
+            }
+            onChange={(e) => {
+              if (e.target.value !== CURRENT)
+                void window.foreman.setModel(session.id, e.target.value)
+            }}
+          >
+            {!models.some(
+              (m) => bareModel(m.resolvedModel) === bareModel(session.model),
+            ) && <option value={CURRENT}>{session.model ?? 'Loading…'}</option>}
+            {models.map((m) => (
+              <option key={m.displayName} value={m.id}>
+                {modelLabel(m)}
+              </option>
+            ))}
+          </select>
+        </label>
 
-        <select
-          className="select"
-          value={session.effort ?? ''}
-          onChange={(e) =>
-            void window.foreman.setEffort(session.id, e.target.value || null)
-          }
-          title="Reasoning effort"
-        >
-          {EFFORTS.map((x) => (
-            <option key={x.value} value={x.value}>
-              {x.label}
-            </option>
-          ))}
-        </select>
+        <label className="ctl" data-tip="Reasoning effort — how long the model thinks before answering">
+          <Gauge size={12} />
+          <select
+            className="select"
+            aria-label="Reasoning effort"
+            value={session.effort ?? ''}
+            onChange={(e) => void window.foreman.setEffort(session.id, e.target.value || null)}
+          >
+            {EFFORTS.map((x) => (
+              <option key={x.value} value={x.value}>
+                {x.label}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        {/* A session's cwd is fixed when it's created, so this is only a live
+            choice on an untouched tab — after that it's a read-only chip saying
+            where you ended up. Ticking it recreates the session in a worktree,
+            through the same openPath the rail's branch button already uses. */}
+        {session.worktree ? (
+          <span className="wt-chip" title={`Isolated in ${session.worktree.repoRoot}`}>
+            <GitBranch size={12} />
+            {session.worktree.branch}
+          </span>
+        ) : (
+          <label
+            className="wt-toggle"
+            data-off={fresh ? undefined : ''}
+            title={
+              fresh
+                ? 'Run this session in its own git worktree, on its own branch'
+                : 'Only available before the first message — a session cannot change directory'
+            }
+          >
+            <input
+              type="checkbox"
+              checked={false}
+              disabled={!fresh}
+              onChange={() => void goWorktree()}
+            />
+            worktree
+          </label>
+        )}
 
         <span className="spacer" />
 
-        {/* Hidden while busy: the row gains two buttons then, and this same
-            figure is in the Session panel. */}
-        {!busy && (
-          <span className="cost">
-            ${session.costUsd.toFixed(4)} · {session.inputTokens + session.outputTokens} tok
-          </span>
-        )}
+        {/* Always on, including while busy: the per-turn "done · $0.0231" rows
+            are gone from the transcript, so this is now the only place a running
+            cost appears. Two decimals — cents are the unit anyone actually reads,
+            and a sub-cent turn showing $0.00 is the accepted trade. */}
+        <span className="cost">
+          ${session.costUsd.toFixed(2)} · {session.inputTokens + session.outputTokens} tok
+        </span>
 
         {/* Send stays available while running: the queue holds the message and
             the transcript shows it as cancellable until the agent picks it up. */}
@@ -368,7 +486,8 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
                 continues instead of blocking on a long command. */}
             <button
               className="btn"
-              title="Run in-flight work in the background"
+              data-tip="Run in-flight work in the background, so the turn continues"
+              data-tip-end=""
               aria-label="Run in-flight work in the background"
               onClick={() => void window.foreman.backgroundTasks(session.id)}
             >
@@ -379,7 +498,8 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
             <button
               className="btn"
               data-variant="danger"
-              title="Stop the agent"
+              data-tip="Stop the agent  Esc"
+              data-tip-end=""
               aria-label="Stop the agent"
               onClick={() => void window.foreman.interrupt(session.id)}
             >
@@ -394,8 +514,15 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
           className="btn"
           data-variant="primary"
           onClick={submit}
-          disabled={!text.trim() && attachments.length === 0}
-          title={busy ? 'Queue this message  ⏎' : 'Send  ⏎'}
+          disabled={empty}
+          data-tip={
+            empty
+              ? 'Type a message first'
+              : busy
+                ? 'Queue this message — the agent picks it up when the turn ends  ⏎'
+                : 'Send  ⏎'
+          }
+          data-tip-end=""
           aria-label={busy ? 'Queue this message' : 'Send'}
         >
           {busy ? <ListPlus size={14} /> : <SendHorizontal size={14} />}

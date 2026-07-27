@@ -1,12 +1,13 @@
-import { ipcMain, shell } from 'electron'
 import { randomUUID } from 'node:crypto'
 import type { ElicitationResult, OnElicitation } from '@anthropic-ai/claude-agent-sdk'
-import { IPC, type ElicitationAction } from '../../shared/types'
-import { send } from '../bridge'
+import { IPC, type ElicitationAction, type ElicitationRequest } from '../../shared/types'
+import { send } from '../../shared/sink'
 
 interface Waiter {
   resolve: (r: ElicitationResult) => void
   sessionId: string
+  /** The card's payload, kept so a renderer that lost its copy can be re-sent it. */
+  req: ElicitationRequest
 }
 
 const waiting = new Map<string, Waiter>()
@@ -56,8 +57,12 @@ function sanitiseContent(raw: unknown): ElicitContent | undefined {
 export function makeOnElicitation(sessionId: string): OnElicitation {
   return async (request, options) => {
     if (request.mode === 'url' && request.url) {
-      // Fire-and-forget: a browser that refuses to open shouldn't wedge the turn.
-      void shell.openExternal(request.url).catch(() => undefined)
+      // Fire-and-forget: a browser that refuses to open shouldn't wedge the
+      // turn. An event rather than shell.openExternal, because a detached host
+      // has no Electron — and because a URL raised while the app is closed then
+      // lands in the event log and opens when it reconnects, instead of being
+      // silently lost.
+      send(IPC.evtOpenUrl, { url: request.url })
       // The user completes auth out of band; the server correlates via
       // elicitationId and notifies separately.
       send(IPC.elicitRequest, {
@@ -74,7 +79,7 @@ export function makeOnElicitation(sessionId: string): OnElicitation {
     }
 
     const requestId = randomUUID()
-    send(IPC.elicitRequest, {
+    const req: ElicitationRequest = {
       requestId,
       sessionId,
       serverName: request.serverName,
@@ -82,11 +87,12 @@ export function makeOnElicitation(sessionId: string): OnElicitation {
       title: request.title,
       description: request.description,
       mode: 'form',
-      schema: request.requestedSchema,
-    })
+      schema: request.requestedSchema as Record<string, unknown>,
+    }
+    send(IPC.elicitRequest, req)
 
     return new Promise<ElicitationResult>((resolve) => {
-      waiting.set(requestId, { resolve, sessionId })
+      waiting.set(requestId, { resolve, sessionId, req })
 
       // Same hazard as canUseTool: an aborted turn would leave this dangling
       // and wedge the CLI subprocess waiting on an answer that never comes.
@@ -104,6 +110,17 @@ export function makeOnElicitation(sessionId: string): OnElicitation {
   }
 }
 
+/**
+ * Prompts still parked here, for a renderer that lost its copy. The 'url' mode
+ * above never parks a waiter — it already returned `accept` and the user
+ * completes auth out of band — so it correctly never replays.
+ */
+export function pendingElicitations(sessionId?: string): ElicitationRequest[] {
+  return [...waiting.values()]
+    .filter((w) => !sessionId || w.sessionId === sessionId)
+    .map((w) => w.req)
+}
+
 /** Settle any outstanding prompts for a session so its subprocess can wind down. */
 export function cancelPendingElicitations(sessionId: string): void {
   for (const [id, w] of waiting) {
@@ -114,24 +131,21 @@ export function cancelPendingElicitations(sessionId: string): void {
   }
 }
 
-export function registerElicitationIpc(): void {
-  ipcMain.handle(
-    IPC.elicitRespond,
-    (
-      _e,
-      {
-        requestId,
-        action,
-        content,
-      }: { requestId: string; action: ElicitationAction; content?: Record<string, unknown> },
-    ) => {
-      const waiter = waiting.get(requestId)
-      if (!waiter) return false
-      waiting.delete(requestId)
-      // `content` only belongs on an accept; sending it otherwise is a protocol error.
-      waiter.resolve(action === 'accept' ? { action, content: sanitiseContent(content) } : { action })
-      send(IPC.elicitResolved, { requestId, sessionId: waiter.sessionId })
-      return true
-    },
-  )
+/** Answer a parked elicitation. Runs where the waiter lives — the host. */
+export function respondElicitation({
+  requestId,
+  action,
+  content,
+}: {
+  requestId: string
+  action: ElicitationAction
+  content?: Record<string, unknown>
+}): boolean {
+  const waiter = waiting.get(requestId)
+  if (!waiter) return false
+  waiting.delete(requestId)
+  // `content` only belongs on an accept; sending it otherwise is a protocol error.
+  waiter.resolve(action === 'accept' ? { action, content: sanitiseContent(content) } : { action })
+  send(IPC.elicitResolved, { requestId, sessionId: waiter.sessionId })
+  return true
 }

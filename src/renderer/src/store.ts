@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type {
   Appearance,
   ChatItem,
+  Prefs,
   ElicitationRequest,
   ModelInfo,
   PermissionRequest,
@@ -17,20 +18,39 @@ interface State {
   approvals: PermissionRequest[]
   elicitations: ElicitationRequest[]
   diffCounts: Record<string, number>
+  /** Live checked-out branch per session, from git. null on a detached HEAD. */
+  branches: Record<string, string | null>
   models: ModelInfo[]
   appearance: Appearance
   /** appearance.theme with 'auto' already resolved against the OS. */
   resolvedTheme: 'dark' | 'light'
+  /** App behaviour. The session-start three are never written by the composer. */
+  prefs: Prefs
+  setPrefs(patch: Partial<Prefs>): void
 
   /** Transient one-liner shown above the rail — a kept worktree, a failed open. */
   notice: string | null
   setNotice(notice: string | null): void
 
+  /**
+   * A conversation that exists in the UI but has no project yet.
+   *
+   * Renderer-only and deliberately so: `createSession` requires a cwd (an empty
+   * one resolves to the process's own directory and silently starts the agent
+   * in the wrong place), so there is nothing to create in main until a project
+   * is picked. This is the Claude-app flow — open a new conversation, then say
+   * where it runs — without a half-built session in the manager.
+   */
+  draft: boolean
+  startDraft(): void
+  cancelDraft(): void
+
   select(id: string): void
   openPath(cwd: string, worktreeBranch?: string): Promise<void>
   newSession(worktreeBranch?: string): Promise<void>
+  /** Always asks for a folder — the "different repo" case ⌘N no longer covers. */
+  openProject(worktreeBranch?: string): Promise<void>
   resume(sessionId: string, cwd: string, title: string): Promise<void>
-  hydrate(meta: SessionMeta): Promise<void>
   fork(upToMessageId?: string): Promise<void>
   /** Dry-run preview awaiting confirmation, or null. */
   rewindPreview: { messageId: string; result: RewindResult } | null
@@ -50,6 +70,26 @@ const DEFAULT_APPEARANCE: Appearance = {
   terminalAlpha: 0.45,
   theme: 'auto',
   vibrancy: 'under-window',
+}
+
+/**
+ * Out-of-the-box behaviour.
+ *
+ * `agentLifetime: 'persist'` is the deliberate default: it is what makes a
+ * crash survivable, and the 30-minute idle stop is what keeps that from leaking
+ * an agent per session forever.
+ */
+const DEFAULT_PREFS: Prefs = {
+  permissionMode: 'default',
+  model: '',
+  effort: null,
+  agentLifetime: 'persist',
+  agentIdleMinutes: 30,
+  autoTitle: true,
+  notifications: true,
+  workingVerbs: true,
+  maxBudgetUsd: 0,
+  maxTurns: 0,
 }
 
 const DARK_QUERY = '(prefers-color-scheme: dark)'
@@ -108,6 +148,77 @@ function loadAppearance(): Appearance {
   }
 }
 
+/** Same key-by-key pick as loadAppearance, for the same reason: a retired key
+ *  must not ride along in localStorage forever. `??` throughout, so a `false`
+ *  or `0` the user actually chose is kept rather than falling back. */
+function loadPrefs(): Prefs {
+  try {
+    const raw = localStorage.getItem('foreman.prefs')
+    if (!raw) return DEFAULT_PREFS
+    const v = JSON.parse(raw) as Partial<Prefs>
+    return {
+      permissionMode: v.permissionMode ?? DEFAULT_PREFS.permissionMode,
+      model: v.model ?? DEFAULT_PREFS.model,
+      effort: v.effort ?? DEFAULT_PREFS.effort,
+      agentLifetime: v.agentLifetime ?? DEFAULT_PREFS.agentLifetime,
+      agentIdleMinutes: v.agentIdleMinutes ?? DEFAULT_PREFS.agentIdleMinutes,
+      autoTitle: v.autoTitle ?? DEFAULT_PREFS.autoTitle,
+      notifications: v.notifications ?? DEFAULT_PREFS.notifications,
+      workingVerbs: v.workingVerbs ?? DEFAULT_PREFS.workingVerbs,
+      maxBudgetUsd: v.maxBudgetUsd ?? DEFAULT_PREFS.maxBudgetUsd,
+      maxTurns: v.maxTurns ?? DEFAULT_PREFS.maxTurns,
+    }
+  } catch {
+    return DEFAULT_PREFS
+  }
+}
+
+/** Main can't read localStorage, and these decide what happens on quit. */
+function pushPolicy(p: Prefs): void {
+  void window.foreman.setAgentPolicy({
+    lifetime: p.agentLifetime,
+    idleMinutes: p.agentIdleMinutes,
+    notifications: p.notifications,
+  })
+}
+
+/**
+ * The model list, cached from the last live session.
+ *
+ * Settings needs it before any session exists — the list only comes from
+ * `supportedModels(sessionId)` — and it also stops the composer's picker
+ * showing 'Loading…' for the first frames after launch. Stale by construction,
+ * and overwritten by the real list as soon as a session reports one.
+ */
+function loadModels(): ModelInfo[] {
+  try {
+    const raw = localStorage.getItem('foreman.models')
+    const saved = raw ? (JSON.parse(raw) as unknown) : null
+    return Array.isArray(saved) ? (saved as ModelInfo[]) : []
+  } catch {
+    return []
+  }
+}
+
+/**
+ * The subset of prefs a session is created with.
+ *
+ * Sent at creation rather than applied afterwards: setModel/setEffort need the
+ * CLI subprocess to be ready, so patching a fresh session would flash the wrong
+ * values first. Empty/zero values are OMITTED, not sent — '' is not a model
+ * alias and 0 means "no cap", and both must be absent rather than present.
+ */
+function sessionPrefs(p: Prefs): Record<string, unknown> {
+  return {
+    permissionMode: p.permissionMode,
+    autoTitle: p.autoTitle,
+    ...(p.model ? { model: p.model } : {}),
+    ...(p.effort ? { effort: p.effort } : {}),
+    ...(p.maxBudgetUsd > 0 ? { maxBudgetUsd: p.maxBudgetUsd } : {}),
+    ...(p.maxTurns > 0 ? { maxTurns: p.maxTurns } : {}),
+  }
+}
+
 const INITIAL_APPEARANCE = loadAppearance()
 
 export function applyAppearance(a: Appearance): void {
@@ -157,26 +268,53 @@ export const useStore = create<State>((set, get) => ({
   elicitations: [],
   rewindPreview: null,
   diffCounts: {},
-  models: [],
+  branches: {},
+  models: loadModels(),
   appearance: INITIAL_APPEARANCE,
   resolvedTheme: resolveTheme(INITIAL_APPEARANCE.theme),
+  prefs: loadPrefs(),
   notice: null,
+  draft: false,
 
   setNotice(notice) {
     set({ notice })
   },
 
+  startDraft() {
+    set({ draft: true })
+  },
+
+  cancelDraft() {
+    set({ draft: false })
+  },
+
+  setPrefs(patch) {
+    const prefs = { ...get().prefs, ...patch }
+    set({ prefs })
+    localStorage.setItem('foreman.prefs', JSON.stringify(prefs))
+    pushPolicy(prefs)
+  },
+
   select(id) {
-    set({ activeId: id })
+    // Clears the draft too: picking an existing conversation is a perfectly
+    // good way to abandon a new one, and without this the chooser would stay
+    // up over whichever session you just clicked.
+    set({ activeId: id, draft: false })
     void window.foreman.supportedModels(id).then((models: ModelInfo[]) => {
-      if (models?.length) set({ models })
+      if (!models?.length) return
+      set({ models })
+      // Cached so Settings has a list before any session exists — see loadModels.
+      localStorage.setItem('foreman.models', JSON.stringify(models))
     })
   },
 
   async openPath(cwd, worktreeBranch) {
     let meta: SessionMeta
     try {
-      meta = await window.foreman.createSession({ cwd, worktreeBranch })
+      // The configured defaults ride out here rather than being applied after
+      // the fact: setModel/setEffort need the CLI subprocess to be ready, so
+      // patching a fresh session would flash the wrong values first.
+      meta = await window.foreman.createSession({ cwd, worktreeBranch, ...sessionPrefs(get().prefs) })
     } catch (err) {
       // Worktree creation is the one failure mode here that happens for ordinary
       // reasons (branch taken, no commits yet), so it needs saying rather than
@@ -184,40 +322,46 @@ export const useStore = create<State>((set, get) => ({
       set({ notice: ipcMessage(err) })
       return
     }
-    set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id, notice: null }))
+    // The draft resolves the moment a project is chosen — this is the one call
+    // every entry point into "new conversation" funnels through.
+    set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id, notice: null, draft: false }))
     get().select(meta.id)
   },
 
+  /**
+   * ⌘N and the New button: another conversation in the project you're already
+   * in. Only falls back to the folder picker when there's nothing open to infer
+   * a project from — being asked to pick a folder you already have open is the
+   * wrong answer to "new conversation".
+   */
   async newSession(worktreeBranch) {
+    const cwd = activeSession(get())?.cwd
+    if (cwd) return get().openPath(cwd, worktreeBranch)
+    await get().openProject(worktreeBranch)
+  },
+
+  async openProject(worktreeBranch) {
     const cwd = await window.foreman.pickDirectory()
     if (!cwd) return
     await get().openPath(cwd, worktreeBranch)
   },
 
   async resume(sessionId, cwd, title) {
-    const meta: SessionMeta = await window.foreman.resumeSession({ cwd, resume: sessionId, title })
-    set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id }))
-    get().select(meta.id)
-    await get().hydrate(meta)
-  },
-
-  /**
-   * Fill a session's transcript from disk.
-   *
-   * ChatItems only ever lived in this store, so before this a resumed session
-   * came back with a working agent and an empty conversation. Prepended rather
-   * than assigned, so anything the live session has already emitted survives a
-   * slow read.
-   */
-  async hydrate(meta) {
-    if (!meta.sdkSessionId) return
-    const past: ChatItem[] = await window.foreman.sessionTranscript(meta.sdkSessionId, meta.cwd)
-    if (!past.length) return
-    set((s) => {
-      const live = s.items[meta.id] ?? []
-      const seen = new Set(live.map((i) => i.id))
-      return { items: { ...s.items, [meta.id]: [...past.filter((p) => !seen.has(p.id)), ...live] } }
+    // Defaults apply on resume too: without them a reopened conversation lands
+    // on the SDK's 'default' mode regardless of what the user configured, which
+    // is strictly more surprising than honouring their setting.
+    const meta: SessionMeta = await window.foreman.resumeSession({
+      cwd,
+      resume: sessionId,
+      title,
+      ...sessionPrefs(get().prefs),
     })
+    set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id, draft: false }))
+    get().select(meta.id)
+    // No hydrate() here: the host reads the stored transcript into its own
+    // event log at startup and streams it as ordinary items, so it arrives on
+    // the same channel as everything else.
+    await window.foreman.replaySessions()
   },
 
   /**
@@ -324,6 +468,8 @@ export const useStore = create<State>((set, get) => ({
     booted = true
 
     applyAppearance(get().appearance)
+    // Main starts with no policy; tell it before anything can quit.
+    pushPolicy(get().prefs)
 
     window.foreman.onItem(({ sessionId, item }: { sessionId: string; item: ChatItem }) => {
       set((s) => ({ items: { ...s.items, [sessionId]: upsert(s.items[sessionId] ?? [], item) } }))
@@ -412,30 +558,86 @@ export const useStore = create<State>((set, get) => ({
       set((s) => ({ elicitations: s.elicitations.filter((e) => e.requestId !== requestId) }))
     })
 
-    window.foreman.onDiffChanged(({ sessionId, count }: { sessionId: string; count: number }) => {
-      set((s) => ({ diffCounts: { ...s.diffCounts, [sessionId]: count } }))
-    })
+    window.foreman.onDiffChanged(
+      ({
+        sessionId,
+        count,
+        branch,
+      }: {
+        sessionId: string
+        count: number
+        branch: string | null
+      }) => {
+        set((s) => {
+          // Bail when nothing moved. computeDiffs emits this as a side effect of
+          // the very call DiffPanel makes, and `bump` is in that effect's deps —
+          // so without the guard, listing diffs would schedule another listing.
+          if (s.diffCounts[sessionId] === count && s.branches[sessionId] === branch) return s
+          return {
+            diffCounts: { ...s.diffCounts, [sessionId]: count },
+            branches: { ...s.branches, [sessionId]: branch },
+          }
+        })
+      },
+    )
 
-    // A renderer reload empties this store, but main still holds the live Session
-    // objects — so re-adopt them. Opening the initial project lives here too, and
-    // not in an App effect, because it must lose the race with this: otherwise a
-    // reload opens a second session on the same cwd.
-    // ponytail: transcripts come back empty, since ChatItems only ever lived in
-    // this store. A bounded per-session ring buffer in main is the fix if it bites.
+    // Re-adopt whatever is already running. This covers a renderer reload as it
+    // always did, and now also an app RESTART: agents live in detached host
+    // processes, so a quit — or a crash — leaves them working, and main has
+    // already re-attached to them by the time this runs.
+    //
+    // Opening the initial project lives here too, and not in an App effect,
+    // because it must lose the race with this: otherwise a reload opens a
+    // second session on the same cwd.
     void window.foreman
       .listSessions()
       .then(async (live: SessionMeta[]) => {
         if (live?.length) {
           set({ sessions: live })
           get().select(live[0].id)
-          // A reload empties this store while main keeps the Session objects,
-          // so adopted sessions need their transcripts back too.
-          await Promise.all(live.map((m) => get().hydrate(m)))
+          // Transcripts come from each host's event log, NOT from disk. The log
+          // carries the same ChatItem ids the live stream uses, so replaying it
+          // merges cleanly with anything already in flight — whereas re-reading
+          // the stored messages would duplicate every one of them under
+          // different ids. Called here, after onItem is registered above, which
+          // is the earliest moment a backlog can actually be received.
+          await window.foreman.replaySessions()
           return
         }
         const p: string | null = await window.foreman.initialProject()
         if (p) await get().openPath(p)
       })
+      .catch(() => undefined)
+
+    // Main parks canUseTool's promise in its `waiting` map, but the card lives
+    // only here — so a renderer that reloads with one outstanding leaves the
+    // session pinned to 'awaiting-approval' with its queue gate shut and nothing
+    // on screen to answer. Deliberately NOT chained onto listSessions(): cards
+    // are filtered by sessionId when rendered, so arrival order is irrelevant,
+    // and an independent statement can't break that chain. Merge rather than
+    // assign, so a request landing between the invoke and the resolve survives.
+    void window.foreman
+      .pendingRequests()
+      .then(
+        ({
+          approvals,
+          elicitations,
+        }: {
+          approvals: PermissionRequest[]
+          elicitations: ElicitationRequest[]
+        }) => {
+          set((s) => ({
+            approvals: [
+              ...approvals.filter((p) => !s.approvals.some((a) => a.requestId === p.requestId)),
+              ...s.approvals,
+            ],
+            elicitations: [
+              ...elicitations.filter((p) => !s.elicitations.some((e) => e.requestId === p.requestId)),
+              ...s.elicitations,
+            ],
+          }))
+        },
+      )
       .catch(() => undefined)
   },
 }))

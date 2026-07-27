@@ -1,12 +1,13 @@
-import { ipcMain } from 'electron'
 import { randomUUID } from 'node:crypto'
 import type { CanUseTool, PermissionResult } from '@anthropic-ai/claude-agent-sdk'
-import { IPC, type PermissionMode } from '../../shared/types'
-import { send } from '../bridge'
+import { IPC, type PermissionMode, type PermissionRequest } from '../../shared/types'
+import { send } from '../../shared/sink'
 
 interface Waiter {
   resolve: (r: PermissionResult) => void
   sessionId: string
+  /** The card's payload, kept so a renderer that lost its copy can be re-sent it. */
+  req: PermissionRequest
   onPendingChange: (count: number) => void
   onModeChanged: (mode: PermissionMode) => void
 }
@@ -37,7 +38,7 @@ function settle(requestId: string, result: PermissionResult): boolean {
  * push an approval card, resolve when the user clicks.
  *
  * Auto-approved tools never reach this callback — that is by design, and why
- * diff capture hangs off a PreToolUse hook instead (see snapshots.ts).
+ * the diff panel reads git directly rather than hanging off it (see gitdiff.ts).
  */
 export function makeCanUseTool(
   sessionId: string,
@@ -48,16 +49,17 @@ export function makeCanUseTool(
   return async (toolName, input, options) => {
     const requestId = randomUUID()
 
-    send(IPC.permRequest, {
+    const req: PermissionRequest = {
       requestId,
       sessionId,
       toolName,
-      input,
+      input: input as Record<string, unknown>,
       hasSuggestions: Boolean(options.suggestions?.length),
-    })
+    }
+    send(IPC.permRequest, req)
 
     return new Promise<PermissionResult>((resolve) => {
-      waiting.set(requestId, { resolve, sessionId, onPendingChange, onModeChanged })
+      waiting.set(requestId, { resolve, sessionId, req, onPendingChange, onModeChanged })
       onPendingChange(countFor(sessionId))
 
       // If the turn is aborted (interrupt, session close) the callback would
@@ -77,6 +79,20 @@ function countFor(sessionId: string): number {
   return n
 }
 
+/**
+ * Prompts still parked here, for a renderer that lost its copy.
+ *
+ * The resolver lives in this map while the card lives only in the renderer's
+ * store, so a reload — or, before the close handler in main/index.ts, a ⌘W —
+ * left the SDK promise parked forever with nothing on screen to answer it, and
+ * the session pinned to 'awaiting-approval' behind a shut queue gate.
+ */
+export function pendingPermissions(sessionId?: string): PermissionRequest[] {
+  return [...waiting.values()]
+    .filter((w) => !sessionId || w.sessionId === sessionId)
+    .map((w) => w.req)
+}
+
 /** Fail any outstanding prompts for a session so its subprocess can wind down. */
 export function cancelPending(sessionId: string): void {
   for (const [id, w] of waiting) {
@@ -85,68 +101,67 @@ export function cancelPending(sessionId: string): void {
   }
 }
 
-export function registerPermissionIpc(): void {
-  ipcMain.handle(
-    IPC.permRespond,
-    (
-      _e,
-      {
-        requestId,
-        behavior,
-        message,
-        setMode,
-        alwaysAllow,
-      }: {
-        requestId: string
-        behavior: 'allow' | 'deny'
-        /** Replaces the default deny text; see the AskUserQuestion note below. */
-        message?: string
-        /**
-         * Permission mode to switch to as part of the same allow.
-         *
-         * This rides on the permission result rather than going out as a
-         * separate setPermissionMode call because approving ExitPlanMode makes
-         * the CLI change the mode too — two writers, and whichever landed second
-         * would win. `updatedPermissions` is applied with the decision, so the
-         * user's pick can't lose that race.
-         */
-        setMode?: PermissionMode
-        alwaysAllow?: boolean
-      },
-    ) => {
-      void alwaysAllow // ponytail: rule persistence needs updatedPermissions + the SDK's
-      // suggestions passed back through; add when the always-allow button ships.
+/** Arguments of a permission answer, as they arrive from the renderer. */
+export interface PermissionAnswer {
+  requestId: string
+  behavior: 'allow' | 'deny'
+  /** Replaces the default deny text; see the AskUserQuestion note below. */
+  message?: string
+  /**
+   * Permission mode to switch to as part of the same allow.
+   *
+   * This rides on the permission result rather than going out as a separate
+   * setPermissionMode call because approving ExitPlanMode makes the CLI change
+   * the mode too — two writers, and whichever landed second would win.
+   * `updatedPermissions` is applied with the decision, so the user's pick can't
+   * lose that race.
+   */
+  setMode?: PermissionMode
+  alwaysAllow?: boolean
+}
 
-      // A deny message becomes the tool_result the model reads, which is the
-      // only channel an SDK host has for answering AskUserQuestion: allowing the
-      // tool just runs it, and it reports "The user did not answer the
-      // questions" because the CLI collects answers from its own interactive UI,
-      // which does not exist here. Verified against the live CLI.
-      //
-      // It is also how plan feedback travels: denying ExitPlanMode with the
-      // user's notes leaves the session in plan mode with the revisions sitting
-      // in the tool_result, which is exactly "no, keep planning, and here's why".
-      // Read before settling — settle() unparks the waiter and drops it.
-      const waiter = waiting.get(requestId)
+/**
+ * Answer a parked prompt. Runs wherever the waiter lives — which is the host
+ * process, since that is where canUseTool was called.
+ */
+export function respondPermission({
+  requestId,
+  behavior,
+  message,
+  setMode,
+  alwaysAllow,
+}: PermissionAnswer): boolean {
+  void alwaysAllow // ponytail: rule persistence needs updatedPermissions + the SDK's
+  // suggestions passed back through; add when the always-allow button ships.
 
-      const settled = settle(
-        requestId,
-        behavior === 'allow'
-          ? {
-              behavior: 'allow',
-              updatedInput: undefined,
-              ...(setMode
-                ? { updatedPermissions: [{ type: 'setMode', mode: setMode, destination: 'session' }] }
-                : {}),
-            }
-          : { behavior: 'deny', message: message || 'Denied by user' },
-      )
+  // A deny message becomes the tool_result the model reads, which is the
+  // only channel an SDK host has for answering AskUserQuestion: allowing the
+  // tool just runs it, and it reports "The user did not answer the
+  // questions" because the CLI collects answers from its own interactive UI,
+  // which does not exist here. Verified against the live CLI.
+  //
+  // It is also how plan feedback travels: denying ExitPlanMode with the
+  // user's notes leaves the session in plan mode with the revisions sitting
+  // in the tool_result, which is exactly "no, keep planning, and here's why".
+  // Read before settling — settle() unparks the waiter and drops it.
+  const waiter = waiting.get(requestId)
 
-      // The CLI now has the new mode, but nothing told our own meta — and the
-      // composer's mode selector reads that. Without this it still says "Plan"
-      // after the user approved a plan, and their next send re-asserts it.
-      if (settled && setMode) waiter?.onModeChanged(setMode)
-      return settled
-    },
+  const settled = settle(
+    requestId,
+    behavior === 'allow'
+      ? {
+          behavior: 'allow',
+          updatedInput: undefined,
+          ...(setMode
+            ? { updatedPermissions: [{ type: 'setMode', mode: setMode, destination: 'session' }] }
+            : {}),
+        }
+      : { behavior: 'deny', message: message || 'Denied by user' },
   )
+
+  // The CLI now has the new mode, but nothing told our own meta — and the
+  // composer's mode selector reads that. Without this it still says "Plan"
+  // after the user approved a plan, and their next send re-asserts it.
+  if (settled && setMode) waiter?.onModeChanged(setMode)
+  return settled
 }

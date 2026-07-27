@@ -81,7 +81,8 @@ export default function PlanCard({
               <h2 className="plan-title">{title}</h2>
               <button
                 className="plan-close"
-                title="Close — the plan stays pending, reopen from the transcript"
+                data-tip="Close — the plan stays pending, reopen from the transcript"
+                data-tip-end=""
                 aria-label="Close plan"
                 onClick={() => setOpen(false)}
               >
@@ -150,7 +151,8 @@ export default function PlanCard({
                       className="btn"
                       data-variant="primary"
                       onClick={() => approve('acceptEdits')}
-                      title="Approve, and stop asking about each edit"
+                      data-tip="Approve, and stop asking about each edit"
+                      data-tip-end=""
                     >
                       <Zap size={14} />
                       Approve · auto-accept

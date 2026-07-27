@@ -1,10 +1,62 @@
 import { useEffect, useState } from 'react'
-import { GitBranch, GitBranchPlus, History, Plus, X } from 'lucide-react'
-import type { PastSession, TranscriptSearchHit } from '../../../shared/types'
+import {
+  Circle,
+  Cog,
+  Compass,
+  FolderPlus,
+  GitBranch,
+  GitBranchPlus,
+  History,
+  LoaderCircle,
+  MessageCircleQuestion,
+  Plus,
+  TriangleAlert,
+  X,
+} from 'lucide-react'
+import type { PastSession, SessionMeta, TranscriptSearchHit } from '../../../shared/types'
 import { useStore } from '../store'
+import { activityOf, type Activity } from '../derive.mts'
 
 /** Debounce on search: each keystroke otherwise re-reads up to 40 transcripts. */
 const SEARCH_DELAY_MS = 250
+
+/**
+ * One glyph per activity, animated in CSS off the `data-activity` attribute.
+ *
+ * Replaces the single blinking dot, which said only "something or nothing" —
+ * with three of these open at once you could not tell which agent was waiting
+ * on you and which was grinding. Components, not elements: lucide strokes with
+ * currentColor, so the wrapper owns the colour.
+ */
+const ACTIVITY_ICON: Record<Activity, typeof Circle> = {
+  working: LoaderCircle,
+  planning: Compass,
+  background: Cog,
+  awaiting: MessageCircleQuestion,
+  starting: LoaderCircle,
+  error: TriangleAlert,
+  idle: Circle,
+}
+
+const ACTIVITY_TIP: Record<Activity, string> = {
+  working: 'Working',
+  planning: 'Planning',
+  background: 'Background work still running',
+  awaiting: 'Waiting for you',
+  starting: 'Starting up',
+  error: 'Last turn failed',
+  idle: 'Idle',
+}
+
+function ActivityIcon({ session }: { session: SessionMeta }): React.JSX.Element {
+  const activity = activityOf(session)
+  const Glyph = ACTIVITY_ICON[activity]
+  return (
+    <span className="activity" data-activity={activity} title={ACTIVITY_TIP[activity]}>
+      <Glyph size={12} />
+    </span>
+  )
+}
 
 const when = (ms?: number): string => {
   if (!ms) return ''
@@ -22,6 +74,8 @@ export default function SessionRail(): React.JSX.Element {
   const close = useStore((s) => s.close)
   const newSession = useStore((s) => s.newSession)
   const resume = useStore((s) => s.resume)
+  const draft = useStore((s) => s.draft)
+  const startDraft = useStore((s) => s.startDraft)
 
   const [past, setPast] = useState<PastSession[]>([])
   const [showPast, setShowPast] = useState(false)
@@ -35,14 +89,20 @@ export default function SessionRail(): React.JSX.Element {
   const openPath = useStore((s) => s.openPath)
 
   /**
-   * Both browsing and search are scoped to the open project.
+   * Both browsing and search are scoped to the open project by default.
    *
-   * Unscoped, they list every session on the machine, and resuming one silently
-   * starts an agent in an unrelated repo. With no session open there is no
-   * project to scope to, and an empty list would leave no way back in — so that
-   * one case stays global, and the header says which it is.
+   * Unscoped they list every session on the machine — 336 transcripts across 67
+   * projects here — which buries the ones you want. With no session open there
+   * is no project to scope to, and an empty list would leave no way back in, so
+   * that case is global regardless.
+   *
+   * Widening is safe, which is why the toggle exists: each row carries its OWN
+   * cwd and that is what `resume()` is handed, so a global list still starts
+   * every agent in its own directory. Rows without a cwd are already disabled.
    */
-  const scope = useStore((s) => s.sessions.find((x) => x.id === s.activeId)?.cwd)
+  const [allProjects, setAllProjects] = useState(false)
+  const cwd = useStore((s) => s.sessions.find((x) => x.id === s.activeId)?.cwd)
+  const scope = allProjects ? undefined : cwd
 
   useEffect(() => {
     if (!showPast) return
@@ -89,7 +149,7 @@ export default function SessionRail(): React.JSX.Element {
       <header className="pane-head rail-head drag">Sessions</header>
 
       {notice && (
-        <button className="rail-notice" onClick={() => setNotice(null)} title="Dismiss">
+        <button className="rail-notice" onClick={() => setNotice(null)} data-tip="Dismiss this notice" data-tip-start="">
           {notice}
         </button>
       )}
@@ -120,13 +180,16 @@ export default function SessionRail(): React.JSX.Element {
               }}
               title={`${s.cwd}\nDouble-click to rename`}
             >
-              <span className="dot" data-status={s.status} />
+              <ActivityIcon session={s} />
               <span className="session-body">
                 <span className="session-title">{s.title}</span>
-                <span className="session-sub">
-                  {s.status === 'awaiting-approval' ? 'needs approval' : s.status}
-                  {s.costUsd > 0 && ` · $${s.costUsd.toFixed(3)}`}
-                </span>
+                {/* No status word: the icon carries the state, and "running"
+                    next to every active session was three copies of what the
+                    animation already says. The sub-line is now cost only, and
+                    disappears entirely until there is some. */}
+                {s.costUsd > 0 && (
+                  <span className="session-sub">${s.costUsd.toFixed(2)}</span>
+                )}
                 {/* Which checkout this agent is editing. Without it, three
                     sessions on one repo are indistinguishable in the rail. */}
                 {s.worktree && (
@@ -140,7 +203,21 @@ export default function SessionRail(): React.JSX.Element {
           ),
         )}
 
-        {sessions.length === 0 && <p className="rail-note">No sessions yet.</p>}
+        {/* A conversation that exists but has no project yet. Rendered as a row
+            so the rail matches what the pane is showing — the chooser. */}
+        {draft && (
+          <div className="session" data-active>
+            <span className="activity" data-activity="idle">
+              <Plus size={12} />
+            </span>
+            <span className="session-body">
+              <span className="session-title">New conversation</span>
+              <span className="session-sub">pick a project</span>
+            </span>
+          </div>
+        )}
+
+        {sessions.length === 0 && !draft && <p className="rail-note">No sessions yet.</p>}
 
         {showPast && (
           <>
@@ -153,9 +230,20 @@ export default function SessionRail(): React.JSX.Element {
 
             <div className="rail-section" title={scope ?? 'all projects'}>
               {hits ? `Matches${searching ? '…' : ` (${hits.length})`}` : 'Recent'}
-              <span className="rail-scope">
+              {/* Both the CLI and the SDK write to ~/.claude/projects, so this
+                  list already covers conversations started from either — the
+                  toggle is the only thing that was missing to reach them. */}
+              <button
+                className="rail-scope"
+                onClick={() => setAllProjects((v) => !v)}
+                disabled={!cwd}
+                data-tip={
+                  scope ? 'Showing this project — click for all projects' : 'Showing all projects'
+                }
+                data-tip-end=""
+              >
                 {scope ? scope.split('/').pop() : 'all projects'}
-              </span>
+              </button>
             </div>
 
             {/* Search results replace the recent list rather than sitting beside
@@ -176,6 +264,7 @@ export default function SessionRail(): React.JSX.Element {
                       <span className="session-title">{h.summary}</span>
                       <span className="session-snippet">{h.snippet}</span>
                       <span className="session-sub">
+                        {!scope && h.cwd && `${h.cwd.split('/').filter(Boolean).pop()} · `}
                         {h.matches} match{h.matches === 1 ? '' : 'es'} · {when(h.lastModified)}
                       </span>
                     </span>
@@ -193,6 +282,10 @@ export default function SessionRail(): React.JSX.Element {
                     <span className="session-body">
                       <span className="session-title">{p.summary}</span>
                       <span className="session-sub">
+                        {/* Unscoped, the project is the thing that tells two
+                            identically-named sessions apart — and scoped it is
+                            redundant with the header. */}
+                        {!scope && p.cwd && `${p.cwd.split('/').filter(Boolean).pop()} · `}
                         {when(p.lastModified)}
                         {p.gitBranch && ` · ${p.gitBranch}`}
                       </span>
@@ -223,7 +316,8 @@ export default function SessionRail(): React.JSX.Element {
         <button
           className="btn grow"
           data-variant="primary"
-          title="New session  ⌘N"
+          data-tip="New conversation in this project  ⌘N"
+          data-tip-start=""
           onClick={() => void newSession()}
         >
           <Plus size={14} />
@@ -231,8 +325,19 @@ export default function SessionRail(): React.JSX.Element {
         </button>
         <button
           className="btn"
+          data-active={draft}
+          onClick={startDraft}
+          data-tip="New conversation in another project  ⇧⌘N"
+          data-tip-start=""
+          aria-label="New conversation in another project"
+        >
+          <FolderPlus size={14} />
+        </button>
+        <button
+          className="btn"
           onClick={() => setBranching(true)}
-          title="New agent in its own git worktree, on its own branch"
+          data-tip="New agent in its own git worktree, on its own branch"
+          data-tip-start=""
           aria-label="New worktree session"
         >
           <GitBranchPlus size={14} />
@@ -241,7 +346,8 @@ export default function SessionRail(): React.JSX.Element {
           className="btn"
           data-active={showPast}
           onClick={() => setShowPast((v) => !v)}
-          title={showPast ? 'Hide past sessions' : 'Resume or search past sessions'}
+          data-tip={showPast ? 'Hide past sessions' : 'Resume or search past sessions'}
+          data-tip-end=""
           aria-label={showPast ? 'Hide past sessions' : 'Past sessions'}
         >
           <History size={14} />
@@ -250,7 +356,8 @@ export default function SessionRail(): React.JSX.Element {
           <button
             className="btn"
             data-variant="danger"
-            title="Close this session"
+            data-tip="Close this session"
+            data-tip-end=""
             aria-label="Close this session"
             onClick={() => void close(activeId)}
           >

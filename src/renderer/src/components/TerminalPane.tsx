@@ -95,20 +95,34 @@ export default function TerminalPane({
     if (!el) return
     const slot = slotFor(session)
 
+    // Only open into a laid-out container. All three side panels stay mounted
+    // with display:none, so on first mount this host is 0x0 — and xterm measures
+    // its character cell at open() time. Measuring in a zero-size element caches
+    // a bogus cell height, and FitAddon then divides the real height by it, so
+    // the viewport ends up a fraction of the pane. That is the half-height
+    // scrollbar: the track is honest, the terminal inside it was just short.
+    //
+    // Side effect of bailing here: the shell below is now started the first time
+    // you open the panel rather than when the session is created. That is the
+    // better default anyway — no orphan shell per session you never open a
+    // terminal for — and the effect re-runs on `visible`, so it starts on time.
+    if (!visible || el.clientHeight === 0) return
     if (!el.contains(slot.term.element ?? null)) slot.term.open(el)
 
     const resize = (): void => {
-      if (!visible) return
+      if (el.clientHeight === 0) return
       try {
         slot.fit.fit()
       } catch {
-        /* zero-size while hidden */
+        /* transiently zero-size */
       }
     }
 
     const ro = new ResizeObserver(resize)
     ro.observe(el)
-    resize()
+    // Next frame, not now: on the render that reveals the panel, layout for the
+    // freshly un-hidden subtree hasn't settled when effects run.
+    const frame = requestAnimationFrame(resize)
 
     if (!slot.started) {
       slot.started = true
@@ -119,8 +133,11 @@ export default function TerminalPane({
         })
     }
 
-    if (visible) slot.term.focus()
-    return () => ro.disconnect()
+    slot.term.focus()
+    return () => {
+      cancelAnimationFrame(frame)
+      ro.disconnect()
+    }
   }, [session.id, session.cwd, visible])
 
   return <div className="term-host" ref={host} />

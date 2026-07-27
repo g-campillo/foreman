@@ -6,8 +6,8 @@
  * neither of which announces itself.
  */
 import { strict as assert } from 'node:assert'
-import type { ChatItem } from '../../shared/types'
-import { latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, planProposal, planTitle } from './derive.mts'
+import type { ChatItem, SessionMeta } from '../../shared/types'
+import { activityOf, answeredQuestions, ANSWER_PREFIX, latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, planProposal, planTitle, toolLabel, toolRender, transcriptRows, workingVerb, WORKING_VERBS } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -19,6 +19,45 @@ const tool = (name: string, input: unknown, result?: string): ChatItem => ({
   result,
 })
 const todo = (content: string, status: string): unknown => ({ content, status })
+
+// ------------------------------------------------------------------ activityOf
+
+// Leading `;` is load-bearing, not a stray: the line above ends in `})`, and a
+// bare block after it makes tsc read `({ content, status })` as an arrow's
+// parameter list and demand a `=>` (TS1005). Node's type-stripping parses it
+// fine, so `npm run check:derive` passes while `npm run typecheck` fails.
+;{
+  const bg = [{ taskId: '1', taskType: 'Bash', description: 'npm test' }]
+  const s = (
+    status: SessionMeta['status'],
+    permissionMode: SessionMeta['permissionMode'] = 'default',
+    backgroundTasks: SessionMeta['backgroundTasks'] = [],
+  ): Pick<SessionMeta, 'status' | 'permissionMode' | 'backgroundTasks'> => ({
+    status,
+    permissionMode,
+    backgroundTasks,
+  })
+
+  assert.equal(activityOf(s('idle')), 'idle')
+  assert.equal(activityOf(s('starting')), 'starting')
+  assert.equal(activityOf(s('running')), 'working')
+  assert.equal(activityOf(s('awaiting-approval')), 'awaiting')
+  assert.equal(activityOf(s('error')), 'error')
+
+  // Plan mode splits `running` in two, and only while actually running.
+  assert.equal(activityOf(s('running', 'plan')), 'planning')
+  assert.equal(activityOf(s('idle', 'plan')), 'idle', 'plan mode alone is not planning')
+
+  // THE BUG THIS EXISTS FOR: a finished turn with live background tasks read as
+  // 'idle' in the rail while work was still going on.
+  assert.equal(activityOf(s('idle', 'default', bg)), 'background')
+  assert.equal(activityOf(s('starting', 'default', bg)), 'background')
+
+  // ...but a foreground turn still wins. That is what the user is waiting on.
+  assert.equal(activityOf(s('running', 'default', bg)), 'working')
+  assert.equal(activityOf(s('awaiting-approval', 'default', bg)), 'awaiting')
+  assert.equal(activityOf(s('error', 'default', bg)), 'error')
+}
 
 /** Mirrors the live tool: the id is assigned in the RESULT, not the input. */
 const create = (n: number, subject: string, activeForm?: string): ChatItem =>
@@ -418,5 +457,121 @@ assert.equal(planTitle('  # Indented'), 'Indented', 'up to 3 spaces is still a h
 assert.equal(planTitle('just prose'), 'Implementation plan', 'fallback when unheaded')
 assert.equal(planTitle(''), 'Implementation plan', 'fallback when empty')
 assert.equal(planTitle('#hashtag not a heading'), 'Implementation plan', 'needs the space')
+
+// ------------------------------------------------------------------ toolLabel
+
+assert.equal(toolLabel('mcp__jcodemunch__get_file_content'), 'MCP jcodemunch Get File Content')
+// Hyphens are word separators too, and the server segment keeps its own casing
+// and underscores — it's a name from the user's MCP config, not prose.
+assert.equal(
+  toolLabel('mcp__plugin_context7_context7__query-docs'),
+  'MCP plugin_context7_context7 Query Docs',
+)
+// Built-ins that already read correctly are NOT in the registry, and must keep
+// passing through — relabelling those could only break them.
+for (const name of ['Read', 'Bash', 'Edit', 'Write', 'Grep', 'WebFetch', 'WebSearch', ''])
+  assert.equal(toolLabel(name), name, `passthrough: ${name || '(empty)'}`)
+// The registry wins over passthrough, and over the mcp__ transform.
+assert.equal(toolLabel('ExitPlanMode'), 'Plan')
+assert.equal(toolLabel('AskUserQuestion'), 'Asked')
+assert.equal(toolLabel('ToolSearch'), 'Loaded tools')
+// Degenerate shapes must not throw — these come off the wire.
+assert.equal(toolLabel('mcp__server'), 'MCP server', 'no tool segment')
+assert.equal(toolLabel('mcp__'), 'mcp__', 'no server segment either')
+assert.equal(toolLabel('mcp__s__a__b'), 'MCP s A B', 'extra __ belongs to the tool')
+
+// -------------------------------------------------------------- groupTranscript
+
+{
+  const say = (id: string): ChatItem => ({ id, kind: 'assistant', text: 'x' })
+  const rows = transcriptRows([
+    say('a1'),
+    say('a2'), // streaming emits several per turn — only the first leads
+    tool('Read', {}),
+    tool('Edit', {}),
+    say('a3'),
+    tool('Bash', {}),
+  ])
+
+  assert.deepEqual(
+    rows.map((r) => `${r.item.kind}:${r.leadsTurn}`),
+    ['assistant:true', 'assistant:false', 'tool:false', 'tool:false', 'assistant:true', 'tool:false'],
+    'one row per item, and only the turn-opening assistant is flagged',
+  )
+}
+
+// An empty transcript and an all-tools one are the boundary cases.
+assert.deepEqual(transcriptRows([]), [])
+assert.equal(transcriptRows([tool('Read', {}), tool('Read', {})]).length, 2, 'tools no longer fold')
+
+// Checklist events produce no row — TodoStrip renders the fold of them, and a
+// row per event would say nothing the strip doesn't say better. Critically,
+// latestTodos still sees them, because this filters at render, not in the store.
+{
+  const plan = [create(1, 'Ship it'), update(1, 'in_progress'), tool('Bash', {})]
+  assert.deepEqual(
+    transcriptRows(plan).map((r) => (r.item.kind === 'tool' ? r.item.name : r.item.kind)),
+    ['Bash'],
+    'TaskCreate/TaskUpdate are hidden from the transcript',
+  )
+  assert.equal(latestTodos(plan)?.length, 1, '...but the checklist still folds them')
+}
+
+// -------------------------------------------------------------- toolRender
+
+assert.equal(toolRender('TaskCreate'), 'hidden')
+assert.equal(toolRender('AskUserQuestion'), 'record')
+assert.equal(toolRender('ExitPlanMode'), 'record')
+assert.equal(toolRender('Read'), undefined, 'ordinary tools keep their card')
+assert.equal(toolRender('mcp__x__y'), undefined)
+
+// --------------------------------------------------------- answeredQuestions
+
+assert.equal(answeredQuestions({}, undefined), null, 'not a question set')
+
+{
+  const input = {
+    questions: [
+      { question: 'Which titler?', header: 'Titling', options: [{ label: 'Haiku' }] },
+      { question: 'Tooltips?', header: 'Tooltips', options: [{ label: 'CSS' }] },
+    ],
+  }
+
+  // Still open: the prompt is up and nothing has come back yet.
+  assert.deepEqual(
+    answeredQuestions(input, undefined)?.map((a) => [a.header, a.answer]),
+    [['Titling', ''], ['Tooltips', '']],
+    'pending questions report their headers with no answer',
+  )
+
+  // Answered. The wire format is QuestionCard's: prefix line, then `q → a`.
+  const result = `${ANSWER_PREFIX}\nWhich titler? → Haiku\nTooltips? → CSS`
+  assert.deepEqual(
+    answeredQuestions(input, result)?.map((a) => [a.header, a.answer]),
+    [['Titling', 'Haiku'], ['Tooltips', 'CSS']],
+  )
+
+  // Skipped: denied with no answer payload, so there is nothing to show.
+  assert.deepEqual(
+    answeredQuestions(input, 'The user doesn\'t want to proceed')?.map((a) => a.answer),
+    ['', ''],
+    'a skip is not mistaken for an answer',
+  )
+
+  // A question containing the separator must not split on its own arrow —
+  // which is why matching is positional and takes the LAST ' → '.
+  const tricky = { questions: [{ question: 'a → b?', options: [{ label: 'x' }] }] }
+  assert.equal(
+    answeredQuestions(tricky, `${ANSWER_PREFIX}\na → b? → x`)?.[0].answer,
+    'x',
+  )
+}
+
+// ----------------------------------------------------------------- workingVerb
+
+// Must stay in range for any id, and advance with the tick.
+assert.ok(WORKING_VERBS.includes(workingVerb('', 0)), 'empty session id is still in range')
+assert.ok(WORKING_VERBS.includes(workingVerb('abc', 99999)), 'tick wraps rather than overflowing')
+assert.notEqual(workingVerb('abc', 0), workingVerb('abc', 1), 'the verb actually rotates')
 
 console.log('derive: ok')

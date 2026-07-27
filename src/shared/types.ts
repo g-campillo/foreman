@@ -18,6 +18,20 @@ export interface BackgroundTask {
   taskId: string
   taskType: string
   description: string
+  /**
+   * Live progress, joined onto the task by `task_id`.
+   *
+   * The SDK already emits all of this on `task_progress` roughly every 30s;
+   * before this it was only ever folded onto the in-transcript Task card, so a
+   * *backgrounded* task showed as an opaque chip with no way to see inside it.
+   *
+   * `background_tasks_changed` has REPLACE semantics and carries none of these,
+   * so they have to be merged by taskId when the set changes or every chip goes
+   * blank the moment another task starts or finishes.
+   */
+  progress?: string
+  lastTool?: string
+  tokens?: number
 }
 
 /** Result of rewindFiles, used both for the dry-run preview and the real thing. */
@@ -165,6 +179,8 @@ export interface FileDiff {
   added: number
   removed: number
   hunks: DiffHunk[]
+  /** Set when the row deliberately has no hunks: 'binary', 'too large to diff'. */
+  note?: string
 }
 
 export interface DiffHunk {
@@ -295,6 +311,51 @@ export interface TranscriptSearchHit {
   matches: number
 }
 
+/** What happens to running agents when Foreman quits. */
+export type AgentLifetime = 'persist' | 'stop'
+
+/**
+ * Everything the app persists about behaviour, as opposed to looks.
+ *
+ * Separate from Appearance because none of this is CSS: some of it rides out on
+ * createSession, some is pushed to main as policy, some is pure renderer.
+ *
+ * The session-start three are deliberately one-way — changing mode/model/effort
+ * in the composer steers *that* conversation and never writes back here, so a
+ * session you flipped to Bypass doesn't quietly make Bypass your default.
+ */
+export interface Prefs {
+  // --- what a new conversation starts with ---
+  permissionMode: PermissionMode
+  /** Model alias. '' means "leave the SDK's own default alone". */
+  model: string
+  /** null means the same for effort. */
+  effort: EffortLevel | null
+
+  // --- agent lifetime (pushed to main; see IPC.agentPolicy) ---
+  /**
+   * 'persist' keeps agents working after the app quits, and is what makes a
+   * crash survivable — the app re-adopts them next launch. 'stop' shuts them
+   * down on quit; a crash can't be intercepted either way, so a crash-survivor
+   * is still adopted rather than orphaned.
+   */
+  agentLifetime: AgentLifetime
+  /** Minutes an unattended agent keeps running before stopping itself. 0 = forever. */
+  agentIdleMinutes: number
+
+  // --- conversation behaviour ---
+  /** Name conversations from their first message. Costs about $0.004 each. */
+  autoTitle: boolean
+  /** Desktop notifications for turn-complete and approval-needed. */
+  notifications: boolean
+  /** The rotating status verbs under a running turn. Purely cosmetic. */
+  workingVerbs: boolean
+
+  // --- per-session safety caps. 0 = no cap. ---
+  maxBudgetUsd: number
+  maxTurns: number
+}
+
 /** Appearance knobs the renderer persists and applies as CSS custom properties. */
 export interface Appearance {
   surfaceAlpha: number
@@ -327,6 +388,12 @@ export const IPC = {
   sessionSetModel: 'session:setModel',
   sessionModels: 'session:models',
   sessionPastList: 'session:pastList',
+  /** Ask every adopted host to stream its event log. Called by the renderer
+   *  once its listeners are registered — see store.bootstrap. */
+  sessionReplay: 'session:replay',
+  /** Renderer -> main: agent lifetime + notification policy, from Settings.
+   *  Main can't read localStorage, and these decide what happens on quit. */
+  agentPolicy: 'app:agentPolicy',
   sessionCancelQueued: 'session:cancelQueued',
 
   // time travel + actions
@@ -377,7 +444,6 @@ export const IPC = {
   // diffs
   diffList: 'diff:list',
   diffRevert: 'diff:revert',
-  diffClear: 'diff:clear',
   diffCommit: 'diff:commit',
   evtDiffChanged: 'diff:changed',
 
@@ -389,6 +455,14 @@ export const IPC = {
   evtPtyData: 'pty:data',
   evtPtyExit: 'pty:exit',
 
+  /** Host -> app: show a desktop notification. Only main can build one, and
+   *  only main knows whether the window is focused. */
+  evtNotify: 'app:notify',
+  /** Host -> app: open this URL in the browser (an MCP OAuth page). */
+  evtOpenUrl: 'app:openUrl',
+
   // misc
   pickDirectory: 'app:pickDirectory',
+  /** Prompts still parked in main, for a renderer that lost its copy. */
+  pendingList: 'pending:list',
 } as const

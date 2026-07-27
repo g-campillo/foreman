@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
-import { basename, dirname, join, sep } from 'node:path'
-import { query, type Query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import { basename } from 'node:path'
+import { query, renameSession, type Query, type SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import {
   IPC,
   type AccountInfo,
@@ -21,11 +21,14 @@ import {
   type UsageInfo,
   type WorktreeInfo,
 } from '../../shared/types'
-import { notify, send } from '../bridge'
+import { notify, send } from '../../shared/sink'
 import { createInputQueue, type InputQueue } from './queue'
 import { makeCanUseTool, cancelPending } from './permissions'
 import { makeOnElicitation, cancelPendingElicitations } from './elicitation'
-import { makeSnapshotHook, makeBashDiffHook, beginSession, clearSnapshots } from './snapshots'
+import { makeDiffHook } from './gitdiff'
+import { claudeExecutable } from './executable'
+import { proposeTitle } from './title'
+import { readUsage, writeUsage } from './usage'
 import {
   FALLBACK_MODEL,
   MAX_BUDGET_USD,
@@ -35,30 +38,29 @@ import {
   resultText,
 } from './policy.mts'
 
-/**
- * Absolute path to the Claude Code binary the SDK spawns.
- *
- * The SDK resolves this itself from its own location, which is correct in dev
- * but fatal once packaged: require.resolve reports a path inside app.asar, and
- * spawn() is not asar-aware, so it dies with ENOTDIR. Redirect to the unpacked
- * copy. Returns undefined if resolution fails, letting the SDK do its thing.
- */
-function claudeExecutable(): string | undefined {
-  try {
-    const pkg = `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`
-    const dir = dirname(require.resolve(`${pkg}/package.json`))
-    return join(dir, 'claude').replace(`app.asar${sep}`, `app.asar.unpacked${sep}`)
-  } catch {
-    return undefined
-  }
-}
-
 export interface SessionInit {
   cwd: string
+  /**
+   * Pre-minted session id.
+   *
+   * The manager chooses it, because it also names the host's directory on disk
+   * and the client needs it before the host process exists. Without this the
+   * Session would mint a second uuid and `meta.id` would not match the
+   * directory the client is talking to — so shutdown would reap nothing.
+   */
+  sessionId?: string
   title?: string
   resume?: string
   permissionMode?: PermissionMode
   effort?: EffortLevel
+  /** Model alias to start on, from the user's configured default. Absent or ''
+   *  leaves the SDK's own default alone. */
+  model?: string
+  /** Name the conversation from its first message. Off skips the extra call. */
+  autoTitle?: boolean
+  /** Per-session caps from Settings. Absent falls back to the env defaults. */
+  maxBudgetUsd?: number
+  maxTurns?: number
   /** Set by the manager once it has actually created the worktree. `cwd` is
    *  already the worktree path by then; this is what the rail displays and what
    *  close() needs to clean it up. */
@@ -88,6 +90,24 @@ export class Session {
   /** tool_use_id -> ChatItem id, so tool_result can update the right card. */
   private readonly toolItems = new Map<string, string>()
   private pendingApprovals = 0
+  /**
+   * Auto-titling state.
+   *
+   * `named` means the caller already chose a title — a worktree branch name, or
+   * a resumed session's stored one — and naming it again would overwrite
+   * something the user picked. `titled` makes the attempt once-only regardless
+   * of outcome, so a failed call doesn't retry on every subsequent message.
+   * `pendingTitle` is held until the first turn ends, because renameSession
+   * writes to the session's transcript file, which does not exist yet when the
+   * first message is sent.
+   */
+  private readonly named: boolean
+  /** Settings' "name conversations automatically". Off means never attempt it. */
+  private readonly autoTitleOn: boolean
+  private titled = false
+  private pendingTitle: string | null = null
+  /** Spend from previous runs of this conversation — see the constructor. */
+  private readonly restoredCost: number
   /** Set while a user-initiated interrupt is in flight: the turn it aborts comes
    *  back with is_error, which is not a failure the user should see as one. */
   private interrupting = false
@@ -95,16 +115,23 @@ export class Session {
   private readonly ready: Promise<void>
 
   constructor(init: SessionInit) {
-    const id = randomUUID()
+    const id = init.sessionId ?? randomUUID()
+    this.named = Boolean(init.title)
+    this.autoTitleOn = init.autoTitle !== false
+    // What this conversation had already spent before this run. Zero for a
+    // fresh session; for a resumed one it comes back off the sidecar, because
+    // the CLI's own `total_cost_usd` restarts from zero on resume.
+    const prior = init.resume ? readUsage(init.resume) : { costUsd: 0, inputTokens: 0, outputTokens: 0 }
+    this.restoredCost = prior.costUsd
     this.meta = {
       id,
       title: init.title ?? basename(init.cwd) ?? 'session',
       cwd: init.cwd,
       status: 'starting',
       model: null,
-      costUsd: 0,
-      inputTokens: 0,
-      outputTokens: 0,
+      costUsd: prior.costUsd,
+      inputTokens: prior.inputTokens,
+      outputTokens: prior.outputTokens,
       permissionMode: init.permissionMode ?? 'default',
       createdAt: Date.now(),
       effort: init.effort ?? null,
@@ -116,10 +143,6 @@ export class Session {
       sdkSessionId: init.resume ?? id,
       ...(init.worktree ? { worktree: init.worktree } : {}),
     }
-
-    // Must be kicked off before the agent can touch anything, so that whatever
-    // is already dirty in the worktree is recorded as the user's, not the agent's.
-    beginSession(this.meta.id, init.cwd)
 
     this.q = query({
       prompt: this.queue,
@@ -137,8 +160,12 @@ export class Session {
         fallbackModel: FALLBACK_MODEL,
         // Spread rather than assign: FOREMAN_MAX_*=0 means "no cap at all", and
         // the key has to be absent for that, not present-and-undefined.
-        ...(MAX_BUDGET_USD ? { maxBudgetUsd: MAX_BUDGET_USD } : {}),
-        ...(MAX_TURNS ? { maxTurns: MAX_TURNS } : {}),
+        // Settings first, env as the fallback, absent for "no cap" — the key
+        // has to be missing, not present-and-undefined.
+        ...((init.maxBudgetUsd ?? MAX_BUDGET_USD)
+          ? { maxBudgetUsd: init.maxBudgetUsd ?? MAX_BUDGET_USD }
+          : {}),
+        ...((init.maxTurns ?? MAX_TURNS) ? { maxTurns: init.maxTurns ?? MAX_TURNS } : {}),
         // Backs up files before the agent modifies them, which is what makes
         // q.rewindFiles() possible later. Inert until something calls it.
         enableFileCheckpointing: true,
@@ -159,6 +186,10 @@ export class Session {
         // Adaptive lets the model choose per turn; the effort dropdown steers it.
         thinking: { type: 'adaptive' },
         ...(init.effort ? { effort: init.effort } : {}),
+        // Spread, not assign: '' is the "Default (recommended)" alias, and the
+        // key has to be ABSENT for the SDK to pick — present-and-empty is an
+        // unresolvable model name.
+        ...(init.model ? { model: init.model } : {}),
         // Undocumented payload shapes, so this only observes for now — answering
         // 'cancelled' is the contract's required reply for an unhandled kind.
         onUserDialog: async (request) => {
@@ -180,8 +211,7 @@ export class Session {
         // silently kills OAuth for any server that needs it.
         onElicitation: makeOnElicitation(this.meta.id),
         hooks: {
-          PreToolUse: makeSnapshotHook(this.meta.id, init.cwd),
-          PostToolUse: makeBashDiffHook(this.meta.id),
+          PostToolUse: makeDiffHook(this.meta.id, init.cwd),
         },
         pathToClaudeCodeExecutable: claudeExecutable(),
         abortController: this.abort,
@@ -256,14 +286,24 @@ export class Session {
         break
 
       case 'system':
-        // REPLACE semantics — the SDK sends the complete live set each time.
+        // REPLACE semantics — the SDK sends the complete live set each time,
+        // and it carries no progress fields. So merge rather than assign: a
+        // straight map would blank every chip's live status the moment any
+        // other task started or finished.
         if (msg.subtype === 'background_tasks_changed') {
+          const known = new Map(this.meta.backgroundTasks.map((t) => [t.taskId, t]))
           this.patchMeta({
-            backgroundTasks: msg.tasks.map((t) => ({
-              taskId: t.task_id,
-              taskType: t.task_type,
-              description: t.description,
-            })),
+            backgroundTasks: msg.tasks.map((t) => {
+              const prev = known.get(t.task_id)
+              return {
+                taskId: t.task_id,
+                taskType: t.task_type,
+                description: t.description,
+                ...(prev?.progress ? { progress: prev.progress } : {}),
+                ...(prev?.lastTool ? { lastTool: prev.lastTool } : {}),
+                ...(prev?.tokens ? { tokens: prev.tokens } : {}),
+              }
+            }),
           })
           break
         }
@@ -281,6 +321,21 @@ export class Session {
               status: 'pending',
               progress: msg.summary || msg.last_tool_name || msg.description,
             })
+          }
+          // The same event also feeds the background tray, joined on task_id —
+          // for a BACKGROUNDED task the transcript card above says "running in
+          // the background" and never updates again, so this is the only place
+          // its progress can be seen. No-ops when the task isn't backgrounded.
+          const at = this.meta.backgroundTasks.findIndex((t) => t.taskId === msg.task_id)
+          if (at !== -1) {
+            const next = [...this.meta.backgroundTasks]
+            next[at] = {
+              ...next[at],
+              ...(msg.summary ? { progress: msg.summary } : {}),
+              ...(msg.last_tool_name ? { lastTool: msg.last_tool_name } : {}),
+              ...(msg.usage?.total_tokens ? { tokens: msg.usage.total_tokens } : {}),
+            }
+            this.patchMeta({ backgroundTasks: next })
           }
           break
         }
@@ -367,12 +422,27 @@ export class Session {
         this.patchMeta({
           // total_cost_usd is the running SESSION total, not this turn's delta —
           // verified against the live SDK. Adding it would compound every turn.
-          costUsd: r.total_cost_usd ?? this.meta.costUsd,
+          //
+          // `restoredCost` is what a resumed session already spent before this
+          // run: the CLI's running total restarts at zero on resume, so without
+          // the offset a reopened conversation would report only today's spend.
+          costUsd: this.restoredCost + (r.total_cost_usd ?? 0),
           // usage, by contrast, IS per-turn, so these do accumulate.
           inputTokens: this.meta.inputTokens + (r.usage?.input_tokens ?? 0),
           outputTokens: this.meta.outputTokens + (r.usage?.output_tokens ?? 0),
         })
+        // Cost is in no transcript the CLI writes, so it only survives a resume
+        // if we record it ourselves. Cheap: one ~80-byte file per turn.
+        if (this.meta.sdkSessionId) {
+          writeUsage(this.meta.sdkSessionId, {
+            costUsd: this.meta.costUsd,
+            inputTokens: this.meta.inputTokens,
+            outputTokens: this.meta.outputTokens,
+          })
+        }
         this.setStatus(!interrupted && r.is_error ? 'error' : 'idle')
+        // The transcript file exists by now, so an auto-title can reach disk.
+        this.persistTitle()
         break
       }
     }
@@ -534,10 +604,46 @@ export class Session {
     // picks it up immediately and onDequeue flips the status, which is the same
     // signal for a first message and a released one.
     this.queue.push(content, id)
+
+    // Name the conversation off its opening message. Fire-and-forget and
+    // deliberately not awaited — the turn must not wait on a title.
+    if (text.trim()) void this.autoTitle(text)
   }
 
   setTitle(title: string): void {
     this.patchMeta({ title })
+  }
+
+  /**
+   * Give the conversation a real name, once, from its first message.
+   *
+   * Two-stage on purpose. The rail is patched as soon as the title arrives, so
+   * "foreman" becomes something meaningful within a second or two of sending.
+   * Persisting it waits for the first turn to finish (see the `result` branch),
+   * because renameSession writes into the session's transcript file and that
+   * file does not exist until the CLI has written to it.
+   */
+  private async autoTitle(firstMessage: string): Promise<void> {
+    if (this.titled || this.named || !this.autoTitleOn) return
+    this.titled = true
+
+    const title = await proposeTitle(firstMessage, this.meta.cwd)
+    // A dead session must not get its title patched back onto a rail row that
+    // has already gone.
+    if (!title || this.closed) return
+    this.patchMeta({ title })
+    this.pendingTitle = title
+  }
+
+  /** Write the auto-title through to disk, so History inherits it too. */
+  private persistTitle(): void {
+    const title = this.pendingTitle
+    const sdkId = this.meta.sdkSessionId
+    if (!title || !sdkId) return
+    this.pendingTitle = null
+    // renameSession sets `customTitle`, which listSessions prefers over the
+    // summary — so the good name shows up in the History rail as well.
+    void renameSession(sdkId, title).catch((e) => console.warn('[title] rename failed:', e))
   }
 
   // ---------------------------------------------------- time travel + actions
@@ -769,7 +875,8 @@ export class Session {
     this.closed = true
     cancelPending(this.meta.id)
     cancelPendingElicitations(this.meta.id)
-    clearSnapshots(this.meta.id)
+    // Nothing to clear for diffs — they're read from git on demand, and the
+    // session leaves the renderer's store entirely via evtRemoved.
     this.queue.end()
     try {
       this.q?.close()

@@ -346,6 +346,8 @@ select {
   overflow-wrap: anywhere;
 }
 
+/* Past-session rows in the History list have no live state, so they keep the
+   plain dot. Live sessions get `.activity` below. */
 .dot {
   width: 7px;
   height: 7px;
@@ -353,20 +355,53 @@ select {
   flex: 0 0 auto;
   background: rgb(var(--text-faint));
 }
-.dot[data-status='running'] {
-  background: rgb(var(--accent));
+
+/* Per-activity glyph. One icon that says WHICH kind of busy — with three
+   sessions open, a single blinking dot could not distinguish "waiting on you"
+   from "grinding" from "background job still going". */
+.activity {
+  display: flex;
+  flex: 0 0 auto;
+  color: rgb(var(--text-faint));
+}
+.activity[data-activity='working'] {
+  color: rgb(var(--accent));
+}
+.activity[data-activity='working'] svg {
+  animation: spin 1s linear infinite;
+}
+.activity[data-activity='planning'] {
+  color: rgb(var(--accent));
+  animation: pulse 1.8s ease-in-out infinite;
+}
+/* Slower and dimmer than `working`: it is real work, but not the turn the user
+   is blocked on. */
+.activity[data-activity='background'] {
+  color: rgb(var(--text-dim));
+}
+.activity[data-activity='background'] svg {
+  animation: spin 3s linear infinite;
+}
+.activity[data-activity='awaiting'] {
+  color: rgb(var(--warn));
   animation: pulse 1.4s ease-in-out infinite;
 }
-.dot[data-status='awaiting-approval'] {
-  background: rgb(var(--warn));
-  animation: pulse 1.4s ease-in-out infinite;
+.activity[data-activity='starting'] svg {
+  animation: spin 2s linear infinite;
 }
-.dot[data-status='error'] {
-  background: rgb(var(--danger));
+.activity[data-activity='error'] {
+  color: rgb(var(--danger));
 }
-.dot[data-status='starting'] {
-  background: rgb(var(--text-faint));
-  animation: pulse 1.4s ease-in-out infinite;
+/* Idle is deliberately a small static dot rather than nothing: an empty gutter
+   would let the titles of idle and active sessions sit at different indents. */
+.activity[data-activity='idle'] {
+  opacity: 0.5;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @keyframes pulse {
@@ -451,13 +486,16 @@ select {
 
 .msg-user {
   align-self: flex-end;
+  /* Anchors .msg-actions, which hangs below the bubble rather than inside it. */
+  position: relative;
   max-width: 78%;
   background: rgb(var(--accent) / 0.9);
   color: rgb(var(--accent-fg));
   padding: 9px 13px;
   border-radius: var(--r-lg);
   border-bottom-right-radius: var(--r-sm);
-  white-space: pre-wrap;
+  /* No `white-space: pre-wrap`: this renders markdown now, and preserving the
+     source newlines on top of real block elements double-spaces every paragraph. */
   overflow-wrap: anywhere;
 }
 
@@ -465,9 +503,47 @@ select {
    markdown renderer emits real block elements, and preserving the source
    newlines on top of them double-spaces every paragraph. */
 .msg-assistant {
+  display: flex;
+  gap: 9px;
   max-width: 92%;
   overflow-wrap: anywhere;
   line-height: 1.62;
+}
+/* Reserved on every assistant block, filled only on the one that opens a turn,
+   so the text column stays on one left edge all the way down. */
+.msg-avatar {
+  flex: 0 0 16px;
+  display: flex;
+  justify-content: center;
+  padding-top: 4px;
+  color: rgb(var(--accent));
+}
+.msg-body {
+  min-width: 0;
+  flex: 1;
+}
+
+/* Markdown inside a bubble must not add outer margins — the bubble's padding is
+   the spacing. And on the accent fill the default code chip and rule colours
+   vanish, so they get re-tinted against the foreground instead. */
+.msg-user .md > *:first-child,
+.msg-assistant .md > *:first-child {
+  margin-top: 0;
+}
+.msg-user .md > *:last-child,
+.msg-assistant .md > *:last-child {
+  margin-bottom: 0;
+}
+.msg-user .md :not(pre) > code {
+  background: rgb(var(--accent-fg) / 0.18);
+  color: inherit;
+}
+.msg-user .md pre {
+  background: rgb(var(--accent-fg) / 0.14);
+}
+.msg-user .md a {
+  color: inherit;
+  text-decoration: underline;
 }
 
 .msg-thinking {
@@ -528,11 +604,67 @@ select {
   }
 }
 
+/* Only failures reach this now — a successful turn says nothing, and the cost
+   lives under the composer instead. */
 .msg-result {
   align-self: center;
   font-size: 11px;
   color: rgb(var(--text-faint));
   font-variant-numeric: tabular-nums;
+}
+.msg-result[data-error] {
+  color: rgb(var(--danger));
+}
+
+/* A run of consecutive tool calls, folded to one row. Flat and quiet: it is a
+   log of what happened, and it must not compete with the conversation. */
+/* A tool the USER took part in: AskUserQuestion, ExitPlanMode. Not a card —
+   the live prompt was a QuestionCard or PlanCard, and this is the one-line
+   record left behind so a resumed conversation still shows what was chosen. */
+.record {
+  border: 1px solid rgb(var(--border));
+  border-left: 2px solid rgb(var(--accent));
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: rgb(var(--surface-2) / 0.35);
+}
+.record[data-error] {
+  border-left-color: rgb(var(--danger));
+}
+.record-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 11px;
+  font-size: 12px;
+  color: rgb(var(--text-dim));
+  text-align: left;
+}
+.record-head[data-static] {
+  cursor: default;
+}
+.record-head > svg {
+  flex: 0 0 auto;
+  color: rgb(var(--accent));
+}
+.record[data-error] .record-head > svg {
+  color: rgb(var(--danger));
+}
+.record-tag {
+  flex: 0 0 auto;
+  font-weight: 600;
+  font-size: 11px;
+  letter-spacing: 0.03em;
+  color: rgb(var(--text));
+}
+.record-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: rgb(var(--text-dim));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .tool {
@@ -545,14 +677,20 @@ select {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 7px 11px;
+  padding: 6px 11px;
   width: 100%;
   font-size: 12px;
+}
+/* Most cards no longer expand — there is nothing behind them since the raw JSON
+   went away — so they render as a div and must not look clickable. */
+.tool-head[data-static] {
+  cursor: default;
 }
 .tool-name {
   font-weight: 600;
   font-family: var(--mono);
   font-size: 11.5px;
+  white-space: nowrap;
 }
 .tool-arg {
   color: rgb(var(--text-faint));
@@ -657,23 +795,87 @@ select {
   gap: 9px;
 }
 
-.composer textarea {
+/* The box is a CodeMirror editor now, not a textarea. Same geometry on purpose —
+   padding, min/max height and border all carried over so it doesn't visually
+   move — but the growth is CodeMirror's own rather than the old JS scrollHeight
+   dance. */
+.composer-editor {
   width: 100%;
-  resize: none;
   background: rgb(var(--surface-2) / 0.6);
   border: 1px solid rgb(var(--border-strong));
   border-radius: var(--r-md);
-  padding: 10px 12px;
-  min-height: 62px;
-  max-height: 220px;
-  outline: none;
-  font-family: var(--font);
+  overflow: hidden;
 }
-.composer textarea:focus {
+.composer-editor:focus-within {
   border-color: rgb(var(--accent) / 0.7);
 }
-.composer textarea::placeholder {
+.composer-editor .cm-editor {
+  background: transparent;
+  font-family: var(--font);
+  font-size: 13px;
+}
+/* CodeMirror paints its own focus ring on .cm-focused; the wrapper above owns
+   that, so this one has to go or they double up. */
+.composer-editor .cm-editor.cm-focused {
+  outline: none;
+}
+.composer-editor .cm-scroller {
+  font-family: inherit;
+  line-height: 1.5;
+  min-height: 60px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+.composer-editor .cm-content {
+  padding: 10px 12px;
+  caret-color: rgb(var(--accent));
+}
+.composer-editor .cm-line {
+  padding: 0;
+}
+.composer-editor .cm-placeholder {
   color: rgb(var(--text-faint));
+}
+.composer-editor .cm-selectionBackground,
+.composer-editor .cm-editor ::selection {
+  background: rgb(var(--accent) / 0.28) !important;
+}
+.composer-editor .cm-cursor {
+  border-left-color: rgb(var(--accent));
+}
+
+/* Live markdown. Sizes track .md in the transcript, so what you type and what
+   comes back read as one system. */
+.cm-md-strong {
+  font-weight: 650;
+}
+.cm-md-em {
+  font-style: italic;
+}
+.cm-md-strike {
+  text-decoration: line-through;
+  color: rgb(var(--text-dim));
+}
+.cm-md-code {
+  font-family: var(--mono);
+  font-size: 0.88em;
+  background: rgb(var(--surface-3) / 0.75);
+  border-radius: var(--r-sm);
+  padding: 0.12em 0.36em;
+}
+.cm-md-h1 {
+  font-size: 1.18em;
+  font-weight: 650;
+}
+.cm-md-h2 {
+  font-size: 1.08em;
+  font-weight: 650;
+}
+.cm-md-h3,
+.cm-md-h4,
+.cm-md-h5,
+.cm-md-h6 {
+  font-weight: 650;
 }
 
 .composer-row {
@@ -683,12 +885,47 @@ select {
   row-gap: 6px;
   flex-wrap: wrap;
 }
+
+/* Worktree opt-in, live only on an untouched tab, and its read-only counterpart
+   once the session actually is in one. */
+.wt-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  flex: 0 0 auto;
+  font-size: 11.5px;
+  color: rgb(var(--text-dim));
+  cursor: pointer;
+  user-select: none;
+}
+.wt-toggle input {
+  accent-color: rgb(var(--accent));
+  margin: 0;
+}
+.wt-toggle[data-off] {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.wt-chip {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 11.5px;
+  color: rgb(var(--accent));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 /* Three selects plus Background/Stop/Send overflow a half-width pane, and the
    wrap dropped the buttons onto their own line. Letting the selects shrink
-   keeps the row intact; each still shows enough of its label to identify it. */
-.composer-row .select {
+   keeps the row intact; each still shows enough of its label to identify it.
+   The flex item is `.ctl`, not the select — the select is inside it now, and
+   the floor accounts for the 24px the glyph takes out of the left padding. */
+.composer-row .ctl {
   flex: 0 1 auto;
-  min-width: 66px;
+  min-width: 88px;
 }
 /* The cost readout is the one thing worth dropping first — it also lives in
    the Session panel. */
@@ -711,8 +948,118 @@ select {
   max-width: 190px;
 }
 
+/* A labelled control: a glyph that says what the dropdown is for, overlaid on
+   the select's left padding. A native <select> can't contain an icon, so the
+   glyph is a sibling and the select is padded to clear it. Pointer events off
+   so clicking the glyph still opens the menu. */
+.ctl {
+  position: relative;
+  display: flex;
+  align-items: center;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.ctl > svg {
+  position: absolute;
+  left: 7px;
+  pointer-events: none;
+  color: rgb(var(--text-faint));
+}
+.ctl > .select {
+  padding-left: 24px;
+  width: 100%;
+}
+.ctl:hover > svg {
+  color: rgb(var(--text-dim));
+}
+
 .spacer {
   flex: 1;
+}
+
+/* ----------------------------------------------------------------- tooltips
+   Two pseudo-elements on the control itself, no component and no JS. Native
+   `title` is what this replaces: on macOS it waits about 1.5s and then paints
+   unstyled OS chrome over a glass window.
+
+   `aria-label` is deliberately NOT replaced anywhere — this is decoration, the
+   label is the accessible name. Where a control also discloses something long
+   (a cwd, a full path), the native `title` stays on alongside; the two don't
+   conflict.
+
+   Hotkeys live in the same string after two spaces ('Diff  ⌘1'), which is what
+   the existing titles already did. `pre-wrap` is what keeps that gap visible.
+   ponytail: one bubble, so the hotkey can't be a separately-styled chip —
+   that needs a real component. Add one if a tooltip ever needs more than text. */
+[data-tip] {
+  position: relative;
+}
+[data-tip]::after,
+[data-tip]::before {
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s ease;
+}
+[data-tip]::after {
+  content: attr(data-tip);
+  position: absolute;
+  z-index: 70; /* over .ac (30); scrims at 50/60 sit above their own trigger */
+  bottom: calc(100% + 7px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: max-content;
+  max-width: 240px;
+  padding: 5px 8px;
+  border: 1px solid rgb(var(--border-strong));
+  border-radius: var(--r-sm);
+  background: rgb(var(--surface-2));
+  box-shadow: 0 6px 18px rgb(0 0 0 / 0.3);
+  color: rgb(var(--text));
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 1.4;
+  text-align: left;
+  text-transform: none;
+  letter-spacing: normal;
+  white-space: pre-wrap;
+}
+[data-tip]::before {
+  content: '';
+  position: absolute;
+  z-index: 71;
+  bottom: calc(100% + 2px);
+  left: 50%;
+  transform: translateX(-50%);
+  border: 5px solid transparent;
+  border-top-color: rgb(var(--border-strong));
+}
+[data-tip]:hover::after,
+[data-tip]:hover::before,
+[data-tip]:focus-visible::after,
+[data-tip]:focus-visible::before {
+  opacity: 1;
+}
+/* Controls in the top toolbar: above would leave the pane. */
+[data-tip-below]::after {
+  bottom: auto;
+  top: calc(100% + 7px);
+}
+[data-tip-below]::before {
+  bottom: auto;
+  top: calc(100% + 2px);
+  border-top-color: transparent;
+  border-bottom-color: rgb(var(--border-strong));
+}
+/* The rail is ~210px wide and `.pane` clips overflow, so a bubble centred on a
+   footer button loses its ends. Anchor these to the control's near edge. */
+[data-tip-start]::after {
+  left: 0;
+  transform: none;
+}
+[data-tip-end]::after {
+  left: auto;
+  right: 0;
+  transform: none;
 }
 
 .cost {
@@ -912,6 +1259,29 @@ select {
   padding-right: 16px;
 }
 
+/* A row git calls dirty but that has no readable line diff: binary, or too
+   large. It still commits and still reverts, so it has to be visible. */
+.diff-note {
+  padding: 7px 12px;
+  font-size: 11px;
+  font-style: italic;
+  color: rgb(var(--text-faint));
+}
+
+/* Inline diffs on a tool card render fragments, not files, so they carry no
+   line numbers — and without that gutter they need their own left padding. */
+.diff-body[data-bare] {
+  padding: 4px 0;
+}
+.diff-body[data-bare] .diff-sign {
+  flex: 0 0 18px;
+}
+.diff-more {
+  padding: 3px 12px;
+  font-size: 10.5px;
+  color: rgb(var(--text-faint));
+}
+
 /* ---------------------------------------------------------------- terminal */
 
 .term-host {
@@ -940,6 +1310,33 @@ select {
   color: rgb(var(--text-faint));
   text-align: center;
   padding: 24px;
+}
+/* Labelled chips rather than a ` · `-joined line — a repo name, a branch slug
+   and a permission mode read as one broken string when run together. */
+.empty-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 6px;
+}
+.empty-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 240px;
+  padding: 3px 8px;
+  border: 1px solid rgb(var(--border));
+  border-radius: 99px;
+  background: rgb(var(--surface-2) / 0.5);
+  font-size: 11px;
+  color: rgb(var(--text-dim));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.empty-chip svg {
+  flex: 0 0 auto;
+  color: rgb(var(--text-faint));
 }
 .empty h2 {
   font-size: 15px;
@@ -974,6 +1371,56 @@ select {
 .settings-body input[type='range'] {
   width: 100%;
   accent-color: rgb(var(--accent));
+}
+.settings-body .select {
+  width: 100%;
+  max-width: none;
+  padding: 6px 8px;
+}
+/* Section rule, so "what a new session starts with" reads as a different kind
+   of setting from the appearance sliders below it. */
+.settings-sect {
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgb(var(--text-faint));
+  padding-bottom: 2px;
+  border-bottom: 1px solid rgb(var(--border));
+}
+.settings-sect:not(:first-child) {
+  margin-top: 6px;
+}
+.settings-lbl {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+/* Why a setting exists, under the control. Several of these are decisions with
+   a real cost or a real consequence, and a bare label can't say which. */
+.settings-hint {
+  font-size: 10px;
+  line-height: 1.45;
+  color: rgb(var(--text-faint));
+}
+/* A checkbox reads left-to-right, so its label sits beside the box rather than
+   above it like the selects — hence the grid instead of the column flex. */
+.settings-check {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 4px 7px;
+  cursor: pointer;
+}
+.settings-check input {
+  accent-color: rgb(var(--accent));
+  margin: 0;
+}
+.settings-check .settings-hint {
+  grid-column: 2;
+}
+.settings-body label:has(> .select:disabled) {
+  opacity: 0.45;
 }
 
 /* ─────────────────────────────────────────────────────── markdown */
@@ -1721,6 +2168,8 @@ select {
   align-items: baseline;
   gap: 6px;
 }
+/* A button now, not a label: it toggles between this project and every
+   project. Underlined on hover so it reads as clickable at 10px. */
 .rail-scope {
   margin-left: auto;
   text-transform: none;
@@ -1732,6 +2181,88 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
   max-width: 55%;
+}
+.rail-scope:hover:not(:disabled) {
+  color: rgb(var(--accent));
+  text-decoration: underline;
+}
+.rail-scope:disabled {
+  cursor: default;
+}
+
+/* -------------------------------------------------------- project chooser */
+
+/* `.empty` is already flex-column-centred; this adds the list and its width. */
+.chooser {
+  gap: 10px;
+}
+.chooser-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 420px;
+  padding: 6px 10px;
+  border: 1px solid rgb(var(--border-strong));
+  border-radius: var(--r-sm);
+  background: rgb(var(--surface-2) / 0.6);
+  color: rgb(var(--text-faint));
+}
+.chooser-search input {
+  flex: 1;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: rgb(var(--text));
+  font-size: 12px;
+}
+.chooser-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  width: 100%;
+  max-width: 420px;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+.chooser-row {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 9px;
+  border-radius: var(--r-sm);
+  text-align: left;
+  color: rgb(var(--text-dim));
+}
+.chooser-row:hover {
+  background: rgb(var(--surface-3) / 0.6);
+  color: rgb(var(--text));
+}
+.chooser-row > svg {
+  flex: 0 0 auto;
+  align-self: center;
+  color: rgb(var(--text-faint));
+}
+.chooser-name {
+  flex: 0 0 auto;
+  font-weight: 600;
+  font-size: 12px;
+}
+/* RTL keeps the tail of a long path visible — that is the part that tells two
+   checkouts of the same repo apart. */
+.chooser-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  direction: rtl;
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: rgb(var(--text-faint));
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 /* ────────────────────────────────────────── time travel + actions */
@@ -1762,11 +2293,52 @@ select {
   gap: 6px;
   margin-bottom: 7px;
 }
+/* A background task is a live feed, not a badge: description, then the rolling
+   AI progress summary, then its token spend. Full width so the summary has
+   somewhere to go — these are the only thing on their row. */
+.bg-task {
+  flex: 1 1 100%;
+  min-width: 0;
+}
+.bg-spin {
+  flex: 0 0 auto;
+  color: rgb(var(--accent));
+  animation: spin 3s linear infinite;
+}
+.bg-desc {
+  flex: 0 0 auto;
+  font-weight: 600;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bg-progress {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: rgb(var(--text-faint));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.bg-tok {
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--text-faint));
+}
 
+/* Absolutely positioned, NOT just faded: .branch-btn is display:block with
+   opacity:0, so in flow it still reserved a line of height under every single
+   user bubble — which read as a stray newline on every message you sent. Taking
+   it out of flow is the fix; a max-height transition instead would make the
+   bubble jump on hover. */
 .msg-actions {
+  position: absolute;
+  top: 100%;
+  right: 2px;
   display: flex;
   gap: 10px;
-  margin-top: 2px;
+  margin-top: 1px;
 }
 
 .mcp-acts {

@@ -3,7 +3,49 @@
  * checked under bare node — no React import here, and the ChatItem import is
  * type-only, so nothing needs resolving at runtime.
  */
-import type { ChatItem } from '../../shared/types'
+import type { ChatItem, SessionMeta } from '../../shared/types'
+
+// ---------------------------------------------------------------- activity
+
+/**
+ * What a session is actually doing, for the rail's icon.
+ *
+ * Richer than `SessionStatus` in exactly two places, both of which the raw
+ * status gets wrong:
+ *
+ *  - **`background`.** A session whose turn has ended but which still has live
+ *    background tasks reports `idle`. It is not idle — it is waiting on work
+ *    the user cannot otherwise see. So a non-empty `backgroundTasks` outranks
+ *    `idle` and `starting`.
+ *  - **`planning`.** Free, because `permissionMode` is already on SessionMeta
+ *    and is already patched when a plan is approved (the mode change rides out
+ *    on the permission result). So this flips to `working` the moment the plan
+ *    is accepted, with no extra plumbing.
+ *
+ * An in-flight turn still outranks background work: the foreground is what the
+ * user is waiting on.
+ */
+export type Activity =
+  | 'idle'
+  | 'starting'
+  | 'planning'
+  | 'working'
+  | 'background'
+  | 'awaiting'
+  | 'error'
+
+export function activityOf(
+  s: Pick<SessionMeta, 'status' | 'permissionMode' | 'backgroundTasks'>,
+): Activity {
+  if (s.status === 'error') return 'error'
+  if (s.status === 'awaiting-approval') return 'awaiting'
+  if (s.status === 'running') return s.permissionMode === 'plan' ? 'planning' : 'working'
+  // Below here the turn is over, so background work is the most specific thing
+  // left to say — including while the session is still starting up.
+  if (s.backgroundTasks.length > 0) return 'background'
+  if (s.status === 'starting') return 'starting'
+  return 'idle'
+}
 
 // ------------------------------------------------------------------- todos
 
@@ -294,6 +336,51 @@ export function askQuestions(toolName: string, input: unknown): AskQuestion[] | 
  */
 export const ANSWER_PREFIX = 'The user answered:'
 
+/**
+ * What was asked and what was picked, read back off a settled tool card.
+ *
+ * The transcript no longer renders AskUserQuestion as a tool card — a card
+ * saying "AskUserQuestion" over raw JSON is the least useful possible rendering
+ * of the one call the user actually participated in. It becomes a one-line
+ * record instead, and this is what fills it.
+ *
+ * Answers ride out on the deny channel as `${ANSWER_PREFIX}\n<q> → <a>` lines
+ * (see QuestionCard.submit), in question order. Matching is positional rather
+ * than by question text: a question containing ' → ' would otherwise split
+ * wrong, and the two lists are generated from the same array.
+ *
+ * Returns null when this isn't an answerable question set, so the caller falls
+ * back to an ordinary tool card rather than rendering an empty row.
+ */
+export interface AnsweredQuestion {
+  header: string
+  question: string
+  /** '' while the prompt is still open, or when it was skipped. */
+  answer: string
+}
+
+export function answeredQuestions(
+  input: unknown,
+  result: string | undefined,
+): AnsweredQuestion[] | null {
+  const questions = askQuestions('AskUserQuestion', input)
+  if (!questions) return null
+
+  const answers = (result ?? '').startsWith(ANSWER_PREFIX)
+    ? result!.slice(ANSWER_PREFIX.length).split('\n').filter((l) => l.trim())
+    : []
+
+  return questions.map((q, i) => {
+    const line = answers[i] ?? ''
+    const at = line.lastIndexOf(' → ')
+    return {
+      header: q.header || q.question,
+      question: q.question,
+      answer: at === -1 ? '' : line.slice(at + ' → '.length).trim(),
+    }
+  })
+}
+
 // ----------------------------------------------------------- ExitPlanMode
 
 export interface PlanProposal {
@@ -379,6 +466,191 @@ export function triggerAt(text: string, caret: number): Trigger | null {
     if (ch === '/' && i === 0) return { kind: 'command', query: before.slice(1), start: 0 }
   }
   return null
+}
+
+// --------------------------------------------------------------- tool names
+
+/** `get_file_content` / `query-docs` -> `Get File Content` / `Query Docs`. */
+function titleCase(segment: string): string {
+  return segment
+    .split(/[_-]+/)
+    .filter(Boolean)
+    .map((w) => w[0].toUpperCase() + w.slice(1))
+    .join(' ')
+}
+
+/**
+ * How a tool call should appear in the transcript.
+ *
+ * Only tools whose default rendering is actively wrong are listed. Built-ins
+ * that already read correctly — `Read`, `Bash`, `Edit`, `Write`, `Grep` — are
+ * deliberately absent: inventing a transform for those would only find new ways
+ * to be wrong.
+ *
+ *  - `'hidden'` — the call produces no transcript row, because something else
+ *    already renders its content. TaskCreate/TaskUpdate are the whole of this:
+ *    they are checklist *events*, and TodoStrip folds them into the live
+ *    checklist. A row per event says nothing the strip doesn't say better.
+ *  - `'record'` — the call is a conversation with the user, not a mechanical
+ *    step. The live prompt is a QuestionCard or PlanCard; what stays in the
+ *    transcript is a one-line record of what was asked and what was chosen.
+ */
+export type ToolRender = 'hidden' | 'record'
+
+interface ToolDisplay {
+  label?: string
+  render?: ToolRender
+}
+
+const TOOL_DISPLAY: Record<string, ToolDisplay> = {
+  // Checklist events — TodoStrip renders the fold of these.
+  TaskCreate: { render: 'hidden' },
+  TaskUpdate: { render: 'hidden' },
+  // Asked the user something. QuestionCard/PlanCard own the live prompt.
+  AskUserQuestion: { label: 'Asked', render: 'record' },
+  ExitPlanMode: { label: 'Plan', render: 'record' },
+  // Read correctly enough as verbs, badly as bare CamelCase nouns.
+  EnterPlanMode: { label: 'Entered plan mode' },
+  ToolSearch: { label: 'Loaded tools' },
+  TaskGet: { label: 'Checked task' },
+  TaskList: { label: 'Listed tasks' },
+  TaskOutput: { label: 'Read task output' },
+  TaskStop: { label: 'Stopped task' },
+  // WebFetch/WebSearch/Read/Bash are deliberately absent — they already read
+  // correctly, and relabelling them is the invented transform this file warns
+  // against. The existing toolLabel checks pin that.
+}
+
+/** How this tool should render, or undefined for an ordinary tool card. */
+export function toolRender(name: string): ToolRender | undefined {
+  return TOOL_DISPLAY[name]?.render
+}
+
+/**
+ * A tool name fit to read.
+ *
+ * Three cases, in order: a registry entry wins; then MCP wire names, where
+ * `mcp__jcodemunch__get_file_content` becomes `MCP jcodemunch Get File Content`;
+ * then everything else verbatim.
+ *
+ * MCP wire names encode server and tool with a double underscore between them,
+ * while the tool's own words are separated by single underscores (or hyphens) —
+ * so splitting on `__` first is what keeps `query-docs` from being mistaken for
+ * a server boundary. The server segment is left verbatim: it's a name the user
+ * chose in their MCP config, and title-casing it would misrepresent it.
+ */
+export function toolLabel(name: string): string {
+  const known = TOOL_DISPLAY[name]?.label
+  if (known) return known
+  if (!name.startsWith('mcp__')) return name
+  const [, server, ...rest] = name.split('__')
+  if (!server) return name
+  const tool = rest.join('__')
+  return ['MCP', server, tool && titleCase(tool)].filter(Boolean).join(' ')
+}
+
+// ------------------------------------------------------------ transcript shape
+
+export interface Row {
+  item: ChatItem
+  /** First assistant block of a turn — the one that gets the avatar. */
+  leadsTurn: boolean
+}
+
+/**
+ * The transcript, one row per item, with the assistant message that opens a
+ * turn flagged.
+ *
+ * This used to also fold consecutive tool calls into a collapsible "N steps"
+ * run. That is gone on purpose: the agent moves fast enough that a run is
+ * usually still open and re-folding under you, and a folded run hides exactly
+ * the thing you are watching for. Individual cards are already one line each.
+ *
+ * `leadsTurn` stays, and is unrelated: streaming emits several assistant items
+ * per turn, so putting an avatar on each one stutters down the page instead of
+ * marking who is speaking.
+ *
+ * Hidden tools (TodoStrip's checklist events) are dropped here rather than
+ * upstream, because `latestTodos` folds the very same items out of the store to
+ * build that strip — filtering them earlier would empty it.
+ */
+export function transcriptRows(roots: readonly ChatItem[]): Row[] {
+  const out: Row[] = []
+  let prevKind: string | null = null
+
+  for (const item of roots) {
+    if (item.kind === 'tool' && toolRender(item.name) === 'hidden') continue
+    out.push({
+      item,
+      leadsTurn: item.kind === 'assistant' && prevKind !== 'assistant',
+    })
+    prevKind = item.kind
+  }
+  return out
+}
+
+// ------------------------------------------------------------ working verbs
+
+/**
+ * Rotating status verbs. Purely for fun — the spinner already says everything
+ * functional. Kept here rather than in the component so the list is data, and
+ * so the picker can be checked.
+ */
+export const WORKING_VERBS: readonly string[] = [
+  // genz
+  'Looksmaxing',
+  'Mogging',
+  'Locking in',
+  'Aura farming',
+  'Cooking',
+  'Manifesting',
+  'Rizzing up the compiler',
+  'Touching grass',
+  'Delulu-ing',
+  'Glazing',
+  'Ratioing',
+  'Yeeting',
+  'Sigma grinding',
+  'Understanding the assignment',
+  // dev
+  'Yak shaving',
+  'Bikeshedding',
+  'Rubber ducking',
+  'Bisecting',
+  'Force pushing',
+  'Cache invalidating',
+  'Off-by-one-ing',
+  'Monkey patching',
+  'Tree shaking',
+  'Vendoring',
+  'Stashing',
+  'Naming things',
+  'Reticulating splines',
+  // corporate
+  'Circling back',
+  'Putting a pin in it',
+  'Boiling the ocean',
+  'Moving the needle',
+  'Double-clicking on it',
+  'Taking it offline',
+  'Peeling the onion',
+  'Eating the frog',
+  'Running it up the flagpole',
+  'Herding cats',
+  'Socializing the deck',
+  'Drinking from the firehose',
+  'Parking-lotting it',
+  'Leveraging synergies',
+]
+
+/**
+ * Verb for a given session and tick. Offset by the session id so two sessions
+ * running at once don't chant in unison, which looks like a rendering bug.
+ */
+export function workingVerb(sessionId: string, tick: number): string {
+  let seed = 0
+  for (const ch of sessionId) seed = (seed + ch.charCodeAt(0)) % WORKING_VERBS.length
+  return WORKING_VERBS[(seed + tick) % WORKING_VERBS.length]
 }
 
 // ----------------------------------------------------------------- palette

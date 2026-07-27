@@ -1,9 +1,19 @@
-import { useCallback, useEffect, useState } from 'react'
-import { ClipboardCheck, GitCommitHorizontal, Undo2 } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { GitCommitHorizontal, Undo2 } from 'lucide-react'
 import type { FileDiff, SessionMeta } from '../../../shared/types'
 import { useStore } from '../store'
+import DiffLines from './DiffLines'
 
-export default function DiffPanel({ session }: { session: SessionMeta }): React.JSX.Element {
+/** How often to re-read git while the panel is on screen. */
+const POLL_MS = 4000
+
+export default function DiffPanel({
+  session,
+  visible,
+}: {
+  session: SessionMeta
+  visible: boolean
+}): React.JSX.Element {
   const [diffs, setDiffs] = useState<FileDiff[]>([])
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({})
   // Paths explicitly UNticked. Tracking exclusions rather than inclusions means
@@ -16,13 +26,48 @@ export default function DiffPanel({ session }: { session: SessionMeta }): React.
   const bump = useStore((s) => s.diffCounts[session.id] ?? 0)
   const status = session.status
 
-  const refresh = useCallback(() => {
-    void window.foreman.listDiffs(session.id, session.cwd).then(setDiffs)
-  }, [session.id, session.cwd])
+  const refresh = useCallback(
+    () => window.foreman.listDiffs(session.id, session.cwd).then(setDiffs),
+    [session.id, session.cwd],
+  )
 
-  // Re-read on new snapshots and whenever a turn settles — the agent may have
-  // written several times to a file we already had a baseline for.
-  useEffect(refresh, [refresh, bump, status])
+  // Nothing here is deliberately NOT gated on `visible`: this component is
+  // mounted for the life of a session, so these are also what keep the badge
+  // honest before the panel is ever opened.
+
+  // The agent's PostToolUse hook bumps the count; a settled turn is the other
+  // moment the tree is most likely to have changed.
+  useEffect(() => {
+    void refresh()
+  }, [refresh, bump, status])
+
+  // Committed or edited from an external shell — no hook, no event, so the
+  // return to the window is the signal.
+  useEffect(() => {
+    const onFocus = (): void => void refresh()
+    window.addEventListener('focus', onFocus)
+    return () => window.removeEventListener('focus', onFocus)
+  }, [refresh])
+
+  // The embedded terminal changes files without a focus event or a hook, so the
+  // open panel polls. Self-chaining rather than setInterval, so a slow refresh
+  // on a large working set can't stack requests on top of itself.
+  // ponytail: 4s poll while open. Watch <root>/.git/index if it ever drags.
+  const timer = useRef<number>(0)
+  useEffect(() => {
+    if (!visible) return
+    let live = true
+    const tick = (): void => {
+      void refresh().finally(() => {
+        if (live) timer.current = window.setTimeout(tick, POLL_MS)
+      })
+    }
+    timer.current = window.setTimeout(tick, POLL_MS)
+    return () => {
+      live = false
+      window.clearTimeout(timer.current)
+    }
+  }, [visible, refresh])
 
   const picked = diffs.filter((d) => !excluded[d.path])
 
@@ -42,14 +87,14 @@ export default function DiffPanel({ session }: { session: SessionMeta }): React.
     }
     setMessage('')
     setExcluded({})
-    refresh()
+    void refresh()
   }
 
   if (diffs.length === 0) {
     return (
       <div className="empty">
-        <h2>No changes yet</h2>
-        <p>Edits the agent makes will show up here.</p>
+        <h2>Nothing to commit</h2>
+        <p>This panel mirrors `git status` — it&rsquo;s empty because your tree is clean.</p>
       </div>
     )
   }
@@ -70,17 +115,9 @@ export default function DiffPanel({ session }: { session: SessionMeta }): React.
           <span className="a">+{totalAdd}</span> <span className="d">−{totalDel}</span>
         </span>
         <span className="spacer" />
-        <button
-          className="btn"
-          style={{ padding: '3px 8px' }}
-          onClick={() => {
-            void window.foreman.clearDiffs(session.id).then(refresh)
-          }}
-          title="Forget these changes without touching the files"
-        >
-          <ClipboardCheck size={14} />
-          Mark reviewed
-        </button>
+        {/* "Mark reviewed" used to live here. It meant "forget these snapshots",
+            which no longer exists as a concept — the next refresh reads git and
+            brings everything straight back. Commit or revert are the real verbs. */}
       </div>
 
       <div className="commit-bar">
@@ -105,11 +142,12 @@ export default function DiffPanel({ session }: { session: SessionMeta }): React.
           data-variant="accent"
           disabled={committing || !message.trim() || picked.length === 0}
           onClick={() => void commit()}
-          title={
+          data-tip={
             session.worktree
-              ? `Commit to ${session.worktree.branch}`
+              ? `Commit the ticked files to ${session.worktree.branch}`
               : 'Commit the ticked files'
           }
+          data-tip-end=""
         >
           <GitCommitHorizontal size={14} />
           {committing ? 'Committing…' : 'Commit'}
@@ -125,7 +163,8 @@ export default function DiffPanel({ session }: { session: SessionMeta }): React.
                 type="checkbox"
                 className="diff-pick"
                 checked={!excluded[d.path]}
-                title="Include in the next commit"
+                data-tip="Include in the next commit"
+                data-tip-start=""
                 onChange={(e) =>
                   setExcluded((x) => ({ ...x, [d.path]: !e.target.checked }))
                 }
@@ -145,36 +184,29 @@ export default function DiffPanel({ session }: { session: SessionMeta }): React.
                 className="btn"
                 style={{ padding: '2px 7px', fontSize: 11 }}
                 onClick={() => {
-                  void window.foreman.revertFile(session.id, d.path).then(refresh)
+                  void window.foreman.revertFile(session.id, session.cwd, d.path).then(refresh)
                 }}
-                title={d.before === null ? 'Delete this new file' : 'Restore original contents'}
+                // This discards YOUR uncommitted work too, not just the agent's
+                // — the panel mirrors git now. The diff above the button is the
+                // confirmation; there is no second dialog.
+                data-tip={
+                  d.before === null
+                    ? 'Delete this new file'
+                    : 'Discard all uncommitted changes to this file — yours as well as the agent\'s'
+                }
+                data-tip-end=""
               >
                 <Undo2 size={12} />
                 Revert
               </button>
             </div>
 
-            {!collapsed[d.path] && (
-              <div className="diff-body">
-                {d.hunks.map((h, hi) => (
-                  <div key={hi}>
-                    <div className="diff-hunk-head">
-                      @@ −{h.oldStart} +{h.newStart} @@
-                    </div>
-                    {h.lines.map((l, li) => (
-                      <div className="diff-line" data-t={l.type} key={li}>
-                        <span className="diff-no">{l.oldNo ?? ''}</span>
-                        <span className="diff-no">{l.newNo ?? ''}</span>
-                        <span className="diff-sign">
-                          {l.type === 'add' ? '+' : l.type === 'del' ? '−' : ' '}
-                        </span>
-                        <span className="diff-text">{l.text || ' '}</span>
-                      </div>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            )}
+            {!collapsed[d.path] &&
+              (d.note ? (
+                <div className="diff-note">{d.note}</div>
+              ) : (
+                <DiffLines hunks={d.hunks} />
+              ))}
           </div>
         ))}
       </div>

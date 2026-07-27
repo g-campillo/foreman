@@ -41,7 +41,7 @@ export default function CommandPalette({
   const listRef = useRef<HTMLDivElement>(null)
 
   const entries = useMemo<Entry[]>(() => {
-    const { select, newSession, close } = useStore.getState()
+    const { select, newSession, openProject, close, startDraft } = useStore.getState()
     const out: Entry[] = []
 
     for (const s of sessions) {
@@ -56,7 +56,26 @@ export default function CommandPalette({
     }
 
     out.push(
-      { id: 'new', label: 'New session…', hint: '⌘N', group: 'Session', run: () => void newSession() },
+      {
+        id: 'new',
+        label: 'New conversation',
+        hint: '⌘N · this project',
+        group: 'Session',
+        run: () => void newSession(),
+      },
+      {
+        id: 'new-in',
+        label: 'New conversation in another project…',
+        hint: '⇧⌘N',
+        group: 'Session',
+        run: startDraft,
+      },
+      {
+        id: 'open',
+        label: 'Open project…',
+        group: 'Session',
+        run: () => void openProject(),
+      },
       { id: 'settings', label: 'Settings', hint: '⌘,', group: 'View', run: actions.showSettings },
       { id: 'diff', label: 'Show diff', hint: '⌘1', group: 'View', run: () => actions.showPanel('diff') },
       { id: 'term', label: 'Show terminal', hint: '⌘2', group: 'View', run: () => actions.showPanel('terminal') },

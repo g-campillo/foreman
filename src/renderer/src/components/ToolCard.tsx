@@ -1,12 +1,17 @@
-import { Children, useState } from 'react'
+import { Children, useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, Circle, CircleCheck, CircleX } from 'lucide-react'
-import type { ChatItem } from '../../../shared/types'
-import { ANSWER_PREFIX, askQuestions, planProposal, planTitle } from '../derive.mts'
+import type { ChatItem, DiffHunk } from '../../../shared/types'
+import { toHunks } from '../../../shared/diff.mts'
+import { ANSWER_PREFIX, askQuestions, planProposal, planTitle, toolLabel } from '../derive.mts'
 import Markdown from './Markdown'
+import DiffLines from './DiffLines'
 
 type Tool = Extract<ChatItem, { kind: 'tool' }>
 
-/** One-line gist of a tool call, so the card reads without expanding. */
+/** Inline edit diffs are a glance, not a review — the diff panel is the review. */
+const MAX_INLINE_DIFF_LINES = 12
+
+/** One-line gist of a tool call. The card is only ever this one line. */
 export function summarise(name: string, input: unknown): string {
   if (!input || typeof input !== 'object') return ''
   const i = input as Record<string, unknown>
@@ -48,10 +53,41 @@ export function summarise(name: string, input: unknown): string {
       // raw JSON in the gist of the one card the user is being asked to read.
       const questions = askQuestions(name, input)
       if (questions) return questions.map((q) => q.header || q.question).join(' · ')
-      const first = str('file_path') ?? str('path') ?? str('query') ?? str('prompt')
-      return first ?? JSON.stringify(i).slice(0, 120)
+
+      // MCP tools land here. Named fields first, then any short string value —
+      // this used to fall through to 120 characters of raw JSON, which is most
+      // of what made a transcript of MCP calls unreadable.
+      const named =
+        str('file_path') ?? str('path') ?? str('query') ?? str('pattern') ?? str('name')
+      if (named) return named
+      for (const v of Object.values(i)) if (typeof v === 'string' && v.length <= 80) return v
+      return ''
     }
   }
+}
+
+/**
+ * The diff an edit tool is about to make, from its own input.
+ *
+ * Line numbers are deliberately absent downstream: old_string/new_string are
+ * fragments of the file, not the file, so any number here would be invented.
+ * Write has no before-text at all, so it reads as pure additions.
+ */
+function editHunks(name: string, input: unknown): DiffHunk[] | null {
+  if (!input || typeof input !== 'object') return null
+  const i = input as Record<string, unknown>
+  const s = (k: string): string => (typeof i[k] === 'string' ? (i[k] as string) : '')
+  const path = s('file_path')
+
+  if (name === 'Edit') return toHunks(s('old_string'), s('new_string'), path)
+  if (name === 'Write') return toHunks('', s('content'), path)
+  if (name === 'MultiEdit') {
+    const edits = Array.isArray(i.edits) ? (i.edits as Record<string, unknown>[]) : []
+    return edits.flatMap((e) =>
+      toHunks(String(e?.old_string ?? ''), String(e?.new_string ?? ''), path),
+    )
+  }
+  return null
 }
 
 /** Components, not glyphs — rendered as `<Glyph />` below. Colour comes from the
@@ -66,13 +102,18 @@ export default function ToolCard({
   /** A subagent's nested transcript, when this card is a Task that spawned one. */
   children?: React.ReactNode
 }): React.JSX.Element {
-  // null means "not touched yet", which is what lets the default depend on
-  // whether there's a subagent to watch while still honouring a click either way.
-  const [open, setOpen] = useState<boolean | null>(null)
   const nested = Children.count(children) > 0
-  const isOpen = open ?? nested
   const gist = summarise(item.name, item.input)
   const plan = planProposal(item.name, item.input)
+  const hunks = useMemo(() => editHunks(item.name, item.input), [item.name, item.input])
+
+  // Only a card carrying a whole document expands: a subagent's transcript, or
+  // an approved plan whose modal is gone and which lives nowhere else. Ordinary
+  // calls are one line and nothing more — the raw input used to be dumped here
+  // as JSON, and a Task card auto-expanded purely because it had children.
+  const expandable = nested || Boolean(plan)
+  const [open, setOpen] = useState(false)
+
   // An answered question comes back flagged is_error, because the answer had to
   // travel as a permission deny — see ANSWER_PREFIX. It succeeded; don't paint
   // it as a failure. A skipped one has no answer text and stays an error.
@@ -81,47 +122,62 @@ export default function ToolCard({
     : item.status
   const Glyph = ICON[status]
 
+  const head = (
+    <>
+      <span
+        style={{
+          color:
+            status === 'error'
+              ? 'rgb(var(--danger))'
+              : status === 'done'
+                ? 'rgb(var(--ok))'
+                : 'rgb(var(--text-faint))',
+        }}
+      >
+        <Glyph size={12} />
+      </span>
+      <span className="tool-name">{toolLabel(item.name)}</span>
+      {/* The rolling summary is the more useful line once there is one, and it
+          replaces the gist rather than crowding it. */}
+      <span className="tool-arg">{item.progress || gist}</span>
+      {hunks && hunks.length > 0 && (
+        <span className="diff-stat">
+          <span className="a">+{hunks.reduce((n, h) => n + h.lines.filter((l) => l.type === 'add').length, 0)}</span>{' '}
+          <span className="d">−{hunks.reduce((n, h) => n + h.lines.filter((l) => l.type === 'del').length, 0)}</span>
+        </span>
+      )}
+      {expandable && (
+        <span style={{ color: 'rgb(var(--text-faint))' }}>
+          {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+        </span>
+      )}
+    </>
+  )
+
   return (
     <div className="tool" data-nested={nested ? '' : undefined}>
-      <button className="tool-head" onClick={() => setOpen(!isOpen)}>
-        <span
-          style={{
-            color:
-              status === 'error'
-                ? 'rgb(var(--danger))'
-                : status === 'done'
-                  ? 'rgb(var(--ok))'
-                  : 'rgb(var(--text-faint))',
-          }}
-        >
-          <Glyph size={12} />
-        </span>
-        <span className="tool-name">{item.name}</span>
-        {/* The rolling summary is the more useful line once there is one, and it
-            replaces the gist rather than crowding it — the gist is the Task's
-            static description, which the expanded input still shows. */}
-        <span className="tool-arg">{item.progress || gist}</span>
-        <span style={{ color: 'rgb(var(--text-faint))' }}>
-          {isOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        </span>
-      </button>
+      {expandable ? (
+        <button className="tool-head" onClick={() => setOpen(!open)}>
+          {head}
+        </button>
+      ) : (
+        <div className="tool-head" data-static="">
+          {head}
+        </div>
+      )}
 
-      {isOpen && (
+      {/* Not behind the chevron: an edit's diff IS its summary, the way Claude
+          Code shows it, and hiding it behind a click defeats the point. */}
+      {hunks && hunks.length > 0 && (
+        <DiffLines hunks={hunks} numbers={false} maxLines={MAX_INLINE_DIFF_LINES} />
+      )}
+
+      {open && (
         <>
           {nested && <div className="tool-nest">{children}</div>}
-          {/* Once a plan is approved its modal is gone, and this card is the only
-              copy left in the transcript — as markdown, not as a JSON blob. */}
-          {plan ? (
+          {plan && (
             <div className="tool-plan">
               <Markdown text={plan.markdown} />
-            </div>
-          ) : (
-            <div className="tool-out">
-              {JSON.stringify(item.input, null, 2)}
-              {/* A subagent's tool_result is verbatim its last nested message, so
-                  printing it here too doubles the longest thing on screen — and
-                  the raw copy loses the markdown the nested one renders. */}
-              {!nested && item.result ? `\n\n─────\n${item.result}` : ''}
             </div>
           )}
         </>

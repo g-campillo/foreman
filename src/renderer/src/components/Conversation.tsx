@@ -1,5 +1,17 @@
-import { useEffect, useMemo, useRef } from 'react'
-import { GitBranch, HardHat, RotateCcw, Undo2, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import {
+  ChevronDown,
+  ChevronRight,
+  ClipboardList,
+  GitBranch,
+  HardHat,
+  MessageCircleQuestion,
+  RotateCcw,
+  ShieldCheck,
+  Sparkles,
+  Undo2,
+  X,
+} from 'lucide-react'
 import type { ChatItem } from '../../../shared/types'
 import { useStore } from '../store'
 import ToolCard from './ToolCard'
@@ -7,9 +19,22 @@ import ApprovalCard from './ApprovalCard'
 import ElicitationCard from './ElicitationCard'
 import QuestionCard from './QuestionCard'
 import PlanCard from './PlanCard'
-import { askQuestions, planProposal } from '../derive.mts'
+import ClaudeMark from './ClaudeMark'
+import {
+  answeredQuestions,
+  askQuestions,
+  planProposal,
+  planTitle,
+  toolLabel,
+  toolRender,
+  transcriptRows,
+  workingVerb,
+} from '../derive.mts'
 import Markdown from './Markdown'
 import { MODES, bareModel } from './Composer'
+
+/** How long each fun verb stays up. Slow enough to read, quick enough to notice. */
+const VERB_MS = 2500
 
 export default function Conversation({ sessionId }: { sessionId: string }): React.JSX.Element {
   const items = useStore((s) => s.items[sessionId] ?? EMPTY)
@@ -19,6 +44,7 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
   // returns an existing object, not a new one, so its identity is stable.
   const session = useStore((s) => s.sessions.find((x) => x.id === sessionId))
   const status = session?.status
+  const branch = useStore((s) => s.branches[sessionId] ?? null)
   const models = useStore((s) => s.models)
   const allApprovals = useStore((s) => s.approvals)
   const approvals = useMemo(
@@ -45,24 +71,35 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
     return m
   }, [items])
   const roots = useMemo(() => items.filter((it) => !parentOf(it)), [items])
+  // Drops the checklist events TodoStrip renders, and flags the assistant
+  // message that opens a turn. No longer folds tool runs — see transcriptRows.
+  const rows = useMemo(() => transcriptRows(roots), [roots])
 
-  // Free renderer data only, no git IPC: a non-worktree session genuinely has no
-  // branch to report, so the line just omits it. cwd is the *worktree* path for
-  // worktree sessions — a userData directory with a disambiguating suffix — so
-  // repoRoot is what you actually want to name.
+  // cwd is the *worktree* path for worktree sessions — a userData directory with
+  // a disambiguating suffix — so repoRoot is what you actually want to name.
   const root = session?.worktree?.repoRoot ?? session?.cwd ?? ''
-  const context = [
-    root.split('/').filter(Boolean).pop(),
-    session?.worktree?.branch,
-    // null until the first turn lands. The SDK drops the '[1m]' suffix on the
-    // wire, so both sides get stripped before comparing.
-    session?.model &&
-      (models.find((m) => bareModel(m.resolvedModel) === bareModel(session.model))?.displayName ??
-        session.model),
-    MODES.find((m) => m.value === session?.permissionMode)?.label,
-  ]
-    .filter(Boolean)
-    .join(' · ')
+  const project = root.split('/').filter(Boolean).pop() ?? ''
+  // Chips, not a ` · `-joined string. Joined, this rendered as
+  // "foreman · icon-chrome-collapsible-panel · Ask" — a repo, a long branch slug
+  // and a bare mode word with nothing saying which was which.
+  const chips: { icon: React.ReactNode; text: string }[] = [
+    // The live branch, refreshed with the diff panel. worktree.branch is the
+    // fallback only: it's frozen at creation, so it lies after a checkout.
+    { icon: <GitBranch size={11} />, text: branch ?? session?.worktree?.branch ?? '' },
+    {
+      icon: <Sparkles size={11} />,
+      // null until the first turn lands. The SDK drops the '[1m]' suffix on the
+      // wire, so both sides get stripped before comparing.
+      text: session?.model
+        ? (models.find((m) => bareModel(m.resolvedModel) === bareModel(session.model))
+            ?.displayName ?? session.model)
+        : '',
+    },
+    {
+      icon: <ShieldCheck size={11} />,
+      text: MODES.find((m) => m.value === session?.permissionMode)?.label ?? '',
+    },
+  ].filter((c) => c.text)
 
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
@@ -91,12 +128,25 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
       {items.length === 0 && status !== 'starting' && (
         <div className="empty">
           <HardHat size={44} />
-          <h2>Foreman</h2>
-          <p>{context}</p>
+          <h2>{project || 'Foreman'}</h2>
+          <div className="empty-chips">
+            {chips.map((c) => (
+              <span key={c.text} className="empty-chip">
+                {c.icon}
+                {c.text}
+              </span>
+            ))}
+          </div>
         </div>
       )}
-      {roots.map((item) => (
-        <Item key={item.id} item={item} sessionId={sessionId} byParent={byParent} />
+      {rows.map((r) => (
+        <Item
+          key={r.item.id}
+          item={r.item}
+          sessionId={sessionId}
+          byParent={byParent}
+          leadsTurn={r.leadsTurn}
+        />
       ))}
       {approvals.map((a) => {
         // ExitPlanMode's approval prompt IS the plan approval, so it gets the
@@ -117,16 +167,7 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
       ))}
       {rewindPreview && <RewindCard />}
       {/* Without this there's dead air between sending and the first token. */}
-      {status === 'running' && (
-        <div className="working">
-          <span className="working-dots">
-            <i />
-            <i />
-            <i />
-          </span>
-          Working
-        </div>
-      )}
+      {status === 'running' && <Working sessionId={sessionId} />}
     </div>
   )
 }
@@ -201,14 +242,103 @@ function parentOf(item: ChatItem): string | undefined {
   return 'parentId' in item ? item.parentId : undefined
 }
 
+/**
+ * The status line, with a rotating verb.
+ *
+ * Its own component so the interval re-renders one line rather than the whole
+ * transcript every 2.5 seconds — this sits under a list that is already
+ * re-rendering per streamed token.
+ */
+function Working({ sessionId }: { sessionId: string }): React.JSX.Element {
+  const [tick, setTick] = useState(0)
+  // Opt-out in Settings: the verbs are purely for fun, and the dots already say
+  // everything functional.
+  const verbs = useStore((s) => s.prefs.workingVerbs)
+  useEffect(() => {
+    if (!verbs) return
+    const id = setInterval(() => setTick((t) => t + 1), VERB_MS)
+    return () => clearInterval(id)
+  }, [verbs])
+
+  return (
+    <div className="working">
+      <span className="working-dots">
+        <i />
+        <i />
+        <i />
+      </span>
+      {verbs ? workingVerb(sessionId, tick) : 'Working'}
+    </div>
+  )
+}
+
+/**
+ * A one-line record of something the user was asked.
+ *
+ * AskUserQuestion and ExitPlanMode are conversations, not mechanical steps, and
+ * a tool card reading "AskUserQuestion" over raw JSON is the worst possible
+ * rendering of the one call the user actually took part in. The live prompt is
+ * a QuestionCard or PlanCard; this is what stays behind afterwards.
+ *
+ * Deliberately not hidden outright: the cards vanish once answered, so without
+ * this a resumed conversation would show no trace of what was asked or chosen.
+ */
+function RecordRow({ item }: { item: Extract<ChatItem, { kind: 'tool' }> }): React.JSX.Element {
+  const [open, setOpen] = useState(false)
+  const plan = planProposal(item.name, item.input)
+  const answers = plan ? null : answeredQuestions(item.input, item.result)
+
+  // ExitPlanMode's tool_result only arrives when the plan was APPROVED — a
+  // rejection comes back through the deny channel as an error. So the card's
+  // own status is the approval state.
+  const body = plan
+    ? planTitle(plan.markdown)
+    : (answers ?? [])
+        .map((a) => (a.answer ? `${a.header} → ${a.answer}` : a.header))
+        .join(' · ')
+
+  return (
+    <div className="record" data-error={item.status === 'error' ? '' : undefined}>
+      <button
+        className="record-head"
+        onClick={() => setOpen((v) => !v)}
+        disabled={!plan}
+        data-static={plan ? undefined : ''}
+      >
+        {plan ? (
+          <ClipboardList size={12} />
+        ) : (
+          <MessageCircleQuestion size={12} />
+        )}
+        <span className="record-tag">{toolLabel(item.name)}</span>
+        <span className="record-body">{body}</span>
+        {plan && (
+          <span style={{ color: 'rgb(var(--text-faint))' }}>
+            {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+          </span>
+        )}
+      </button>
+      {/* The approved plan lives nowhere else once its modal closes. */}
+      {open && plan && (
+        <div className="tool-plan">
+          <Markdown text={plan.markdown} />
+        </div>
+      )}
+    </div>
+  )
+}
+
 function Item({
   item,
   sessionId,
   byParent,
+  leadsTurn,
 }: {
   item: ChatItem
   sessionId: string
   byParent: Map<string, ChatItem[]>
+  /** First assistant block of a turn — the one that gets the avatar. */
+  leadsTurn?: boolean
 }): React.JSX.Element | null {
   switch (item.kind) {
     case 'user':
@@ -217,11 +347,17 @@ function Item({
           {item.images?.map((src, i) => (
             <img key={i} className="msg-image" src={src} alt="attachment" />
           ))}
-          {item.text}
+          {/* Rendered as markdown, matching the composer that now renders it live
+              while you type. `thinking` and `error` stay literal. */}
+          <Markdown text={item.text} />
+          {/* Nothing between this and the actions below: .msg-actions is absolutely
+              positioned precisely so the invisible hover buttons stop reserving a
+              blank line at the bottom of every bubble. */}
           {item.queued ? (
             <button
               className="queued-cancel"
-              title="Cancel this queued message"
+              data-tip="Cancel this queued message — it has not reached the agent yet"
+              data-tip-start=""
               onClick={() => void window.foreman.cancelQueued(sessionId, item.id)}
             >
               <X size={12} />
@@ -234,7 +370,8 @@ function Item({
               <span className="msg-actions">
                 <button
                   className="branch-btn"
-                  title="Branch a new session from this point"
+                  data-tip="Branch a new conversation from this point"
+                  data-tip-start=""
                   onClick={() => void useStore.getState().fork(item.uuid)}
                 >
                   <GitBranch size={12} />
@@ -242,7 +379,8 @@ function Item({
                 </button>
                 <button
                   className="branch-btn"
-                  title="Restore files to their state at this message"
+                  data-tip="Restore files to their state at this message"
+                  data-tip-start=""
                   onClick={() => void useStore.getState().rewind(item.uuid!)}
                 >
                   <RotateCcw size={12} />
@@ -254,17 +392,26 @@ function Item({
         </div>
       )
     case 'assistant':
-      // User and thinking text stay literal on purpose: a prompt should read back
-      // exactly as typed, and markdown headings inside the small italic thinking
-      // block fight its styling.
+      // Thinking text stays literal on purpose: markdown headings inside the
+      // small italic block fight its styling.
+      //
+      // The gutter is always present, even without the mark, so the text column
+      // stays aligned down the turn. Streaming emits several assistant items per
+      // turn, so only the first carries the avatar.
       return (
         <div className="msg-assistant">
-          <Markdown text={item.text} />
+          <span className="msg-avatar">{leadsTurn && <ClaudeMark size={14} />}</span>
+          <div className="msg-body">
+            <Markdown text={item.text} />
+          </div>
         </div>
       )
     case 'thinking':
       return <div className="msg-thinking">{item.text}</div>
     case 'tool':
+      // Tools the user participated in get a compact record row instead of a
+      // card — see RecordRow. They never have a subagent transcript to nest.
+      if (toolRender(item.name) === 'record') return <RecordRow item={item} />
       // A Task card owns its subagent's whole transcript, nested. Recursing on
       // Item means a subagent that spawns its own subagent nests again for free.
       return (
@@ -277,12 +424,14 @@ function Item({
     case 'error':
       return <div className="msg-error">{item.text}</div>
     case 'result':
-      return (
-        <div className="msg-result">
-          {item.isError ? 'failed' : 'done'} · {(item.durationMs / 1000).toFixed(1)}s ·{' '}
-          ${item.costUsd.toFixed(4)}
+      // Only failures get a row now. A "done · 12.4s · $0.0231" line after every
+      // single turn is noise the composer's running cost already covers, but a
+      // turn that *failed* has to say so somewhere.
+      return item.isError ? (
+        <div className="msg-result" data-error="">
+          failed · {(item.durationMs / 1000).toFixed(1)}s
         </div>
-      )
+      ) : null
     default:
       return null
   }
