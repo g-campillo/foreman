@@ -3435,6 +3435,101 @@ button.diff-more:hover {
   background: rgb(var(--accent));
 }
 
+/* ------------------------------------------------------ following the agent
+
+   The tree is the ambient signal and the modal is the deliberate act, so
+   everything here is peripheral-vision work: it must be legible without being
+   looked at, and must never be mistaken for something that needs a click. */
+
+/* Where the agent is right now. A left bar rather than a fill, so it reads at
+   the edge of vision and does not fight the git-status dot on the right. */
+.ft-row[data-agent] {
+  box-shadow: inset 2px 0 0 rgb(var(--accent));
+}
+.ft-row[data-agent='live'] {
+  background: rgb(var(--accent) / 0.1);
+}
+/* Only the LIVE row animates, and only while a tool call is actually pending.
+   A tree that pulses continuously is a tree people close. Killed outright by
+   the global prefers-reduced-motion block above. */
+.ft-row[data-agent='live'] .ft-name {
+  animation: pulse 1.6s ease-in-out infinite;
+}
+/* Touched earlier this session: present, but quieter than the current file. */
+.ft-row[data-agent='was'] {
+  box-shadow: inset 2px 0 0 rgb(var(--accent) / 0.32);
+}
+
+/* The move we deliberately did not make — see rule 3 in FileModal. Clicking it
+   catches up, which is also the whole of the pinned-mode UI. */
+.file-elsewhere {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 3px 9px;
+  border: 1px solid rgb(var(--accent) / 0.45);
+  border-radius: 999px;
+  background: rgb(var(--accent) / 0.08);
+  color: rgb(var(--accent));
+  font-size: 11.5px;
+  cursor: default;
+}
+.file-elsewhere:hover {
+  background: rgb(var(--accent) / 0.16);
+}
+
+/* Lines the agent wrote. Git decides which lines get the stripe; an anchor only
+   decides which of them can jump back to a message — so a line whose text has
+   moved on still shows, it just stops offering the link. */
+.agent-gutter {
+  width: 3px;
+  margin-left: 2px;
+  background: rgb(var(--accent) / 0.5);
+}
+.agent-linked {
+  background: rgb(var(--accent));
+  cursor: pointer;
+}
+.agent-line {
+  background: rgb(var(--accent) / 0.05);
+}
+
+/* The row the gutter jumped to. A transition rather than an animation, so the
+   global prefers-reduced-motion rule — which only kills `animation` — leaves a
+   still-legible highlight instead of nothing at all. */
+[data-item-id] {
+  border-radius: var(--r-md);
+  transition: background 0.35s ease;
+}
+[data-item-id][data-flash] {
+  background: rgb(var(--accent) / 0.14);
+}
+
+/* Opens the file a tool card touched. Only appears on hover: every Read and
+   Edit card would otherwise carry a permanent button nobody asked for. */
+.tool-open {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  margin-left: 4px;
+  padding: 2px;
+  border-radius: var(--r-sm);
+  color: rgb(var(--text-faint));
+  opacity: 0;
+}
+.tool-head:hover .tool-open {
+  opacity: 1;
+}
+.tool-open:hover {
+  color: rgb(var(--accent));
+  background: rgb(var(--surface-3) / 0.8);
+}
+
 /* Monaco's suggest, hover and find widgets, hoisted to <body> so .plan-modal's
    overflow:hidden cannot clip them. Between the scrims (50/60) and the tooltip
    (70), so a tip still paints over a suggest list and the list still paints over

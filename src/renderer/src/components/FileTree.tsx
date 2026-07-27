@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { ChevronRight, File, Folder, FolderOpen, Search } from 'lucide-react'
 import type { FileList, SessionMeta } from '../../../shared/types'
-import { buildTree, filterEntries, type TreeNode } from '../derive.mts'
+import { buildTree, filterEntries, relPath, type TreeNode } from '../derive.mts'
 import { useStore } from '../store'
+import { useAgentFocus } from '../useAgentFocus'
 
 /**
  * ⌘4. The project's files, and what changed in them.
@@ -35,6 +36,10 @@ export default function FileTree({ session, visible }: Props): React.JSX.Element
   const [query, setQuery] = useState('')
   const openFile = useStore((s) => s.openFile)
   const editorPath = useStore((s) => s.editor?.path ?? null)
+  // Where the agent is. THIS is what makes follow-the-agent bearable: the tree
+  // is the ambient signal, the modal is the deliberate act. Nothing here ever
+  // opens anything — see the rule in FileModal.
+  const agent = useAgentFocus(session.id)
   // The agent's writes already push this on every edit — the tree gets its
   // refresh signal for free rather than polling. Same hook DiffPanel rides.
   const bump = useStore((s) => s.diffCounts[session.id] ?? 0)
@@ -64,11 +69,45 @@ export default function FileTree({ session, visible }: Props): React.JSX.Element
     return filterEntries(entries, query).slice(0, 200).map((e) => e.label)
   }, [list, query])
 
+  // Relative paths, because the tree is built from `git ls-files` output while
+  // the agent reports absolute ones.
+  const agentRel = useMemo(() => {
+    const rel = (p: string): string => relPath(p, session.cwd)
+    return {
+      current: agent.current ? rel(agent.current.path) : null,
+      recent: new Set(agent.recent.map(rel)),
+    }
+  }, [agent, session.cwd])
+
+  // Auto-reveal the file the agent moved to, so it is on screen without anyone
+  // hunting for it. Expanding a directory is the most this feature ever does on
+  // its own — it never opens a file and never steals focus.
+  useEffect(() => {
+    if (!visible || !agentRel.current) return
+    const parts = agentRel.current.split('/')
+    if (parts.length < 2) return
+    setOpen((o) => {
+      const next = { ...o }
+      let changed = false
+      let prefix = ''
+      for (const part of parts.slice(0, -1)) {
+        prefix = prefix ? `${prefix}/${part}` : part
+        if (!next[prefix]) {
+          next[prefix] = true
+          changed = true
+        }
+      }
+      return changed ? next : o
+    })
+  }, [agentRel.current, visible])
+
   const row = (node: TreeNode, depth: number): React.JSX.Element[] => {
     const isDir = node.children !== undefined
     const expanded = open[node.path] ?? false
     const status = statusOf(list?.dirty?.[node.path])
     const abs = `${session.cwd}/${node.path}`
+    const isAgent = !isDir && node.path === agentRel.current
+    const wasAgent = !isDir && !isAgent && agentRel.recent.has(node.path)
 
     const self = (
       <button
@@ -77,6 +116,7 @@ export default function FileTree({ session, visible }: Props): React.JSX.Element
         data-dir={isDir || undefined}
         data-active={!isDir && abs === editorPath}
         data-status={status ?? undefined}
+        data-agent={isAgent ? (agent.live ? 'live' : 'here') : wasAgent ? 'was' : undefined}
         // Indent with padding rather than nested <ul>s: the rows stay siblings,
         // so a filtered flat list and a nested tree render through one component.
         style={{ paddingLeft: 6 + depth * 12 }}

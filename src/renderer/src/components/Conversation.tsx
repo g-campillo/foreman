@@ -44,6 +44,8 @@ const TICK_MS = 1000
 
 export default function Conversation({ sessionId }: { sessionId: string }): React.JSX.Element {
   const items = useStore((s) => s.items[sessionId] ?? EMPTY)
+  const focusItemId = useStore((s) => s.focusItemId)
+  const revealItem = useStore((s) => s.revealItem)
   // Select the raw array and narrow in a memo — filtering inside the selector
   // returns a fresh array on every snapshot read, which zustand reads as a
   // changed store and spins into an infinite render loop. `.find` is safe: it
@@ -118,6 +120,24 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
     if (el && pinned.current) el.scrollTop = el.scrollHeight
   }, [items, approvals, elicitations, rewindPreview])
 
+  /**
+   * Scroll to and flash the row the editor pointed at.
+   *
+   * The other half of the gutter click. One-shot: revealItem(null) immediately
+   * after, so re-clicking the same stripe flashes again rather than doing
+   * nothing because the state never changed.
+   */
+  useEffect(() => {
+    if (!focusItemId) return
+    const el = document.querySelector(`[data-item-id="${focusItemId}"]`)
+    if (el) {
+      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+      el.setAttribute('data-flash', '')
+      setTimeout(() => el.removeAttribute('data-flash'), 1200)
+    }
+    revealItem(null)
+  }, [focusItemId, revealItem])
+
   return (
     <div
       className="convo"
@@ -147,14 +167,19 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
         </div>
       )}
       {rows.map((r) => (
-        <Item
-          key={r.item.id}
-          item={r.item}
-          sessionId={sessionId}
-          cwd={session?.cwd ?? ''}
-          byParent={byParent}
-          leadsTurn={r.leadsTurn}
-        />
+        /* data-item-id is what the editor's gutter jumps to. A wrapper rather
+           than an attribute on Item, because Item returns a different root per
+           kind and threading the id through six branches would be six chances
+           to miss one. */
+        <div key={r.item.id} data-item-id={r.item.id}>
+          <Item
+            item={r.item}
+            sessionId={sessionId}
+            cwd={session?.cwd ?? ''}
+            byParent={byParent}
+            leadsTurn={r.leadsTurn}
+          />
+        </div>
       ))}
       {approvals.map((a) => {
         // ExitPlanMode's approval prompt IS the plan approval, so it gets the

@@ -1,11 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import type { FileRead, SessionMeta } from '../../../shared/types'
-import { relPath } from '../derive.mts'
+import { authorEdits, relPath, resolveAnchors } from '../derive.mts'
 import { useStore } from '../store'
 import { loadedMonaco } from '../editor/monaco'
 import { startLsp } from '../editor/lsp'
-import { attach, bufFor, detach, isDirty, loadBuffer, markSaved, relayout, retheme } from '../editor/models'
+import {
+  attach,
+  bufFor,
+  detach,
+  editorHasFocus,
+  isDirty,
+  loadBuffer,
+  markSaved,
+  onGutterClick,
+  relayout,
+  retheme,
+  revealLine,
+  setAuthored,
+} from '../editor/models'
+import { useAgentFocus } from '../useAgentFocus'
 
 /**
  * A file, in the same modal frame as PlanCard and QuestionCard — wider, because
@@ -31,6 +45,19 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
   const closeFile = useStore((s) => s.closeFile)
   const openFile = useStore((s) => s.openFile)
   const resolvedTheme = useStore((s) => s.resolvedTheme)
+  const revealItem = useStore((s) => s.revealItem)
+  // Same signal the tree uses, so the two never disagree about where the agent is.
+  const agent = useAgentFocus(session.id)
+  // The agent's writes already push this; the gutter rides it rather than polling.
+  const bump = useStore((s) => s.diffCounts[session.id] ?? 0)
+  const [elsewhere, setElsewhere] = useState<string | null>(null)
+  // Bumped once the editor is actually attached. The gutter effect needs a live
+  // Monaco AND a model, and on the first open neither exists when effects first
+  // run — the chunk is still loading. Without this the decorations are computed
+  // against nothing and never recomputed, which looks exactly like a feature
+  // that does not work. Same shape as the theme bug: `loadedMonaco()` returning
+  // null is not a state React knows to re-run on.
+  const [ready, setReady] = useState(0)
   const body = useRef<HTMLDivElement | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
@@ -94,6 +121,7 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
       await startLsp(session.id, openFile)
       await attach(body.current, path, line)
       setDirty(isDirty(path))
+      setReady((n) => n + 1)
       // Subscribe after attach so the initial load does not read as an edit.
       const buf = bufFor(path)
       const sub = buf?.model.onDidChangeContent(() => setDirty(isDirty(path)))
@@ -142,6 +170,78 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
     }
   }, [path])
 
+  /**
+   * Follow the agent — but only ever within an editor that is already open.
+   *
+   * RULE 1, and it is the one that makes this a feature people leave on:
+   * following NEVER opens the modal. When it is closed the agent's movement
+   * lands in the ⌘4 tree instead, which pulses and auto-reveals and interrupts
+   * nothing. An editor that appears because the agent read a file is the editor
+   * becoming the app's spine, and the README's first line forbids that.
+   *
+   * RULE 3: never move the viewport while the caret is inside the editor. One
+   * condition, one place. A suppressed move surfaces as a chip in the header
+   * rather than being silently dropped.
+   *
+   * Rules 2 and 4 (follow when open; main thread of the active session only)
+   * are structural — this effect only runs for the open file, and
+   * useAgentFocus already excludes subagents.
+   */
+  useEffect(() => {
+    const target = agent.current
+    if (!path || !target) return
+    if (target.path !== path) {
+      // The agent moved to a different file. Offer it; do not take the user
+      // there, and do not open anything.
+      setElsewhere(relPath(target.path, session.cwd))
+      return
+    }
+    setElsewhere(null)
+    if (target.line === null || editorHasFocus()) return
+    revealLine(target.line)
+  }, [agent, path, session.cwd])
+
+  // The agent-authored gutter. Recomputed when the agent edits (bump) or the
+  // file changes, NOT on every keystroke — the decorations Monaco holds already
+  // track your typing.
+  useEffect(() => {
+    const monaco = loadedMonaco()
+    if (!path || !monaco) return
+    let cancelled = false
+    void (async () => {
+      const buf = bufFor(path)
+      if (!buf) return
+      const items = useStore.getState().items[session.id] ?? []
+      const ranges = resolveAnchors(buf.model.getValue(), authorEdits(items, path))
+      // Git is the authority on WHICH lines changed; anchors only decide which
+      // of them can link back to a message.
+      const diffs = await window.foreman.listDiffs(session.id, session.cwd)
+      if (cancelled) return
+      const mine = diffs.find((d: { path: string }) => d.path === path)
+      const changed = new Set<number>()
+      for (const h of mine?.hunks ?? []) {
+        for (const l of h.lines) if (l.type === 'add' && l.newNo) changed.add(l.newNo)
+      }
+      setAuthored(monaco, ranges, changed)
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [path, bump, ready, session.id, session.cwd])
+
+  // Gutter click -> the message that wrote the line.
+  useEffect(() => {
+    if (!path || !ready) return
+    return onGutterClick((itemId) => {
+      // Close on the way. The gesture is "show me the message that wrote this",
+      // and the modal covers the conversation — scrolling a transcript the user
+      // cannot see is the same as doing nothing. Reopening from the tree lands
+      // back on this line, because the editor keeps view state per path.
+      revealItem(itemId)
+      closeFile()
+    })
+  }, [path, ready, revealItem, closeFile])
+
   // Only handles CHANGES. The first definition happens inside loadMonaco, which
   // has to run before any editor is created — this effect cannot, because on the
   // first open the chunk has not landed yet and loadedMonaco() is still null.
@@ -170,6 +270,17 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
             {dirty && <span className="file-dirty" title="Unsaved changes" />}
           </h2>
           <span className="spacer" />
+          {/* A move we deliberately did not make. Clicking it catches up — which
+              is also the whole of the pinned-mode UI, for one component. */}
+          {elsewhere && agent.current && (
+            <button
+              className="file-elsewhere"
+              title="The agent is working in another file"
+              onClick={() => openFile(agent.current!.path, agent.current!.line ?? undefined)}
+            >
+              {elsewhere} · agent is here
+            </button>
+          )}
           <button className="plan-close" aria-label="Close file" onClick={closeFile}>
             <X size={14} />
           </button>

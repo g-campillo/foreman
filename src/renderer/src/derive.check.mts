@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem, SessionMeta } from '../../shared/types'
-import { activityOf, answeredQuestions, ANSWER_PREFIX, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolRender, transcriptRows, workingVerb, WORKING_VERBS, buildTree } from './derive.mts'
+import { activityOf, answeredQuestions, ANSWER_PREFIX, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolRender, transcriptRows, workingVerb, WORKING_VERBS, buildTree, focusTarget, authorEdits, resolveAnchors } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -772,6 +772,133 @@ for (const [p, cwd] of [
   assert.equal(orphan.costUsd, 7, 'unattributable spend still counts toward the total')
   assert.equal(orphan.unattributed.sessions, 1)
   assert.equal(orphan.unattributed.costUsd, 4)
+}
+
+// --------------------------------------------------------------- focusTarget
+
+{
+  assert.deepEqual(focusTarget('Read', { file_path: '/a/x.ts', offset: 40 }), {
+    path: '/a/x.ts',
+    line: 40,
+    anchor: '',
+    weight: 'read',
+  })
+  assert.equal(
+    focusTarget('Read', { file_path: '/a/x.ts' })!.line,
+    null,
+    'no offset means the whole file was read — there is no line to reveal',
+  )
+
+  const edit = focusTarget('Edit', {
+    file_path: '/a/x.ts',
+    old_string: '\n\n  const value = 1\n  more()',
+    new_string: 'x',
+  })!
+  assert.equal(edit.line, null, 'an Edit carries NO line number and never will')
+  assert.equal(edit.anchor, 'const value = 1', 'first non-empty line, trimmed')
+  assert.equal(edit.weight, 'write')
+
+  assert.equal(
+    focusTarget('MultiEdit', {
+      file_path: '/a/x.ts',
+      edits: [{ old_string: '  first()\nsecond()' }, { old_string: 'later()' }],
+    })!.anchor,
+    'first()',
+    'MultiEdit anchors on its first edit',
+  )
+  assert.equal(focusTarget('Write', { file_path: '/a/x.ts', content: 'z' })!.line, 1)
+  assert.equal(
+    focusTarget('NotebookEdit', { notebook_path: '/a/n.ipynb' })!.line,
+    null,
+    'a notebook is JSON; there is no line mapping to pretend to',
+  )
+
+  // THE RULE. Asserted so nobody helpfully adds it later: a Grep's hits live in
+  // its RESULT, not its input, and a search is the agent thinking rather than
+  // working — following one flips the editor to a file it looks at for 200ms.
+  assert.equal(focusTarget('Grep', { pattern: 'x', path: '/a' }), null, 'Grep never moves the viewport')
+  assert.equal(focusTarget('Bash', { command: 'ls' }), null)
+  assert.equal(focusTarget('Glob', { pattern: '**/*.ts' }), null)
+  assert.equal(focusTarget('WebFetch', { url: 'http://x' }), null)
+
+  // An MCP tool that names a file is still worth following.
+  assert.equal(focusTarget('mcp__lsp__lsp_hover', { path: '/a/x.ts' })!.path, '/a/x.ts')
+
+  // Malformed input must return null, not throw inside a render.
+  for (const bad of [null, undefined, 42, 'str', {}, { file_path: 7 }, { edits: 'no' }]) {
+    for (const name of ['Read', 'Edit', 'MultiEdit', 'Write', 'NotebookEdit']) {
+      assert.doesNotThrow(() => focusTarget(name, bad), `${name} on ${JSON.stringify(bad)}`)
+    }
+  }
+  assert.equal(focusTarget('Edit', {}), null, 'no path, no target')
+}
+
+// ------------------------------------------------- authorEdits / resolveAnchors
+
+{
+  const items: ChatItem[] = [
+    tool('Read', { file_path: '/a/x.ts' }),
+    tool('Edit', { file_path: '/a/x.ts', old_string: 'const a = 1', new_string: 'const a = 2' }),
+    tool('Edit', { file_path: '/a/other.ts', old_string: 'zzz', new_string: 'y' }),
+    tool('Write', { file_path: '/a/x.ts', content: 'whole' }),
+    tool('Edit', { file_path: '/a/x.ts', old_string: 'const b = 3', new_string: 'const b = 4' }),
+  ]
+  const edits = authorEdits(items, '/a/x.ts')
+  // NEW_STRING, because this runs AFTER the edit landed. Anchoring on
+  // old_string here would match nothing in the post-edit document, essentially
+  // always — a gutter that silently never links, which reads as a dead feature.
+  assert.deepEqual(
+    edits.map((e) => e.anchor),
+    ['const a = 2', 'const b = 4'],
+    'writes to this path only; a Read contributes nothing and a Write has no anchor',
+  )
+
+  // The document as it is NOW, i.e. after those edits.
+  const doc = 'header\nconst a = 2\nmiddle\nconst b = 4\ntail'
+  assert.deepEqual(
+    resolveAnchors(doc, edits),
+    [
+      { line: 2, itemId: edits[0]!.itemId },
+      { line: 4, itemId: edits[1]!.itemId },
+    ],
+    'both land, because both anchors are the text that is actually there',
+  )
+
+  // And the fail-closed case: text the user has since changed by hand.
+  assert.deepEqual(
+    resolveAnchors('header\nconst a = 999\nmiddle\nconst b = 4\ntail', edits),
+    [{ line: 4, itemId: edits[1]!.itemId }],
+    'a moved-on line drops its link rather than guessing at a position',
+  )
+
+  // A MultiEdit contributes one anchor PER edit, all pointing at the same card.
+  const multi = authorEdits(
+    [
+      tool('MultiEdit', {
+        file_path: '/a/x.ts',
+        edits: [
+          { old_string: 'p', new_string: 'alpha()' },
+          { old_string: 'q', new_string: 'beta()' },
+        ],
+      }),
+    ],
+    '/a/x.ts',
+  )
+  assert.deepEqual(multi.map((e) => e.anchor), ['alpha()', 'beta()'])
+  assert.equal(multi[0]!.itemId, multi[1]!.itemId, 'both jump to the one card that made them')
+
+  // Two edits with the same anchor take different lines rather than stacking.
+  const dupes = [
+    { itemId: 'i1', anchor: 'same' },
+    { itemId: 'i2', anchor: 'same' },
+  ]
+  assert.deepEqual(
+    resolveAnchors('same\nsame\n', dupes).map((r) => r.line),
+    [1, 2],
+    'a contested anchor does not put two links on one line',
+  )
+  assert.deepEqual(resolveAnchors('nothing here', dupes), [], 'no match, no range')
+  assert.deepEqual(resolveAnchors('', [{ itemId: 'i', anchor: '' }]), [], 'an empty anchor never matches')
 }
 
 // ------------------------------------------------------------------ buildTree

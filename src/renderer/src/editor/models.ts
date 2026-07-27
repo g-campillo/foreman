@@ -188,6 +188,85 @@ export function relayout(): void {
   editor?.layout()
 }
 
+/**
+ * True while the caret is inside the editor.
+ *
+ * The whole of the don't-fight-me rule is this one condition, checked in one
+ * place. No debounce, no is-the-user-typing heuristic, no timer — the DOM
+ * already knows, the same way TerminalPane's `visible && clientHeight` guard
+ * already knows whether it can measure.
+ */
+export function editorHasFocus(): boolean {
+  return editor?.hasTextFocus() ?? false
+}
+
+/** Reveal a line without disturbing the model or the undo stack. */
+export function revealLine(line: number): void {
+  editor?.revealLineInCenterIfOutsideViewport(line)
+}
+
+let decorations: string[] = []
+
+/**
+ * Stripe the lines the agent wrote, and make them clickable.
+ *
+ * Handed to Monaco as DECORATIONS rather than kept as line numbers, and that is
+ * the point: from here on Monaco position-maps them through every subsequent
+ * edit, yours and the agent's. Drift within a session is its problem. Ours is
+ * only the re-anchor on reopen, and resolveAnchors fails closed.
+ */
+export function setAuthored(
+  monaco: Monaco,
+  ranges: { line: number; itemId: string }[],
+  changed: Set<number>,
+): void {
+  if (!editor) return
+  const model = editor.getModel()
+  if (!model) return
+
+  const byLine = new Map(ranges.map((r) => [r.line, r.itemId]))
+  // Git decides what is striped; anchors only decide what is LINKABLE. A line
+  // the agent changed but whose text has since moved on still shows, it just
+  // stops offering to jump.
+  const lines = new Set<number>([...changed, ...byLine.keys()])
+
+  decorations = model.deltaDecorations(
+    decorations,
+    [...lines]
+      .filter((n) => n >= 1 && n <= model.getLineCount())
+      .map((n) => ({
+        range: new monaco.Range(n, 1, n, 1),
+        options: {
+          isWholeLine: true,
+          linesDecorationsClassName: byLine.has(n) ? 'agent-gutter agent-linked' : 'agent-gutter',
+          className: 'agent-line',
+          ...(byLine.has(n) ? { glyphMarginHoverMessage: { value: 'Written by the agent — click to jump' } } : {}),
+        },
+      })),
+  )
+  linkedLines = byLine
+}
+
+let linkedLines = new Map<number, string>()
+
+/** The transcript item that wrote a line, if the anchor still matches. */
+export function itemForLine(line: number): string | undefined {
+  return linkedLines.get(line)
+}
+
+/** Fires when a gutter stripe is clicked. Registered once, from FileModal. */
+export function onGutterClick(cb: (itemId: string) => void): () => void {
+  const ed = editor
+  if (!ed) return () => undefined
+  const sub = ed.onMouseDown((e) => {
+    const line = e.target.position?.lineNumber
+    if (line === undefined) return
+    const id = linkedLines.get(line)
+    if (id) cb(id)
+  })
+  return () => sub.dispose()
+}
+
 export function getEditor(): Editor | null {
   return editor
 }

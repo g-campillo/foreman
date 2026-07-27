@@ -21,6 +21,7 @@ import {
   SquareTerminal,
   Terminal,
   Wrench,
+  FileCode2,
 } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import type { ChatItem, DiffHunk } from '../../../shared/types'
@@ -32,7 +33,9 @@ import {
   planTitle,
   relPath,
   toolLabel,
+  focusTarget,
 } from '../derive.mts'
+import { useStore } from '../store'
 import Markdown from './Markdown'
 import DiffLines from './DiffLines'
 
@@ -216,6 +219,10 @@ export default function ToolCard({
   const gist = summarise(item.name, item.input, cwd)
   const plan = planProposal(item.name, item.input)
   const hunks = useMemo(() => editHunks(item.name, item.input), [item.name, item.input])
+  const openFile = useStore((s) => s.openFile)
+  // Same function the tree and the editor follow with, so a card that is
+  // clickable is exactly a call the agent could be followed into.
+  const target = useMemo(() => focusTarget(item.name, item.input), [item.name, item.input])
 
   // Only a card carrying a whole document expands: a subagent's transcript, or
   // an approved plan whose modal is gone and which lives nowhere else. Ordinary
@@ -267,6 +274,32 @@ export default function ToolCard({
           never inside another .tool-head. */}
       {expandable ? (
         <button className="tool-head" data-status={status} onClick={() => setOpen(!open)}>
+          {head}
+          {/* A third arm on a switch that already existed, rather than a new
+              interaction model. Only shown when focusTarget resolves AND the
+              card is expandable — an expandable head's click is already taken. */}
+          {target && (
+            <span
+              className="tool-open"
+              role="button"
+              tabIndex={-1}
+              title="Open in the editor"
+              onClick={(e) => {
+                e.stopPropagation()
+                openFile(target.path, target.line ?? undefined)
+              }}
+            >
+              <FileCode2 size={12} />
+            </span>
+          )}
+        </button>
+      ) : target ? (
+        <button
+          className="tool-head"
+          data-status={status}
+          title="Open in the editor"
+          onClick={() => openFile(target.path, target.line ?? undefined)}
+        >
           {head}
         </button>
       ) : (

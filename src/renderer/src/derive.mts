@@ -961,6 +961,174 @@ export function filterEntries<T extends Matchable>(entries: readonly T[], query:
     .map((x) => x.entry)
 }
 
+// -------------------------------------------------------- following the agent
+
+/** Where a tool call is about to work. */
+export interface FocusTarget {
+  /** Absolute path, as the agent gave it. */
+  path: string
+  /** 1-based line to reveal, or null for "open it, don't move the view". */
+  line: number | null
+  /**
+   * Text to locate when the input carries no line number — the first non-empty
+   * line of `old_string`. Empty when there is nothing to match on.
+   */
+  anchor: string
+  /** How hard this argues for moving the viewport. */
+  weight: 'read' | 'write'
+}
+
+/**
+ * What file a tool call is about to touch, from the call alone.
+ *
+ * The signal is already on the wire: session.ts emits a `tool` ChatItem the
+ * instant a tool_use block lands — BEFORE the tool runs — so for a Read the
+ * editor can arrive ahead of the agent. No new hook, no new IPC channel, no new
+ * ChatItem arm; this function is the whole data half of follow-the-agent.
+ *
+ * Lives here with askQuestions and planProposal because it is the same job:
+ * chew `unknown` the agent authored and return null rather than throw inside a
+ * render.
+ *
+ * The honesty is in the nulls.
+ */
+export function focusTarget(name: string, input: unknown): FocusTarget | null {
+  const i = input as Record<string, unknown> | null
+  const s = (k: string): string => (typeof i?.[k] === 'string' ? (i[k] as string) : '')
+  const path = s('file_path') || s('notebook_path') || s('path')
+  if (!path) return null
+
+  // First non-empty line of a fragment, which is all an Edit gives us.
+  const anchorOf = (text: string): string =>
+    text.split('\n').find((l) => l.trim().length > 0)?.trim() ?? ''
+
+  switch (name) {
+    case 'Read': {
+      // `offset` is 1-based in the tool's own contract. Null when the agent
+      // read the whole file — there is no line to reveal, only a file to show.
+      const offset = typeof i?.offset === 'number' ? i.offset : null
+      return { path, line: offset, anchor: '', weight: 'read' }
+    }
+    case 'Edit':
+      // No line number, and there never will be one: old_string is a fragment.
+      // DiffLines already encodes this truth with numbers={false} for the tool
+      // card. Reuse the reasoning rather than inventing a number.
+      return { path, line: null, anchor: anchorOf(s('old_string')), weight: 'write' }
+    case 'MultiEdit': {
+      const edits = Array.isArray(i?.edits) ? (i.edits as Record<string, unknown>[]) : []
+      const first = edits.find((e) => typeof e?.old_string === 'string')
+      return {
+        path,
+        line: null,
+        anchor: anchorOf(typeof first?.old_string === 'string' ? first.old_string : ''),
+        weight: 'write',
+      }
+    }
+    case 'Write':
+      // After a Write the whole file is the agent's, so the top is as good a
+      // place as any and better than guessing.
+      return { path, line: 1, anchor: '', weight: 'write' }
+    case 'NotebookEdit':
+      // A .ipynb is JSON; there is no line mapping and pretending to one is
+      // worse than opening the file. Same call ToolCard.editHunks already makes.
+      return { path, line: null, anchor: '', weight: 'write' }
+    default:
+      // An MCP tool that names a file still tells us something useful.
+      // Grep and Bash are NOT here, deliberately — see the check file.
+      return name.startsWith('mcp__') ? { path, line: null, anchor: '', weight: 'read' } : null
+  }
+}
+
+/** One edit the agent made to a file, with the text it replaced. */
+export interface AuthorEdit {
+  /** ChatItem id of the tool call, for the jump back to the conversation. */
+  itemId: string
+  anchor: string
+}
+
+/**
+ * Every edit this session made to a path, oldest first.
+ *
+ * The transcript IS the ledger, and it is already durable: a live session
+ * replays its host event log, and a resumed one comes back through
+ * normaliseTranscript, which preserves `input` on tool cards.
+ *
+ * Known gap, and it is known rather than broken: a resumed session shows no
+ * SUBAGENT edits, because the CLI does not persist subagent messages in the
+ * parent's transcript.
+ */
+export function authorEdits(items: readonly ChatItem[], path: string): AuthorEdit[] {
+  const out: AuthorEdit[] = []
+  for (const item of items) {
+    if (item.kind !== 'tool') continue
+    const i = item.input as Record<string, unknown> | null
+    const s = (k: string): string => (typeof i?.[k] === 'string' ? (i[k] as string) : '')
+    if ((s('file_path') || s('notebook_path')) !== path) continue
+
+    // NEW_STRING, not old_string, and the difference is the whole feature.
+    //
+    // focusTarget anchors on old_string because it runs BEFORE the tool does,
+    // when that text is still what the document says. This runs after, when the
+    // agent has replaced it — so anchoring on old_string would match nothing,
+    // essentially always, and the gutter would silently never link to anything.
+    // A bug that looks exactly like "the feature does not work".
+    const anchorOf = (text: string): string =>
+      text.split('\n').find((l) => l.trim().length > 0)?.trim() ?? ''
+
+    if (item.name === 'Edit') {
+      const a = anchorOf(s('new_string'))
+      if (a) out.push({ itemId: item.id, anchor: a })
+    } else if (item.name === 'MultiEdit') {
+      const edits = Array.isArray(i?.edits) ? (i.edits as Record<string, unknown>[]) : []
+      for (const e of edits) {
+        const a = anchorOf(typeof e?.new_string === 'string' ? e.new_string : '')
+        // Each edit in a MultiEdit gets its own stripe: they are separate
+        // changes that happen to have been sent together.
+        if (a) out.push({ itemId: item.id, anchor: a })
+      }
+    }
+    // Write has no anchor to offer — the whole file is the change, and git's
+    // hunks already say which lines that means.
+  }
+  return out
+}
+
+/** An agent-authored span in the live document. */
+export interface AuthoredRange {
+  /** 1-based line. */
+  line: number
+  itemId: string
+}
+
+/**
+ * Resolve anchors against the document as it is NOW.
+ *
+ * This is the load-bearing refusal of the whole feature. There is no durable
+ * line-to-message map and building one is the mistake: a line number recorded
+ * at edit time is wrong the moment anything above it changes, and a stripe on
+ * the wrong line is a lie about who wrote your code.
+ *
+ * So: a line gets a STRIPE because git says it changed — that survives
+ * everything. It gets a LINK because an anchor still matches — that survives
+ * exactly as long as the text does. A miss is DROPPED, never guessed at, and
+ * never falls back to a remembered position.
+ */
+export function resolveAnchors(doc: string, edits: readonly AuthorEdit[]): AuthoredRange[] {
+  const lines = doc.split('\n')
+  const out: AuthoredRange[] = []
+  const taken = new Set<number>()
+  for (const e of edits) {
+    if (!e.anchor) continue
+    // Later edits win a contested line: the transcript is oldest-first, so the
+    // last writer is the one you want to be sent to.
+    const at = lines.findIndex((l, n) => !taken.has(n) && l.trim() === e.anchor)
+    if (at === -1) continue
+    taken.add(at)
+    out.push({ line: at + 1, itemId: e.itemId })
+  }
+  return out
+}
+
 // --------------------------------------------------------------------- files
 
 /** A node in the file tree. Directories have `children`; files never do. */

@@ -86,6 +86,18 @@ interface State {
   openFile(path: string, line?: number): void
   closeFile(): void
 
+  /**
+   * A transcript row to scroll to and flash — the editor pointing back at the
+   * conversation.
+   *
+   * The only half of follow-the-agent that needs storing. Everything pointing
+   * the other way is DERIVED from `items`, because the transcript already knows
+   * which file the agent is working on and duplicating that into state would
+   * give it a second version to disagree with.
+   */
+  focusItemId: string | null
+  revealItem(itemId: string | null): void
+
   select(id: string): void
   openPath(cwd: string, worktreeBranch?: string): Promise<void>
   newSession(worktreeBranch?: string): Promise<void>
@@ -354,6 +366,7 @@ export const useStore = create<State>((set, get) => ({
   home: false,
   hiddenProjects: loadHiddenProjects(),
   editor: null,
+  focusItemId: null,
 
   setNotice(notice) {
     set({ notice })
@@ -365,6 +378,10 @@ export const useStore = create<State>((set, get) => ({
 
   closeFile() {
     set({ editor: null })
+  },
+
+  revealItem(focusItemId) {
+    set({ focusItemId })
   },
 
   startDraft() {
