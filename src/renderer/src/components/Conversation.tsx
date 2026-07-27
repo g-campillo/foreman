@@ -82,6 +82,11 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
 
   // cwd is the *worktree* path for worktree sessions — a userData directory with
   // a disambiguating suffix — so repoRoot is what you actually want to name.
+  //
+  // Naming only. Do NOT reuse `root` for the cwd passed down to ToolCard: a
+  // worktree session's tool file_paths point INTO the worktree, so stripping
+  // repoRoot would never match and every path would silently stay absolute.
+  // That one is plain `session?.cwd`.
   const root = session?.worktree?.repoRoot ?? session?.cwd ?? ''
   const project = root.split('/').filter(Boolean).pop() ?? ''
   // Chips, not a ` · `-joined string. Joined, this rendered as
@@ -146,6 +151,7 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
           key={r.item.id}
           item={r.item}
           sessionId={sessionId}
+          cwd={session?.cwd ?? ''}
           byParent={byParent}
           leadsTurn={r.leadsTurn}
         />
@@ -355,11 +361,14 @@ function RecordRow({ item }: { item: Extract<ChatItem, { kind: 'tool' }> }): Rea
 function Item({
   item,
   sessionId,
+  cwd,
   byParent,
   leadsTurn,
 }: {
   item: ChatItem
   sessionId: string
+  /** Session working directory, for shortening tool file paths. See ToolCard. */
+  cwd: string
   byParent: Map<string, ChatItem[]>
   /** First assistant block of a turn — the one that gets the avatar. */
   leadsTurn?: boolean
@@ -439,9 +448,9 @@ function Item({
       // A Task card owns its subagent's whole transcript, nested. Recursing on
       // Item means a subagent that spawns its own subagent nests again for free.
       return (
-        <ToolCard item={item}>
+        <ToolCard item={item} cwd={cwd}>
           {byParent.get(item.id)?.map((child) => (
-            <Item key={child.id} item={child} sessionId={sessionId} byParent={byParent} />
+            <Item key={child.id} item={child} sessionId={sessionId} cwd={cwd} byParent={byParent} />
           ))}
         </ToolCard>
       )

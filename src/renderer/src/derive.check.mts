@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem, SessionMeta } from '../../shared/types'
-import { activityOf, answeredQuestions, ANSWER_PREFIX, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, projectKey, recentProjects, groupSessions, aggregateUsage, planProposal, planTitle, toolLabel, toolRender, transcriptRows, workingVerb, WORKING_VERBS } from './derive.mts'
+import { activityOf, answeredQuestions, ANSWER_PREFIX, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolRender, transcriptRows, workingVerb, WORKING_VERBS } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -603,7 +603,7 @@ assert.equal(fmt(1_500_000), '1.5M')
   assert.equal(projectKey('/a/b/'), '/a/b', 'trailing slash normalised')
   assert.equal(projectKey('/A/B'), '/a/b', 'case normalised — APFS is insensitive')
 
-  const live = [{ cwd: '/repo/one', worktree: undefined }] as Parameters<
+  const live = [{ cwd: '/repo/one', worktree: undefined, createdAt: 1 }] as Parameters<
     typeof recentProjects
   >[0]
   const past = [{ cwd: '/repo/one' }, { cwd: '/repo/two' }, { cwd: '/repo/three' }]
@@ -639,26 +639,110 @@ assert.equal(fmt(1_500_000), '1.5M')
   // A worktree session contributes its repoRoot, not its scratch checkout —
   // opening the scratch dir would start an agent inside it.
   const wt = recentProjects(
-    [{ cwd: '/tmp/wt-x', worktree: { path: '/tmp/wt-x', branch: 'b', repoRoot: '/repo/four' } }],
+    [
+      {
+        cwd: '/tmp/wt-x',
+        worktree: { path: '/tmp/wt-x', branch: 'b', repoRoot: '/repo/four' },
+        createdAt: 1,
+      },
+    ],
     [],
     [],
   )
   assert.equal(wt[0].hint, '/repo/four', 'worktree resolves to repoRoot')
+
+  // Live projects come back newest first, the same order groupSessions uses.
+  // Home renders the two lists one above the other, so a disagreement here puts
+  // two orderings of the same projects on one screen pointing opposite ways.
+  const ordered = recentProjects(
+    [
+      { cwd: '/repo/old', worktree: undefined, createdAt: 10 },
+      { cwd: '/repo/new', worktree: undefined, createdAt: 30 },
+      { cwd: '/repo/mid', worktree: undefined, createdAt: 20 },
+    ],
+    [],
+    [],
+  )
+  assert.deepEqual(
+    ordered.map((r) => r.hint),
+    ['/repo/new', '/repo/mid', '/repo/old'],
+    'live projects are newest first, matching groupSessions',
+  )
+}
+
+// -------------------------------------------------------------------- relPath
+
+assert.equal(relPath('/a/b/c.ts', '/a/b'), 'c.ts')
+assert.equal(relPath('/a/b/d/e.ts', '/a/b'), 'd/e.ts', 'nested stays nested')
+assert.equal(relPath('/a/b/c.ts', '/a/b/'), 'c.ts', 'trailing slash on cwd')
+// The basename, not '.', which reads as a rendering bug. Reachable via any MCP
+// tool handed the project root as its `path`.
+assert.equal(relPath('/a/b', '/a/b'), 'b', 'the cwd itself renders as its name')
+assert.equal(relPath('/a/b/', '/a/b'), 'b', 'trailing slash on the path too')
+
+// The one that bites: without the trailing slash on the prefix, a cwd of
+// /a/foo would swallow its sibling /a/foobar and render it as `bar/x`.
+assert.equal(relPath('/a/foobar/x', '/a/foo'), '/a/foobar/x', 'sibling is not a child')
+
+// Case-folded like projectKey, but the ORIGINAL casing is what comes back.
+assert.equal(relPath('/A/B/c.ts', '/a/b'), 'c.ts', 'APFS is case-insensitive')
+assert.equal(relPath('/a/b/C.ts', '/a/b'), 'C.ts', 'casing preserved in the result')
+
+// Outside the cwd stays absolute — a ../../../ chain reads worse than the
+// path it replaced.
+assert.equal(relPath('/etc/hosts', '/a/b'), '/etc/hosts')
+
+for (const [p, cwd] of [
+  ['', '/a'],
+  ['/a/b', ''],
+  ['relative.ts', '/a'],
+  ['/a/b', '/'],
+] as const) {
+  assert.equal(relPath(p, cwd), p, `passthrough: ${p || '(empty)'} against ${cwd || '(empty)'}`)
 }
 
 {
-  const s = (id: string, cwd: string, worktree?: SessionMeta['worktree']): SessionMeta =>
-    ({ id, cwd, worktree }) as SessionMeta
+  const s = (
+    id: string,
+    cwd: string,
+    createdAt: number,
+    worktree?: SessionMeta['worktree'],
+  ): SessionMeta => ({ id, cwd, createdAt, worktree }) as SessionMeta
+
   const groups = groupSessions([
-    s('a', '/repo/one'),
-    s('b', '/repo/two'),
-    s('c', '/tmp/wt', { path: '/tmp/wt', branch: 'x', repoRoot: '/repo/one' }),
+    s('a', '/repo/one', 10),
+    s('b', '/repo/two', 30),
+    s('c', '/tmp/wt', 20, { path: '/tmp/wt', branch: 'x', repoRoot: '/repo/one' }),
   ])
   assert.equal(groups.length, 2, 'a worktree groups under its repo, not on its own')
   assert.deepEqual(
     groups.find((g) => g.root === '/repo/one')?.sessions.map((x) => x.id),
-    ['a', 'c'],
+    ['c', 'a'],
+    'newest first within a group',
   )
+
+  // A group ranks by its own newest member, so the very first row of the rail
+  // is the newest session overall. /repo/two's only session (30) beats
+  // /repo/one's newest (20) even though /repo/one holds more sessions and was
+  // seen first.
+  assert.deepEqual(groups.map((g) => g.root), ['/repo/two', '/repo/one'], 'newest group first')
+  assert.equal(groups[0].sessions[0].id, 'b', 'the top row is the newest session, full stop')
+
+  // Insertion order must not leak through when the times tie.
+  const tied = groupSessions([s('x', '/r', 5), s('y', '/r', 5)])
+  assert.deepEqual(tied[0].sessions.map((n) => n.id), ['x', 'y'], 'stable on equal createdAt')
+
+  assert.deepEqual(groupSessions([]), [], 'empty in, empty out')
+}
+
+// ------------------------------------------------------------- newestSession
+
+{
+  const s = (id: string, createdAt: number): SessionMeta => ({ id, createdAt }) as SessionMeta
+  assert.equal(newestSession([s('a', 10), s('c', 30), s('b', 20)])?.id, 'c')
+  assert.equal(newestSession([s('only', 1)])?.id, 'only')
+  // Seedless reduce would throw here — the length guard is the whole point.
+  assert.equal(newestSession([]), undefined, 'empty is undefined, not a throw')
 }
 
 {

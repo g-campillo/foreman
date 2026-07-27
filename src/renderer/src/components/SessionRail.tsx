@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Circle,
   Cog,
@@ -16,7 +16,7 @@ import {
 } from 'lucide-react'
 import type { PastSession, SessionMeta, TranscriptSearchHit } from '../../../shared/types'
 import { onHome, useStore } from '../store'
-import { activityOf, type Activity } from '../derive.mts'
+import { activityOf, groupSessions, type Activity } from '../derive.mts'
 
 /** Debounce on search: each keystroke otherwise re-reads up to 40 transcripts. */
 const SEARCH_DELAY_MS = 250
@@ -79,6 +79,14 @@ export default function SessionRail(): React.JSX.Element {
   const resume = useStore((s) => s.resume)
   const draft = useStore((s) => s.draft)
   const startDraft = useStore((s) => s.startDraft)
+
+  // In a memo, never in the selector: groupSessions allocates fresh objects and
+  // arrays on every call, and zustand reads a new identity as a changed store —
+  // the same infinite render loop the `approvals` memo in Conversation warns
+  // about. `[sessions]` is sufficient as well as correct: onMeta replaces the
+  // array via .map, so a title or status patch produces a new identity and
+  // regroups, which is needed anyway since the rows render titles.
+  const groups = useMemo(() => groupSessions(sessions), [sessions])
 
   const [past, setPast] = useState<PastSession[]>([])
   const [showPast, setShowPast] = useState(false)
@@ -174,57 +182,12 @@ export default function SessionRail(): React.JSX.Element {
           </span>
         </button>
 
-        {sessions.map((s) =>
-          renaming === s.id ? (
-            <input
-              key={s.id}
-              className="rename-input"
-              defaultValue={s.title}
-              autoFocus
-              onBlur={(e) => commitRename(s.sdkSessionId, e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter') commitRename(s.sdkSessionId, e.currentTarget.value)
-                if (e.key === 'Escape') setRenaming(null)
-              }}
-            />
-          ) : (
-            <button
-              key={s.id}
-              className="session"
-              // `&& !home` or two rows look selected at once.
-              data-active={s.id === activeId && !home}
-              onClick={() => select(s.id)}
-              onDoubleClick={() => setRenaming(s.id)}
-              onAuxClick={(e) => {
-                if (e.button === 1) void close(s.id)
-              }}
-              title={`${s.cwd}\nDouble-click to rename`}
-            >
-              <ActivityIcon session={s} />
-              <span className="session-body">
-                <span className="session-title">{s.title}</span>
-                {/* No status word: the icon carries the state, and "running"
-                    next to every active session was three copies of what the
-                    animation already says. The sub-line is now cost only, and
-                    disappears entirely until there is some. */}
-                {s.costUsd > 0 && (
-                  <span className="session-sub">${s.costUsd.toFixed(2)}</span>
-                )}
-                {/* Which checkout this agent is editing. Without it, three
-                    sessions on one repo are indistinguishable in the rail. */}
-                {s.worktree && (
-                  <span className="session-branch">
-                    <GitBranch size={11} />
-                    {s.worktree.branch}
-                  </span>
-                )}
-              </span>
-            </button>
-          ),
-        )}
-
         {/* A conversation that exists but has no project yet. Rendered as a row
-            so the rail matches what the pane is showing — the chooser. */}
+            so the rail matches what the pane is showing — the chooser.
+
+            Above the groups, not below: it has no project, so it cannot sit
+            under any project header — and it is the newest thing in the rail
+            by definition. */}
         {draft && (
           <div className="session" data-active>
             <span className="activity" data-activity="idle">
@@ -236,6 +199,74 @@ export default function SessionRail(): React.JSX.Element {
             </span>
           </div>
         )}
+
+        {groups.map((g) => (
+          /* The wrapper is structural, not cosmetic, and deliberately has no CSS
+             rule: a sticky header releases when its own PARENT scrolls past, so
+             flat in .rail-list every header would share one containing block and
+             the last one would stay pinned over the history list below. Do not
+             give it display:contents (removes the box) or a z-index (creates a
+             stacking context, letting a later group paint over a pinned header). */
+          <div key={g.root}>
+            <div className="rail-group-head" title={g.root}>
+              {g.root.split('/').filter(Boolean).pop() ?? g.root}
+              {/* Only when the group has depth. Next to a single row it restates
+                  what you can already see; under a header pinned over a group
+                  running past the fold, it is the only thing that tells you how
+                  much is below. */}
+              {g.sessions.length > 1 && (
+                <span className="rail-group-n">{g.sessions.length}</span>
+              )}
+            </div>
+            {g.sessions.map((s) =>
+              renaming === s.id ? (
+                <input
+                  key={s.id}
+                  className="rename-input"
+                  defaultValue={s.title}
+                  autoFocus
+                  onBlur={(e) => commitRename(s.sdkSessionId, e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') commitRename(s.sdkSessionId, e.currentTarget.value)
+                    if (e.key === 'Escape') setRenaming(null)
+                  }}
+                />
+              ) : (
+                <button
+                  key={s.id}
+                  className="session"
+                  // `&& !home` or two rows look selected at once.
+                  data-active={s.id === activeId && !home}
+                  onClick={() => select(s.id)}
+                  onDoubleClick={() => setRenaming(s.id)}
+                  onAuxClick={(e) => {
+                    if (e.button === 1) void close(s.id)
+                  }}
+                  title={`${s.cwd}\nDouble-click to rename`}
+                >
+                  <ActivityIcon session={s} />
+                  <span className="session-body">
+                    <span className="session-title">{s.title}</span>
+                    {/* No sub-line at all. The icon carries state, the group
+                        header carries the project, and position carries
+                        recency — so every row is one line and the list reads as
+                        a list. Cost used to live here; it is in ContextStrip,
+                        SessionPanel and Home, all of which have room for the
+                        token count beside it. */}
+                    {/* Which checkout this agent is editing. Without it, three
+                        sessions on one repo are indistinguishable in the rail. */}
+                    {s.worktree && (
+                      <span className="session-branch">
+                        <GitBranch size={11} />
+                        {s.worktree.branch}
+                      </span>
+                    )}
+                  </span>
+                </button>
+              ),
+            )}
+          </div>
+        ))}
 
         {sessions.length === 0 && !draft && <p className="rail-note">No sessions yet.</p>}
 

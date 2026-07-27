@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { GitCompare, Gauge, SlidersHorizontal, SquareTerminal, X } from 'lucide-react'
-import { activeSession, onHome, useStore } from './store'
+import { activeSession, DEFAULT_APPEARANCE, onHome, useStore } from './store'
 import SessionRail from './components/SessionRail'
 import Conversation from './components/Conversation'
 import Composer from './components/Composer'
@@ -33,6 +33,20 @@ const PANEL_KEYS: Record<string, Panel | undefined> = {
  *  strokeWidth is deliberately absent — theme.css sets it once for all SVG. */
 const ICON = 14
 
+/**
+ * Live-drag limits, mirroring the clamp() on --rail-w / --side-w in theme.css.
+ *
+ * The CSS clamp is the one that survives a window resize; this one exists only
+ * so the seam stays under the pointer rather than running past the limit and
+ * opening a dead zone on the way back. `max` is a fraction of the window.
+ */
+const SEAMS = {
+  rail: { min: 180, max: 0.3, prop: '--rail-w-user' },
+  side: { min: 280, max: 0.44, prop: '--side-w-user' },
+} as const
+
+type Seam = keyof typeof SEAMS
+
 export default function App(): React.JSX.Element {
   const session = useStore(activeSession)
   const diffCount = useStore((s) => (s.activeId ? (s.diffCounts[s.activeId] ?? 0) : 0))
@@ -45,12 +59,91 @@ export default function App(): React.JSX.Element {
   // Derived, so "no session at all" counts as Home without anyone setting a flag.
   const home = useStore(onHome)
   const showHome = useStore((s) => s.showHome)
+  const setAppearance = useStore((s) => s.setAppearance)
   const [panel, setPanel] = useState<Panel | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [showPalette, setShowPalette] = useState(false)
 
   // Opening the initial project lives in the store's bootstrap(), not here: it
   // has to run after the session rehydration it would otherwise race.
+
+  /**
+   * Live pane resize.
+   *
+   * The width goes straight onto the root element as a custom property rather
+   * than through React state: it is a value only CSS reads, and a re-render per
+   * pointermove would rebuild the conversation, the diff panel and the terminal
+   * for it. The store is written once, on pointerup — setAppearance hits
+   * localStorage (and re-pushes vibrancy) on every call.
+   */
+  const drag = useRef<{
+    seam: Seam
+    el: HTMLElement
+    app: HTMLElement
+    /** Pane width at grab time, and the pointer x it was grabbed at. */
+    from: number
+    x: number
+    /** +1 where dragging right widens this pane, -1 where it narrows it. */
+    dir: 1 | -1
+    min: number
+    max: number
+    /** 0 until the first move: a click that never moved must not write. */
+    w: number
+  } | null>(null)
+
+  const onSeamDown = useCallback((e: React.PointerEvent<HTMLDivElement>, seam: Seam): void => {
+    if (e.button !== 0) return
+    const el = e.currentTarget
+    const app = el.parentElement
+    if (!app) return
+    const box = app.getBoundingClientRect()
+    const cfg = SEAMS[seam]
+    // Ask the grid what it actually used, rather than deriving it from the
+    // handle's own box: that would silently depend on .rs's width matching the
+    // -4px inset in its left/right calc(), two numbers nothing keeps in sync.
+    // This also reads the CSS clamp()'s result, not the stored value.
+    const cols = getComputedStyle(app).gridTemplateColumns.split(' ')
+    drag.current = {
+      seam,
+      el,
+      app,
+      from: parseFloat(seam === 'rail' ? cols[0] : cols[cols.length - 1]),
+      x: e.clientX,
+      dir: seam === 'rail' ? 1 : -1,
+      min: cfg.min,
+      max: Math.max(cfg.min, box.width * cfg.max),
+      w: 0,
+    }
+    el.setPointerCapture(e.pointerId)
+    el.setAttribute('data-active', '')
+    app.setAttribute('data-resizing', '')
+  }, [])
+
+  const onSeamMove = useCallback((e: React.PointerEvent<HTMLDivElement>): void => {
+    const d = drag.current
+    if (!d) return
+    const w = Math.min(Math.max(d.from + d.dir * (e.clientX - d.x), d.min), d.max)
+    d.w = w
+    document.documentElement.style.setProperty(SEAMS[d.seam].prop, `${w}px`)
+  }, [])
+
+  const onSeamUp = useCallback((): void => {
+    const d = drag.current
+    if (!d) return
+    drag.current = null
+    d.el.removeAttribute('data-active')
+    d.app.removeAttribute('data-resizing')
+    // Not just "did any move fire": a trackpad reports a pixel of jitter on an
+    // ordinary click, and setAppearance re-pushes vibrancy to main, which tears
+    // down and rebuilds the NSVisualEffectView. Commit only a real change.
+    const w = Math.round(d.w)
+    if (!d.w || w === Math.round(d.from)) return
+    // Branching rather than a computed key: `{ [SEAMS[seam].key]: w }` widens to
+    // `{ [x: string]: number }` when the key is a union, and fails to assign to
+    // Partial<Appearance>.
+    if (d.seam === 'rail') setAppearance({ railWidth: w })
+    else setAppearance({ sideWidth: w })
+  }, [setAppearance])
 
   // The same panel closes; a different one swaps. Only one is ever open — the
   // chat is the app, and the side pane is a reference you consult.
@@ -245,6 +338,34 @@ export default function App(): React.JSX.Element {
           )}
         </div>
       </section>
+
+      {/* The two draggable seams. Absolutely positioned, so .app stays a
+          three-column grid with three children as far as the template knows.
+          role="separator" without tabIndex on purpose: a focusable separator
+          needs aria-valuenow/min/max and inserts two tab stops mid-tree, for a
+          feature nobody will keyboard-drive in a single-user desktop app. */}
+      <div
+        className="rs rs-rail"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize session rail"
+        onPointerDown={(e) => onSeamDown(e, 'rail')}
+        onPointerMove={onSeamMove}
+        onPointerUp={onSeamUp}
+        onPointerCancel={onSeamUp}
+        onDoubleClick={() => setAppearance({ railWidth: DEFAULT_APPEARANCE.railWidth })}
+      />
+      <div
+        className="rs rs-side"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize panel"
+        onPointerDown={(e) => onSeamDown(e, 'side')}
+        onPointerMove={onSeamMove}
+        onPointerUp={onSeamUp}
+        onPointerCancel={onSeamUp}
+        onDoubleClick={() => setAppearance({ sideWidth: DEFAULT_APPEARANCE.sideWidth })}
+      />
 
       {/* Both are position:fixed, so they sit outside the panes — Settings in
           particular must not live in a section that can be display:none. */}

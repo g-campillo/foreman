@@ -379,6 +379,16 @@ export interface Prefs {
 export interface Appearance {
   surfaceAlpha: number
   terminalAlpha: number
+  /**
+   * Session rail width in px, as the user dragged it.
+   *
+   * The raw number, not the effective one — theme.css clamps it against the
+   * window with clamp(), so a narrow window can override this without
+   * overwriting it. Shrink the window and grow it back and the number returns.
+   */
+  railWidth: number
+  /** Side panel width in px. Same clamping story as railWidth. */
+  sideWidth: number
   /** 'auto' follows the OS live via matchMedia; the other two pin it. */
   theme: 'auto' | 'dark' | 'light'
   /**

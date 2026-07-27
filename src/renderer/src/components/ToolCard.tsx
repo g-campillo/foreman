@@ -1,8 +1,38 @@
 import { Children, useMemo, useState } from 'react'
-import { ChevronDown, ChevronRight, Circle, CircleCheck, CircleX } from 'lucide-react'
+import {
+  Bot,
+  ChevronDown,
+  ChevronRight,
+  Circle,
+  FilePen,
+  FilePenLine,
+  FilePlus,
+  FileSearch,
+  FileText,
+  Globe,
+  Link,
+  ListTodo,
+  NotebookPen,
+  Plug,
+  Search,
+  Sparkles,
+  Square,
+  SquareSlash,
+  SquareTerminal,
+  Terminal,
+  Wrench,
+} from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import type { ChatItem, DiffHunk } from '../../../shared/types'
 import { toHunks } from '../../../shared/diff.mts'
-import { ANSWER_PREFIX, askQuestions, planProposal, planTitle, toolLabel } from '../derive.mts'
+import {
+  ANSWER_PREFIX,
+  askQuestions,
+  planProposal,
+  planTitle,
+  relPath,
+  toolLabel,
+} from '../derive.mts'
 import Markdown from './Markdown'
 import DiffLines from './DiffLines'
 
@@ -14,8 +44,16 @@ const MAX_INLINE_DIFF_LINES = 12
 /** Expanded is still a transcript, not the diff panel. One click, one ceiling. */
 const MAX_EXPANDED_DIFF_LINES = 200
 
-/** One-line gist of a tool call. The card is only ever this one line. */
-export function summarise(name: string, input: unknown): string {
+/**
+ * One-line gist of a tool call. The card is only ever this one line.
+ *
+ * `cwd` shortens paths that live under it — see relPath. It defaults to empty
+ * so the one caller that has no session in scope (ApprovalCard) keeps working
+ * and keeps showing absolute paths, which is what it should show: that card is
+ * the user authorising a write to disk, and abbreviating a path you are being
+ * asked to trust is the wrong trade.
+ */
+export function summarise(name: string, input: unknown, cwd = ''): string {
   if (!input || typeof input !== 'object') return ''
   const i = input as Record<string, unknown>
   const str = (k: string): string | null => (typeof i[k] === 'string' ? (i[k] as string) : null)
@@ -27,9 +65,9 @@ export function summarise(name: string, input: unknown): string {
     case 'Edit':
     case 'Write':
     case 'MultiEdit':
-      return str('file_path') ?? ''
+      return relPath(str('file_path') ?? '', cwd)
     case 'NotebookEdit':
-      return str('notebook_path') ?? ''
+      return relPath(str('notebook_path') ?? '', cwd)
     case 'Glob':
     case 'Grep':
       return str('pattern') ?? ''
@@ -60,8 +98,11 @@ export function summarise(name: string, input: unknown): string {
       // MCP tools land here. Named fields first, then any short string value —
       // this used to fall through to 120 characters of raw JSON, which is most
       // of what made a transcript of MCP calls unreadable.
-      const named =
-        str('file_path') ?? str('path') ?? str('query') ?? str('pattern') ?? str('name')
+      // The two path-shaped fields get shortened; query/pattern/name are not
+      // paths and must be left exactly as the agent wrote them.
+      const filePath = str('file_path') ?? str('path')
+      if (filePath) return relPath(filePath, cwd)
+      const named = str('query') ?? str('pattern') ?? str('name')
       if (named) return named
       for (const v of Object.values(i)) if (typeof v === 'string' && v.length <= 80) return v
       return ''
@@ -100,20 +141,79 @@ function editHunks(name: string, input: unknown): DiffHunk[] | null {
   return null
 }
 
-/** Components, not glyphs — rendered as `<Glyph />` below. Colour comes from the
- *  wrapping span: lucide strokes with currentColor. */
-const ICON = { pending: Circle, done: CircleCheck, error: CircleX } as const
+/**
+ * The icon says what kind of work this is; the colour says how it went.
+ *
+ * Those used to be the same channel — one checkmark that was grey, then green
+ * or red — so a transcript of thirty calls looked identical whether it had been
+ * reading files or shelling out. Status moved to `.tool-head[data-status]` in
+ * theme.css, which frees the glyph to carry the tool's identity instead.
+ *
+ * Components, not elements: lucide strokes with currentColor, so `.tool-icon`
+ * owns the colour. Same arrangement as ACTIVITY_ICON in SessionRail.
+ */
+const TOOL_ICON: Record<string, LucideIcon> = {
+  // files
+  Read: FileText,
+  Write: FilePlus,
+  Edit: FilePen,
+  MultiEdit: FilePenLine,
+  NotebookEdit: NotebookPen,
+  // shell
+  Bash: Terminal,
+  BashOutput: SquareTerminal,
+  KillShell: Square,
+  // search
+  Glob: FileSearch,
+  Grep: Search,
+  ToolSearch: Wrench,
+  // web
+  WebFetch: Link,
+  WebSearch: Globe,
+  // orchestration. 'Agent' is the wire name; 'Task' is what older transcripts
+  // carry, and both have to land on the same glyph — see summarise().
+  Agent: Bot,
+  Task: Bot,
+  TodoWrite: ListTodo,
+  // user-facing
+  SlashCommand: SquareSlash,
+  Skill: Sparkles,
+  // Deliberately absent: TaskCreate/TaskUpdate (render 'hidden' — TodoStrip
+  // folds them) and ExitPlanMode/AskUserQuestion (render 'record' — RecordRow
+  // returns before a ToolCard is built, and carries its own glyph). None of
+  // them can reach this map; see TOOL_DISPLAY in derive.mts.
+}
+
+/**
+ * The glyph for a tool call.
+ *
+ * Exact name first, then the `mcp__<server>__<tool>` prefix — see toolLabel for
+ * the wire format. That order is what lets a specific MCP tool be given its own
+ * glyph later without special-casing the prefix check.
+ */
+export function toolIcon(name: string): LucideIcon {
+  return TOOL_ICON[name] ?? (name.startsWith('mcp__') ? Plug : Circle)
+}
 
 export default function ToolCard({
   item,
+  cwd,
   children,
 }: {
   item: Tool
+  /**
+   * The session's working directory, for shortening file paths.
+   *
+   * A prop rather than a useStore call: a long transcript renders hundreds of
+   * these, and a selector in each would mean hundreds of store subscriptions
+   * re-running `.find` over `sessions` on every streaming delta.
+   */
+  cwd?: string
   /** A subagent's nested transcript, when this card is a Task that spawned one. */
   children?: React.ReactNode
 }): React.JSX.Element {
   const nested = Children.count(children) > 0
-  const gist = summarise(item.name, item.input)
+  const gist = summarise(item.name, item.input, cwd)
   const plan = planProposal(item.name, item.input)
   const hunks = useMemo(() => editHunks(item.name, item.input), [item.name, item.input])
 
@@ -134,20 +234,11 @@ export default function ToolCard({
   const status = item.status === 'error' && item.result?.startsWith(ANSWER_PREFIX)
     ? 'done'
     : item.status
-  const Glyph = ICON[status]
+  const Glyph = toolIcon(item.name)
 
   const head = (
     <>
-      <span
-        style={{
-          color:
-            status === 'error'
-              ? 'rgb(var(--danger))'
-              : status === 'done'
-                ? 'rgb(var(--ok))'
-                : 'rgb(var(--text-faint))',
-        }}
-      >
+      <span className="tool-icon">
         <Glyph size={12} />
       </span>
       <span className="tool-name">{toolLabel(item.name)}</span>
@@ -170,12 +261,16 @@ export default function ToolCard({
 
   return (
     <div className="tool" data-nested={nested ? '' : undefined}>
+      {/* data-status sits on the HEAD, never on .tool: a Task card nests whole
+          .tool elements inside itself, so `.tool[data-status] .tool-icon` would
+          repaint every child's icon with the parent's status. A .tool-head is
+          never inside another .tool-head. */}
       {expandable ? (
-        <button className="tool-head" onClick={() => setOpen(!open)}>
+        <button className="tool-head" data-status={status} onClick={() => setOpen(!open)}>
           {head}
         </button>
       ) : (
-        <div className="tool-head" data-static="">
+        <div className="tool-head" data-status={status} data-static="">
           {head}
         </div>
       )}

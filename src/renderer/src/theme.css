@@ -36,6 +36,11 @@
   --accent: 10 132 255;
   --accent-fg: 255 255 255;
 
+  /* Anthropic's coral, the one colour here that is a brand constant rather than
+     a theme token — so it is declared once and deliberately absent from the
+     [data-theme='light'] block. Only ClaudeMark uses it. */
+  --brand: 217 119 87;
+
   --ok: 48 209 88;
   --warn: 255 159 10;
   --danger: 255 69 58;
@@ -49,7 +54,20 @@
   --r-sm: 6px;
   --r-md: 10px;
   --r-lg: 14px;
-  --rail-w: 244px;
+  /* Layout widths, in two layers. The -user pair is what the resize handles
+     write and what Appearance persists; the plain pair is what the grid uses.
+
+     The clamp is what keeps a narrow window usable, and it has to be CSS rather
+     than a JS resize handler: CSS overrides the stored number without
+     overwriting it, so shrinking the window and growing it back returns the
+     user's own width. A JS clamp writing through to the store would lose it
+     permanently. 30vw + 44vw also guarantees the conversation keeps >=26vw.
+
+     Keep the -user defaults in sync with DEFAULT_APPEARANCE in store.ts. */
+  --rail-w-user: 244px;
+  --side-w-user: 520px;
+  --rail-w: clamp(180px, var(--rail-w-user), 30vw);
+  --side-w: clamp(280px, var(--side-w-user), 44vw);
   --titlebar-h: 44px;
 
   --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
@@ -168,29 +186,48 @@ select {
   -webkit-app-region: no-drag;
 }
 
-::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+/* Scrollbars are hidden app-wide. Only the paint is gone: wheel, trackpad,
+   keyboard, drag-select autoscroll and scrollTo all still work.
+ *
+ * Both spellings are deliberate. scrollbar-width is the standard property and
+ * does not inherit, so it needs the universal selector — html alone would miss
+ * every scroller in the tree. The -webkit- pseudo-element is the fallback for
+ * Chromium before 121, and its subject is already implicitly universal, so it
+ * reaches scrollers this file never names: xterm's .xterm-viewport and
+ * CodeMirror's .cm-scroller.
+ *
+ * Note this also RECLAIMS space. Giving ::-webkit-scrollbar a width forces
+ * classic space-taking scrollbars even on macOS, where the OS default is the
+ * overlay kind — so every scroller here was surrendering 10px permanently. */
+* {
+  scrollbar-width: none;
 }
-::-webkit-scrollbar-thumb {
-  background: rgb(var(--text-faint) / 0.35);
-  border-radius: 99px;
-  border: 3px solid transparent;
-  background-clip: content-box;
+*::-webkit-scrollbar {
+  display: none;
 }
-::-webkit-scrollbar-thumb:hover {
-  background: rgb(var(--text-faint) / 0.6);
-  background-clip: content-box;
-}
-::-webkit-scrollbar-track {
-  background: transparent;
+
+/* Every animation in this file is a decorative "in progress" loop — spin, pulse
+   or bounce — so honouring the OS setting costs nothing and none of them carry
+   layout. Global rather than per-rule: guarding only one of them would leave a
+   still tool icon beside a pulsing rail icon, which reads as a bug. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation: none !important;
+  }
 }
 
 /* ------------------------------------------------------------------ layout */
 
 .app {
+  /* Containing block for the .rs resize handles below. Safe for the
+     position:fixed Settings/CommandPalette overlays — only transform, filter
+     and contain trap those, and .app carries none of them (the .glass
+     backdrop-filter is on the panes, not here). */
+  position: relative;
   display: grid;
-  grid-template-columns: var(--rail-w) minmax(0, 1fr) minmax(0, 0.85fr);
+  grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--side-w);
   height: 100%;
   gap: 1px;
   background: rgb(var(--border));
@@ -209,8 +246,59 @@ select {
 .app:not([data-panel]) {
   grid-template-columns: var(--rail-w) minmax(0, 1fr);
 }
-.app:not([data-panel]) > .side {
+.app:not([data-panel]) > .side,
+/* No pane to resize means no seam to grab. */
+.app:not([data-panel]) > .rs-side {
   display: none;
+}
+
+/* Resize handles.
+
+   The visible divider is still the grid's own 1px gap painted over the
+   container background; these only widen the hit target across it, because 1px
+   is not grabbable. Absolutely positioned so they stay out of flow — the
+   template stays three columns and the border-radius/overflow glass corners are
+   untouched.
+
+   no-drag is load-bearing: they run the full height, so their top 44px lies
+   over a -webkit-app-region: drag header, and the window drag would otherwise
+   swallow the pointerdown before the page ever saw it. */
+.rs {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 9px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+  -webkit-app-region: no-drag;
+}
+.rs-rail {
+  left: calc(var(--rail-w) - 4px);
+}
+.rs-side {
+  right: calc(var(--side-w) - 4px);
+}
+/* A hairline over the seam that shows only under the pointer, so the app gains
+   no permanent chrome line. `inset: 0 4px` leaves exactly the gap's 1px. */
+.rs::after {
+  content: '';
+  position: absolute;
+  inset: 0 4px;
+  background: rgb(var(--accent));
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+/* data-active as well as :hover — during a fast drag the pointer leaves the 9px
+   strip and a :hover-only rule would flicker. */
+.rs:hover::after,
+.rs[data-active]::after {
+  opacity: 0.55;
+}
+/* Text selection would otherwise run away with the pointer mid-drag. */
+.app[data-resizing] {
+  user-select: none;
+  cursor: col-resize;
 }
 
 .pane {
@@ -282,6 +370,44 @@ select {
   flex: 1;
   overflow-y: auto;
   padding: 6px;
+}
+
+/* Project separators between groups of live sessions.
+
+   Deliberately NOT a reuse of .rail-section: that one heads the history list
+   and must stay static. Two sticky headers in one scrollport both claim top: 0
+   and pin over each other. */
+.rail-group-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  position: sticky;
+  /* The three numbers cancel .rail-list's 6px padding so the pinned band is
+     full-bleed — otherwise rows scroll visibly through the gutter either side
+     of it. Text still lands at 15px, level with .session's own 9px inset. */
+  top: -6px;
+  margin: 0 -6px;
+  padding: 16px 15px 5px;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: rgb(var(--text-faint));
+  /* 0.92 hardcoded, NOT var(--surface-alpha): the rail is user-tunable glass,
+     and at a low alpha the rows would be legible straight through the pinned
+     header. Same call, for the same reason, as .diff-file-head. */
+  background: rgb(var(--surface) / 0.92);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  /* Belt and braces. A pinned header already wins against the rows: it is
+     positioned, so it paints after non-positioned siblings regardless, and
+     backdrop-filter gives it a stacking context of its own. This just makes
+     that explicit against a future row that grows a z-index. */
+  z-index: 1;
+}
+.rail-group-n {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--text-faint) / 0.7);
 }
 
 .session {
@@ -528,7 +654,11 @@ select {
   display: flex;
   justify-content: center;
   padding-top: 4px;
-  color: rgb(var(--accent));
+  /* ClaudeMark strokes currentColor, so this is what makes it Anthropic's coral
+     rather than the UI accent. Set here rather than via the component's `brand`
+     prop, which hardcodes the hex — this file's contract is that no component
+     writes a literal colour. */
+  color: rgb(var(--brand));
 }
 .msg-body {
   min-width: 0;
@@ -704,6 +834,29 @@ select {
 .tool-head[data-static] {
   cursor: default;
 }
+
+/* The icon is the tool type (see TOOL_ICON); the colour is the outcome. Same
+   data-status idiom as .dot, and for the same reason — no component writes a
+   literal colour, which is what the old inline-style ternary here was doing. */
+.tool-icon {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: rgb(var(--text-faint));
+}
+/* 'pending' IS the running state — the ChatItem type has no separate one, since
+   a card is emitted pending the instant the tool_use block lands. The pulse is
+   the only motion saying a call is still in flight, and it is the same one the
+   session rail uses for a working agent. */
+.tool-head[data-status='pending'] .tool-icon {
+  color: rgb(var(--warn));
+  animation: pulse 1.4s ease-in-out infinite;
+}
+.tool-head[data-status='done'] .tool-icon {
+  color: rgb(var(--ok));
+}
+.tool-head[data-status='error'] .tool-icon {
+  color: rgb(var(--danger));
+}
 .tool-name {
   font-weight: 600;
   font-family: var(--mono);
@@ -733,11 +886,16 @@ select {
   display: flex;
   flex-direction: column;
   gap: 11px;
-  /* Same reason as .convo > *: these must keep their natural height rather than
-     being squashed by the column flex. */
-  max-height: 460px;
-  overflow-y: auto;
 }
+/* Same reason as .convo > *: these must keep their natural height rather than
+   being squashed by the column flex.
+
+   Deliberately NOT a scroll container. It used to be max-height:460px +
+   overflow-y:auto, which made a subagent's transcript a second scrollport
+   nested inside .convo — and .convo autoscrolls while nothing ever scrolled
+   the nest, so a streaming subagent stayed frozen on its opening lines with
+   its live output thousands of pixels below the fold. Letting the nest take
+   its natural height hands the job back to .convo, which already does it. */
 .tool-nest > * {
   flex-shrink: 0;
 }
@@ -746,18 +904,6 @@ select {
 .tool-nest .msg-user {
   align-self: flex-start;
   max-width: 100%;
-}
-
-.tool-out {
-  border-top: 1px solid rgb(var(--border));
-  padding: 9px 11px;
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: rgb(var(--text-dim));
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 320px;
-  overflow-y: auto;
 }
 
 .tool-plan {
@@ -1313,12 +1459,13 @@ select {
 .diff-body[data-bare] {
   padding: 4px 0;
   /* Wrap instead of scroll. `.diff-body` is overflow-x:auto and `.diff-line` is
-     pre + min-width:max-content, which together put a 10px scrollbar under every
-     edit card whose code overran the column — the transcript is a reading
-     surface, and a scrollbar per card is noise. The review panel keeps pre +
-     auto: alignment matters there and there is width to use.
-     Clipping is not an option here — with the scrollbar gone there would be
-     nothing left to recover the hidden text with. */
+     pre + min-width:max-content, so an edit card whose code overran the column
+     would scroll sideways — and since scrollbars are hidden app-wide there is
+     now nothing to say it can, which makes wrapping the only honest option
+     here. (It was already the right one when the argument was noise: the
+     transcript is a reading surface and a bar under every card is clutter.)
+     The review panel keeps pre + auto — alignment matters there, there is width
+     to use, and it is a pane you are deliberately scrolling around in. */
   overflow-x: hidden;
 }
 .diff-body[data-bare] .diff-line {

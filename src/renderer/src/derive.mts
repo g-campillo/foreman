@@ -697,6 +697,44 @@ export function projectKey(path: string): string {
   return path.replace(/\/+$/, '').toLowerCase()
 }
 
+/**
+ * A file path shown against the session's working directory.
+ *
+ * Inside the cwd the prefix goes; anything else stays absolute, because a
+ * `../../../` chain is less legible than the absolute path it replaced. There
+ * is no `~` case: the renderer has no `os.homedir()` — the preload surface is
+ * IPC only — and reaching for one would be a new IPC call for an avatar-sized
+ * gain.
+ *
+ * This is also what puts filenames back on screen. `.tool-arg` ellipsises the
+ * TAIL, so a long absolute path rendered as `/Users/me/code/foreman/src/rend…`
+ * — hiding the one part anyone reads.
+ *
+ * Prefix arithmetic rather than a `path.relative`, for the reason projectKey
+ * gives above: the renderer has no fs, so there is nothing to canonicalise
+ * against and a symlinked path stays absolute.
+ */
+export function relPath(path: string, cwd: string): string {
+  if (!path || !cwd || !path.startsWith('/')) return path
+  // Both sides lose their trailing slash. On `path` that matters as much as on
+  // `cwd`: '/a/b/' against a cwd of '/a/b' would otherwise slice to the empty
+  // string and the card would render a blank where a name belongs.
+  const base = cwd.replace(/\/+$/, '')
+  const p = path.replace(/\/+$/, '')
+  if (!base || !p) return path
+  // The cwd itself, which an MCP tool taking a `path` (index_folder,
+  // resolve_repo) routinely passes. Its basename, not '.', which reads as a
+  // rendering bug rather than as the project root.
+  if (p === base) return base.split('/').pop() ?? path
+  // The trailing slash is load-bearing: without it a cwd of /a/foo would
+  // swallow the sibling directory /a/foobar.
+  const prefix = base + '/'
+  // Folded compare, then slice by length — so the case-insensitivity matches
+  // projectKey's (APFS default) while the returned string keeps its own casing.
+  if (p.toLowerCase().startsWith(prefix.toLowerCase())) return p.slice(prefix.length)
+  return path
+}
+
 /** A project row on Home or in the chooser. */
 export interface RecentProject extends Matchable {
   /** Full path. `label` is the basename. */
@@ -719,7 +757,7 @@ export interface RecentProject extends Matchable {
  * it cannot be bypassed by a caller that forgets it.
  */
 export function recentProjects(
-  sessions: readonly Pick<SessionMeta, 'cwd' | 'worktree'>[],
+  sessions: readonly Pick<SessionMeta, 'cwd' | 'worktree' | 'createdAt'>[],
   past: readonly { cwd?: string }[],
   hidden: readonly string[],
 ): RecentProject[] {
@@ -738,12 +776,31 @@ export function recentProjects(
 
   // The worktree path is a scratch checkout; repoRoot is the project the user
   // thinks in — and opening the scratch dir would start an agent inside it.
-  for (const s of sessions) push(s.worktree?.repoRoot ?? s.cwd, true)
+  //
+  // Newest first, to agree with groupSessions. Home renders that one directly
+  // above this one, so leaving this in store insertion order would put two
+  // orderings of the same projects on screen at once, pointing opposite ways.
+  for (const s of [...sessions].sort(byNewest)) push(s.worktree?.repoRoot ?? s.cwd, true)
   for (const p of past) if (p.cwd) push(p.cwd, false)
   return out
 }
 
-/** Live sessions grouped by the project they belong to, worktrees folded in. */
+/**
+ * Live sessions grouped by the project they belong to, worktrees folded in,
+ * newest first at both levels.
+ *
+ * Ordering is `createdAt` descending, and a group ranks by its OWN newest
+ * session — which is what preserves "the first row is the newest session" once
+ * the rail draws headers between groups. Ordering groups alphabetically would
+ * break it: the newest session could land three headers down.
+ *
+ * `createdAt` and not last-activity, deliberately. It is stamped once in the
+ * Session constructor (including on resume, so a conversation pulled out of
+ * History correctly comes back at the top) and no `onMeta` patch touches it
+ * afterwards. So the rail reorders only on create/resume/close — all things
+ * the user just did. Ordering by activity would yank a row to the top whenever
+ * a background agent emitted, shifting the row you were about to click.
+ */
 export function groupSessions(
   sessions: readonly SessionMeta[],
 ): { root: string; sessions: SessionMeta[] }[] {
@@ -755,7 +812,29 @@ export function groupSessions(
     g.sessions.push(s)
     by.set(key, g)
   }
-  return [...by.values()]
+  for (const g of by.values()) g.sessions.sort(byNewest)
+  // `sessions[0]` is the group's newest, having just been sorted. Optional-
+  // chained for noUncheckedIndexedAccess; a group only exists because something
+  // was pushed into it, so the fallback is unreachable.
+  return [...by.values()].sort(
+    (a, b) => (b.sessions[0]?.createdAt ?? 0) - (a.sessions[0]?.createdAt ?? 0),
+  )
+}
+
+/** Newest first. Shared so the rail, Home and the chooser cannot disagree. */
+const byNewest = (a: Pick<SessionMeta, 'createdAt'>, b: Pick<SessionMeta, 'createdAt'>): number =>
+  b.createdAt - a.createdAt
+
+/**
+ * The session a rail drawn newest-first shows at the top.
+ *
+ * The store array stays in insertion order, so its own `[0]` is the OLDEST —
+ * which after grouping is the BOTTOM row. Anything picking a "next" session to
+ * select after a close, or a first session to select on boot, wants this.
+ */
+export function newestSession(sessions: readonly SessionMeta[]): SessionMeta | undefined {
+  // Seedless reduce throws on an empty array and TypeScript will not catch it.
+  return sessions.length ? sessions.reduce((a, b) => (b.createdAt > a.createdAt ? b : a)) : undefined
 }
 
 /** One session's persisted spend, as `listUsage` returns it. */

@@ -10,22 +10,18 @@
  * Inlined rather than fetched at runtime: the renderer is a file:// page, so a
  * network dependency for an avatar would break offline and open a CSP hole.
  *
- * `currentColor` by default so the transcript gutter colours it with the theme,
- * like every lucide glyph here. `brand` opts into the official coral (#D97757).
+ * `currentColor`, like every lucide glyph here — the caller owns the colour.
+ * The transcript gutter sets Anthropic's coral on `.msg-avatar` via `--brand`;
+ * there is deliberately no hex in here, because no component writes a literal
+ * colour (see the header of theme.css).
  */
-export default function ClaudeMark({
-  size = 14,
-  brand = false,
-}: {
-  size?: number
-  brand?: boolean
-}): React.JSX.Element {
+export default function ClaudeMark({ size = 14 }: { size?: number }): React.JSX.Element {
   return (
     <svg
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      fill={brand ? '#D97757' : 'currentColor'}
+      fill="currentColor"
       aria-hidden="true"
       focusable="false"
     >

@@ -10,7 +10,7 @@ import type {
   SendContent,
   SessionMeta,
 } from '../../shared/types'
-import { projectKey } from './derive.mts'
+import { newestSession, projectKey } from './derive.mts'
 
 interface State {
   sessions: SessionMeta[]
@@ -90,12 +90,17 @@ interface State {
 
 /** Keep in sync with the :root defaults in theme.css — bootstrap() applies these
  *  over the stylesheet on every launch, so a mismatch silently wins here. */
-const DEFAULT_APPEARANCE: Appearance = {
+export const DEFAULT_APPEARANCE: Appearance = {
   surfaceAlpha: 0.82,
   terminalAlpha: 0.45,
   theme: 'auto',
   vibrancy: 'under-window',
   trafficLights: true,
+  // The side pane used to be 0.85fr, which rendered ~620px on a 1600px window
+  // and ~1000px on a 2560px one. A px default cannot track that; 520 is a sane
+  // fixed start for a diff or terminal pane.
+  railWidth: 244,
+  sideWidth: 520,
 }
 
 /**
@@ -171,6 +176,8 @@ function loadAppearance(): Appearance {
       // `??` is right even for a boolean: a persisted `false` survives, and only
       // a missing key falls back to the default.
       trafficLights: saved.trafficLights ?? DEFAULT_APPEARANCE.trafficLights,
+      railWidth: saved.railWidth ?? DEFAULT_APPEARANCE.railWidth,
+      sideWidth: saved.sideWidth ?? DEFAULT_APPEARANCE.sideWidth,
     }
   } catch {
     return DEFAULT_APPEARANCE
@@ -266,6 +273,11 @@ export function applyAppearance(a: Appearance): void {
   const theme = resolveTheme(a.theme)
   s.setProperty('--surface-alpha', String(fillFor(a.surfaceAlpha, theme)))
   s.setProperty('--terminal-alpha', String(fillFor(a.terminalAlpha, theme)))
+  // The raw dragged widths. theme.css clamps these into --rail-w / --side-w, so
+  // a window too narrow to honour them overrides without overwriting — see the
+  // comment on Appearance.railWidth.
+  s.setProperty('--rail-w-user', `${a.railWidth}px`)
+  s.setProperty('--side-w-user', `${a.sideWidth}px`)
   // Everything CSS-side keys off this attribute; nothing else needs telling.
   // The exception is xterm, which takes colour literals rather than CSS vars —
   // it watches resolvedTheme instead, which is why that lives in the store.
@@ -513,7 +525,11 @@ export const useStore = create<State>((set, get) => ({
       return {
         sessions,
         items,
-        activeId: s.activeId === id ? (sessions[0]?.id ?? null) : s.activeId,
+        // newestSession, not sessions[0]: this array is in insertion order, so
+        // its [0] is the OLDEST — which is the rail's bottom row now that the
+        // rail draws newest-first. Closing a session would send the selection
+        // to the far end of the list.
+        activeId: s.activeId === id ? (newestSession(sessions)?.id ?? null) : s.activeId,
         notice: notice ?? s.notice,
       }
     })
@@ -583,7 +599,8 @@ export const useStore = create<State>((set, get) => ({
         // state while a perfectly good session sits in the rail.
         return {
           sessions,
-          activeId: s.activeId === sessionId ? (sessions[0]?.id ?? null) : s.activeId,
+          // newestSession for the same reason as close() above.
+          activeId: s.activeId === sessionId ? (newestSession(sessions)?.id ?? null) : s.activeId,
         }
       })
     })
@@ -670,7 +687,10 @@ export const useStore = create<State>((set, get) => ({
       .then(async (live: SessionMeta[]) => {
         if (live?.length) {
           set({ sessions: live })
-          get().select(live[0].id)
+          // main returns these in ITS insertion order (a Map spread), so live[0]
+          // is the oldest — the rail's bottom row. Select what the rail actually
+          // shows first instead. Non-null inside this `live?.length` guard.
+          get().select(newestSession(live)!.id)
           // Transcripts come from each host's event log, NOT from disk. The log
           // carries the same ChatItem ids the live stream uses, so replaying it
           // merges cleanly with anything already in flight — whereas re-reading
