@@ -279,6 +279,27 @@ select {
 .rs-side {
   right: calc(var(--side-w) - 4px);
 }
+/* A grip, faint but always drawn. The hairline below only appears once you are
+   already hovering the 9px strip, which makes a resizable pane undiscoverable:
+   there is nothing to aim at until you have found it by accident. This is the
+   smallest mark that reads as "grab me" without becoming permanent chrome. */
+.rs::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 3px;
+  height: 26px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: rgb(var(--text-faint));
+  opacity: 0.28;
+  transition: opacity 120ms ease;
+}
+.rs:hover::before,
+.rs[data-active]::before {
+  opacity: 0.85;
+}
 /* A hairline over the seam that shows only under the pointer, so the app gains
    no permanent chrome line. `inset: 0 4px` leaves exactly the gap's 1px. */
 .rs::after {
@@ -374,35 +395,36 @@ select {
 
 /* Project separators between groups of live sessions.
 
-   Deliberately NOT a reuse of .rail-section: that one heads the history list
-   and must stay static. Two sticky headers in one scrollport both claim top: 0
-   and pin over each other. */
+   Static, and that IS the design — do not restore position:sticky. A pinned
+   header must paint an opaque fill or rows scroll visibly through it, but this
+   header sits on top of the rail's own translucent glass, so any fill
+   double-composites: the old `rgb(var(--surface) / 0.92)` over a pane at
+   var(--surface-alpha) (0.82 by default, and user-tunable lower) resolved to
+   ~0.97 and read as a black band across the rail. Lowering the alpha does not
+   fix it, because the two layers multiply — the only background that matches
+   the panel is no background at all. Losing the pin is the price.
+
+   .diff-file-head keeps the fill on purpose and now carries its own note about
+   why. Do not re-link the two with a shared comment: they made the same call
+   for the same reason and then diverged, which is exactly the pair a shared
+   comment gets wrong.
+
+   Still not a reuse of .rail-section, which heads the history list: same idea,
+   different metrics. */
 .rail-group-head {
   display: flex;
   align-items: baseline;
   gap: 6px;
-  position: sticky;
-  /* The three numbers cancel .rail-list's 6px padding so the pinned band is
-     full-bleed — otherwise rows scroll visibly through the gutter either side
-     of it. Text still lands at 15px, level with .session's own 9px inset. */
-  top: -6px;
-  margin: 0 -6px;
-  padding: 16px 15px 5px;
+  /* 9px, where the pinned version used 15px. That 15px paired with a
+     `margin: 0 -6px` cancelling .rail-list's padding to make the band
+     full-bleed; with no band the margin is gone, so the padding absorbs its
+     offset and the text still lands 15px from the rail edge — level with
+     .session's own 6px + 9px inset. Change one, change the other. */
+  padding: 16px 9px 5px;
   font-size: 10px;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   color: rgb(var(--text-faint));
-  /* 0.92 hardcoded, NOT var(--surface-alpha): the rail is user-tunable glass,
-     and at a low alpha the rows would be legible straight through the pinned
-     header. Same call, for the same reason, as .diff-file-head. */
-  background: rgb(var(--surface) / 0.92);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  /* Belt and braces. A pinned header already wins against the rows: it is
-     positioned, so it paints after non-positioned siblings regardless, and
-     backdrop-filter gives it a stacking context of its own. This just makes
-     that explicit against a future row that grows a z-index. */
-  z-index: 1;
 }
 .rail-group-n {
   margin-left: auto;
@@ -427,6 +449,46 @@ select {
 .session[data-active='true'] {
   background: rgb(var(--surface-3) / 0.85);
   color: rgb(var(--text));
+}
+
+/* One live session row: the .session button plus an archive ×. The × is a
+   SIBLING of the button, not a child, because .session is itself a <button> and
+   buttons cannot nest — the same constraint, solved the same way, as Home's
+   .home-recent / .home-remove pair. */
+.rail-row {
+  position: relative;
+}
+/* Absolute, not a flex sibling. A flex sibling would permanently spend ~24px of
+   a 244px rail on a control that is invisible most of the time, and every title
+   would ellipsize that much sooner; revealing it on hover instead would reflow
+   the row under the pointer. Overlapping the title's tail costs nothing until
+   you hover, and the solid fill makes what it covers read as occluded rather
+   than as a collision.
+
+   Selector is .rail-row .session-x, not bare .session-x, so the positioning
+   outranks any single-attribute rule that might set `position` on a control
+   (the tooltip CSS used to do exactly that). */
+.rail-row .session-x {
+  position: absolute;
+  right: 5px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  padding: 4px;
+  border-radius: var(--r-sm);
+  color: rgb(var(--text-faint));
+  background: rgb(var(--surface-3));
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+/* Revealed on focus-visible as well as hover, or it is keyboard-invisible. */
+.rail-row:hover .session-x,
+.rail-row .session-x:focus-visible {
+  opacity: 1;
+}
+.rail-row .session-x:hover {
+  color: rgb(var(--danger));
+  background: rgb(var(--danger) / 0.18);
 }
 
 .session-body {
@@ -551,6 +613,14 @@ select {
   padding: 8px;
   border-top: 1px solid rgb(var(--border));
   display: flex;
+  /* Wrap, because this row does not fit at every rail width. Five controls need
+     ~251px and the rail's own minimum is 180px, so on a narrow rail the last two
+     used to overflow the pane and get cut off by `.pane { overflow: hidden }` —
+     not merely clipped-looking but genuinely unclickable, since the part sticking
+     out lands under the .rs resize handle and the chat pane. Now they drop to a
+     second line instead. `.btn.grow` still takes the slack on whichever line it
+     lands on. */
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -1136,35 +1206,35 @@ select {
 }
 
 /* ----------------------------------------------------------------- tooltips
-   Two pseudo-elements on the control itself, no component and no JS. Native
-   `title` is what this replaces: on macOS it waits about 1.5s and then paints
-   unstyled OS chrome over a glass window.
+   One bubble for the whole app, mounted at .app level and positioned from JS.
+   Tooltip.tsx has the reasoning for why it is imperative rather than state.
 
-   `aria-label` is deliberately NOT replaced anywhere — this is decoration, the
-   label is the accessible name. Where a control also discloses something long
-   (a cwd, a full path), the native `title` stays on alongside; the two don't
-   conflict.
+   What was here was two pseudo-elements on the control itself, no component and
+   no JS — cheaper, and the right shape right up until it met
+   `.pane { overflow: hidden }`. The rail is ~244px and a bubble is up to 240px,
+   so a footer button lost nearly half its tip, and the Session tab's ran off the
+   right of the chat pane. `position: fixed` does not escape either, because
+   .glass's backdrop-filter makes every pane the containing block for its fixed
+   descendants — so the pane's own overflow still clips them. .app level is the
+   only way out, and Settings and the command palette already prove it works.
+
+   `data-tip` is untouched at every call site; only the reader moved. The old
+   data-tip-below / -start / -end modifiers are gone: the bubble now flips and
+   clamps against the window, which is what those three were approximating.
+
+   Native `title` is still what this replaces — on macOS it waits about 1.5s and
+   then paints unstyled OS chrome over a glass window — and `aria-label` is still
+   the accessible name everywhere, so this element is aria-hidden.
 
    Hotkeys live in the same string after two spaces ('Diff  ⌘1'), which is what
-   the existing titles already did. `pre-wrap` is what keeps that gap visible.
+   the titles already did. `pre-wrap` is what keeps that gap visible.
    ponytail: one bubble, so the hotkey can't be a separately-styled chip —
    that needs a real component. Add one if a tooltip ever needs more than text. */
-[data-tip] {
-  position: relative;
-}
-[data-tip]::after,
-[data-tip]::before {
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 0.1s ease;
-}
-[data-tip]::after {
-  content: attr(data-tip);
-  position: absolute;
-  z-index: 70; /* over .ac (30); scrims at 50/60 sit above their own trigger */
-  bottom: calc(100% + 7px);
-  left: 50%;
-  transform: translateX(-50%);
+.tip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 70; /* over .ac (30), and over both scrims (50/60) */
   width: max-content;
   max-width: 240px;
   padding: 5px 8px;
@@ -1177,47 +1247,59 @@ select {
   font-weight: 500;
   line-height: 1.4;
   text-align: left;
-  text-transform: none;
-  letter-spacing: normal;
   white-space: pre-wrap;
+  opacity: 0;
+  pointer-events: none;
+  /* Opacity only. Two adjacent controls reuse this one element, and a transition
+     on top/left would slide the bubble across the window between them.
+     text-transform/letter-spacing resets are gone with the pseudo-element: they
+     existed only because it inherited from an uppercase .tab or group header,
+     and a child of .app inherits from body, which has neither. */
+  transition: opacity 0.1s ease;
 }
-[data-tip]::before {
-  content: '';
-  position: absolute;
-  z-index: 71;
-  bottom: calc(100% + 2px);
-  left: 50%;
-  transform: translateX(-50%);
-  border: 5px solid transparent;
-  border-top-color: rgb(var(--border-strong));
-}
-[data-tip]:hover::after,
-[data-tip]:hover::before,
-[data-tip]:focus-visible::after,
-[data-tip]:focus-visible::before {
+.tip[data-show] {
   opacity: 1;
 }
-/* Controls in the top toolbar: above would leave the pane. */
-[data-tip-below]::after {
-  bottom: auto;
-  top: calc(100% + 7px);
+/* --tip-ax is the trigger's centre measured from the bubble's own left edge, so
+   the arrow keeps pointing at the control even once the bubble has been clamped
+   against a window edge. The pseudo-element version could not know that, so a
+   clamped bubble pointed at nothing. */
+.tip::after {
+  content: '';
+  position: absolute;
+  top: calc(100% - 1px);
+  left: var(--tip-ax);
+  translate: -50% 0;
+  border: 5px solid transparent;
+  /* --surface-2, the bubble's own fill. This used to be --border-strong, which
+     is `255 255 255 / 0.16` — a translucent wedge brighter than the bubble it
+     was meant to be part of. */
+  border-top-color: rgb(var(--surface-2));
 }
-[data-tip-below]::before {
-  bottom: auto;
-  top: calc(100% + 2px);
+.tip[data-below]::after {
+  top: auto;
+  bottom: calc(100% - 1px);
   border-top-color: transparent;
-  border-bottom-color: rgb(var(--border-strong));
+  border-bottom-color: rgb(var(--surface-2));
 }
-/* The rail is ~210px wide and `.pane` clips overflow, so a bubble centred on a
-   footer button loses its ends. Anchor these to the control's near edge. */
-[data-tip-start]::after {
-  left: 0;
-  transform: none;
+/* A tooltip carrier for a control that can be disabled. Chromium fires no
+   pointer events on a disabled form control, so the delegated listener never
+   sees it — and the tips that matter most are exactly the ones explaining WHY a
+   control is disabled. The old pseudo-element got away with this because :hover
+   still matches a disabled element even though events don't fire. Move data-tip
+   onto one of these only where the tip has something to say in the disabled
+   state; a purely descriptive tip can stay on the control and just go quiet. */
+.tw {
+  display: inline-flex;
 }
-[data-tip-end]::after {
-  left: auto;
-  right: 0;
-  transform: none;
+/* The wrapper alone is not enough. Chromium does not merely skip listeners on a
+   disabled control — it still hit-tests to it and then dispatches nothing, so
+   the event never reaches the wrapper either, and a disabled button that fills
+   its wrapper swallows the hover outright. Taking it out of hit-testing lets the
+   pointer land on the wrapper instead. Safe by definition: a disabled control
+   has nothing to receive. */
+.tw > :disabled {
+  pointer-events: none;
 }
 
 .cost {
@@ -1320,6 +1402,15 @@ select {
 .diff-file {
   border-bottom: 1px solid rgb(var(--border));
 }
+/* Sticky WITH an opaque fill, deliberately not the transparent treatment
+   .rail-group-head takes. Same physics — 0.92 composited over the pane's own
+   var(--surface-alpha) resolves near 0.99 against 0.82, so this header is a
+   visible band — but the trade lands the other way here. A diff file runs for
+   hundreds of lines, so this header really is pinned most of the time and
+   "which file am I in" is worth a seam. The rail's groups fit on one screen, so
+   it was paying the band for a pin that never fired.
+   0.92 and not var(--surface-alpha): much under 0.9 and the diff lines read
+   straight through the pinned header. */
 .diff-file-head {
   display: flex;
   align-items: center;
@@ -1330,6 +1421,7 @@ select {
   top: 0;
   background: rgb(var(--surface) / 0.92);
   backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
   z-index: 1;
 }
 /* ---------------------------------------------------------------- commit bar */
@@ -1621,21 +1713,88 @@ button.diff-more:hover {
   line-height: 1.45;
   color: rgb(var(--text-faint));
 }
-/* A checkbox reads left-to-right, so its label sits beside the box rather than
-   above it like the selects — hence the grid instead of the column flex. */
-.settings-check {
+/* A boolean row: label and hint on the left, the switch on the right. The
+   mirror of the select rows above, which stack label over control — a switch is
+   small and reads as a state rather than a choice, so it belongs beside the
+   thing it describes instead of under it, and the eye can run down one column of
+   switches to see what is on.
+
+   Selector is `.settings-body .settings-toggle`, not a bare `.settings-toggle`:
+   `.settings-body label` above is (0,1,1) and would otherwise beat a (0,1,0)
+   class outright — no source order fixes that — leaving `display: flex;
+   flex-direction: column` in place and stacking the switch under its own label.
+   The old `.settings-check` had the same collision and lost it silently. */
+.settings-body .settings-toggle {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: 1fr auto;
   align-items: center;
-  gap: 4px 7px;
+  gap: 4px 12px;
   cursor: pointer;
 }
-.settings-check input {
-  accent-color: rgb(var(--accent));
-  margin: 0;
+/* Both text rows stay in column 1 and the switch spans them, so a row with a
+   hint and a row without still centre their switch the same way. */
+.settings-body .settings-toggle .settings-hint {
+  grid-column: 1;
 }
-.settings-check .settings-hint {
+.settings-body .settings-toggle .switch {
   grid-column: 2;
+  align-self: center;
+}
+/* Span both text rows so the switch centres against the label AND its hint, not
+   just the label. `grid-row: 1 / -1` looks like the way to say that and is not:
+   -1 counts back through the EXPLICIT grid, and these rows are all implicit, so
+   it collapses to row 1 and the switch rides 16px high. Matching on :has instead
+   of `span 2` unconditionally, because a hintless row would otherwise grow an
+   empty second row and a 4px gap it does not need. */
+.settings-body .settings-toggle:has(.settings-hint) .switch {
+  grid-row: 1 / span 2;
+}
+
+/* A native <input type="checkbox"> with only its box replaced. appearance:none
+   keeps the element itself, so the role, the space-to-toggle keyboard handling
+   and :checked all still come from the platform — none of it has to be rebuilt
+   with ARIA and state, which is what a from-scratch switch component would
+   cost. Every offset below assumes the global border-box. */
+.switch {
+  appearance: none;
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 20px;
+  border: 1px solid rgb(var(--border-strong));
+  border-radius: 999px;
+  background: rgb(var(--surface-2) / 0.75);
+  cursor: pointer;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease;
+}
+.switch::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: rgb(var(--text-dim));
+  transition:
+    transform 0.15s ease,
+    background 0.15s ease;
+}
+.switch:checked {
+  background: rgb(var(--accent));
+  border-color: rgb(var(--accent));
+}
+/* 14px: the 32px track inside the border, less the knob, less its 2px inset
+   either side. */
+.switch:checked::after {
+  background: rgb(var(--accent-fg));
+  transform: translateX(14px);
+}
+.switch:focus-visible {
+  outline: 2px solid rgb(var(--accent) / 0.7);
+  outline-offset: 2px;
 }
 .settings-body label:has(> .select:disabled) {
   opacity: 0.45;
@@ -2884,10 +3043,12 @@ button.diff-more:hover {
 }
 
 /* The paged question modal reuses PlanCard's whole frame; only the pager and
-   the option shortcut are new. Narrower than a plan: one question and its
-   options is far less content than a 20KB document. */
+   the option shortcut are new. Still narrower than a plan — a question and its
+   options is far less content than a 20KB document — but not as narrow as it
+   was: the question text itself is unbounded, and at 620px a long one needed
+   six or seven lines before it had said anything. */
 .plan-modal.ask-modal {
-  width: min(620px, 92vw);
+  width: min(760px, 92vw);
 }
 /* .ask-q is now the page — one question's options, nothing else. */
 .ask-q {
@@ -2977,12 +3138,12 @@ button.diff-more:hover {
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 5vh 4vw;
+  padding: 3vh 3vw;
   background: rgb(0 0 0 / 0.42);
 }
 .plan-modal {
-  width: min(860px, 94vw);
-  max-height: 90vh;
+  width: min(1040px, 94vw);
+  max-height: 92vh;
   display: flex;
   flex-direction: column;
   background: rgb(var(--surface) / 0.98);
@@ -2995,10 +3156,19 @@ button.diff-more:hover {
 .plan-head {
   flex: none;
   display: flex;
-  align-items: center;
+  /* flex-start, not center: .plan-title wraps now, and centring would strand the
+     tag, the "choose any" note and the close button against the middle of a tall
+     block instead of level with its first line. */
+  align-items: flex-start;
   gap: 10px;
   padding: 13px 16px;
   border-bottom: 1px solid rgb(var(--border));
+  /* Only .plan-body scrolls and this is flex:none, so without a ceiling a
+     pathologically long question would push the options and the action buttons
+     off the bottom of the modal. Rare enough that it does not need to be pretty,
+     but it does need to not strand the buttons. */
+  max-height: 38vh;
+  overflow-y: auto;
 }
 .plan-title {
   flex: 1;
@@ -3006,9 +3176,17 @@ button.diff-more:hover {
   margin: 0;
   font-size: 14px;
   font-weight: 600;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  /* pre-wrap, and no ellipsis clamp. The old
+     `overflow:hidden; text-overflow:ellipsis; white-space:nowrap` trio caused
+     both reported bugs with one rule: a long question was cut off mid-sentence,
+     AND the newlines the SDK sends collapsed into spaces. A question you cannot
+     read is a question you cannot answer.
+     .plan-bar-title deliberately keeps the clamp — that one is a one-line anchor
+     in the transcript, where an ellipsis is the right answer. */
+  white-space: pre-wrap;
+  /* A bare path or URL offers no break opportunity and would otherwise overflow
+     the modal rather than wrap inside it. */
+  overflow-wrap: anywhere;
 }
 .plan-close {
   flex: none;

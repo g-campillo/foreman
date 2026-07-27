@@ -390,7 +390,6 @@ function Item({
             <button
               className="queued-cancel"
               data-tip="Cancel this queued message — it has not reached the agent yet"
-              data-tip-start=""
               onClick={() => void window.foreman.cancelQueued(sessionId, item.id)}
             >
               <X size={12} />
@@ -404,7 +403,6 @@ function Item({
                 <button
                   className="branch-btn"
                   data-tip="Branch a new conversation from this point"
-                  data-tip-start=""
                   onClick={() => void useStore.getState().fork(item.uuid)}
                 >
                   <GitBranch size={12} />
@@ -413,7 +411,6 @@ function Item({
                 <button
                   className="branch-btn"
                   data-tip="Restore files to their state at this message"
-                  data-tip-start=""
                   onClick={() => void useStore.getState().rewind(item.uuid!)}
                 >
                   <RotateCcw size={12} />

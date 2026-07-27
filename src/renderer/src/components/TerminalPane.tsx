@@ -122,7 +122,17 @@ export default function TerminalPane({
     ro.observe(el)
     // Next frame, not now: on the render that reveals the panel, layout for the
     // freshly un-hidden subtree hasn't settled when effects run.
-    const frame = requestAnimationFrame(resize)
+    //
+    // Focus rides along for exactly the same reason, and must not move back into
+    // the effect body. open() above re-parents xterm's helper textarea, and
+    // focusing it in the same tick — while the subtree it lives in has only just
+    // stopped being display:none — silently does nothing. That was the "open the
+    // terminal, then still have to click it before typing" bug: the focus call
+    // was always here, just one frame too early.
+    const frame = requestAnimationFrame(() => {
+      resize()
+      slot.term.focus()
+    })
 
     if (!slot.started) {
       slot.started = true
@@ -133,7 +143,6 @@ export default function TerminalPane({
         })
     }
 
-    slot.term.focus()
     return () => {
       cancelAnimationFrame(frame)
       ro.disconnect()

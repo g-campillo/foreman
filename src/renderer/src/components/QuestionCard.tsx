@@ -143,7 +143,6 @@ export default function QuestionCard({
               <button
                 className="plan-close"
                 data-tip="Close — the questions stay pending, reopen from the transcript"
-                data-tip-end=""
                 aria-label="Close questions"
                 onClick={() => setOpen(false)}
               >

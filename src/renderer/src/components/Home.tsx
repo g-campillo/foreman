@@ -194,7 +194,6 @@ export default function Home(): React.JSX.Element {
                 className="home-remove"
                 aria-label={`Remove ${r.label} from recents`}
                 data-tip="Remove from this list — nothing on disk is touched"
-                data-tip-end=""
                 onClick={() => hideProject(r.hint)}
               >
                 <X size={11} />

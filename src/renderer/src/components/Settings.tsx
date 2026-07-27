@@ -15,16 +15,16 @@ const THEMES: { label: string; value: AppearanceSettings['theme'] }[] = [
   { label: 'Light', value: 'light' },
 ]
 
-/**
- * Blur levels, in order of increasing diffusion. `null` is the only setting that
- * leaves the Tahoe Liquid Glass material intact — any vibrancy material
- * overrides it, which is the trade-off for getting real blur.
- */
 /** 0 is "never" — the host spells that as a huge timeout rather than a special case. */
 const IDLE_CHOICES = [15, 30, 60, 120, 480, 0]
 const BUDGET_CHOICES = [0, 5, 10, 25, 50, 100]
 const TURN_CHOICES = [0, 50, 100, 250, 500]
 
+/**
+ * Blur levels, in order of increasing diffusion. `null` is the only setting that
+ * leaves the Tahoe Liquid Glass material intact — any vibrancy material
+ * overrides it, which is the trade-off for getting real blur.
+ */
 const BLUR: { label: string; value: string | null }[] = [
   { label: 'Off · Liquid Glass', value: null },
   { label: 'Light', value: 'hud' },
@@ -51,15 +51,6 @@ export default function Settings({ onClose }: { onClose: () => void }): React.JS
   // Cached from the last live session, so this has options on a cold start.
   const models = useStore((s) => s.models)
   const modelRows = useMemo(() => modelLabels(models), [models])
-  const idx = Math.max(
-    0,
-    BLUR.findIndex((b) => b.value === a.vibrancy),
-  )
-  const themeIdx = Math.max(
-    0,
-    THEMES.findIndex((t) => t.value === a.theme),
-  )
-
   useEffect(() => {
     // Bare Escape, matching PlanCard's. If a plan modal is up it renders above
     // this one (same z-index, later in the tree) and both would close together —
@@ -81,7 +72,7 @@ export default function Settings({ onClose }: { onClose: () => void }): React.JS
       >
         <header className="plan-head">
           <h2 className="plan-title">Settings</h2>
-          <button className="plan-close" data-tip="Close  ⌘," data-tip-end="" aria-label="Close" onClick={onClose}>
+          <button className="plan-close" data-tip="Close  ⌘," aria-label="Close" onClick={onClose}>
             <X size={14} />
           </button>
         </header>
@@ -145,12 +136,9 @@ export default function Settings({ onClose }: { onClose: () => void }): React.JS
             </select>
           </label>
 
-          <label className="settings-check">
-            <input
-              type="checkbox"
-              checked={prefs.autoTitle}
-              onChange={(e) => setPrefs({ autoTitle: e.target.checked })}
-            />
+          {/* The switch is written last in every .settings-toggle so tab order
+              follows reading order; the grid puts it in column 2 either way. */}
+          <label className="settings-toggle">
             <span className="settings-lbl">
               <Sparkle size={12} /> Name conversations automatically
             </span>
@@ -158,6 +146,12 @@ export default function Settings({ onClose }: { onClose: () => void }): React.JS
               A one-shot Haiku call on the first message, about $0.004 each. Off keeps the
               project directory name.
             </span>
+            <input
+              className="switch"
+              type="checkbox"
+              checked={prefs.autoTitle}
+              onChange={(e) => setPrefs({ autoTitle: e.target.checked })}
+            />
           </label>
 
           <div className="settings-sect">Agents</div>
@@ -242,42 +236,48 @@ export default function Settings({ onClose }: { onClose: () => void }): React.JS
             </span>
           </label>
 
-          <label className="settings-check">
-            <input
-              type="checkbox"
-              checked={prefs.notifications}
-              onChange={(e) => setPrefs({ notifications: e.target.checked })}
-            />
+          <label className="settings-toggle">
             <span className="settings-lbl">
               <Bell size={12} /> Desktop notifications
             </span>
             <span className="settings-hint">
               Turn complete and approval needed, only while the window isn&apos;t focused.
             </span>
+            <input
+              className="switch"
+              type="checkbox"
+              checked={prefs.notifications}
+              onChange={(e) => setPrefs({ notifications: e.target.checked })}
+            />
           </label>
 
-          <label className="settings-check">
+          <label className="settings-toggle">
+            <span className="settings-lbl">
+              <Sparkles size={12} /> Playful status verbs
+            </span>
             <input
+              className="switch"
               type="checkbox"
               checked={prefs.workingVerbs}
               onChange={(e) => setPrefs({ workingVerbs: e.target.checked })}
             />
-            <span className="settings-lbl">
-              <Sparkles size={12} /> Playful status verbs
-            </span>
           </label>
 
           <div className="settings-sect">Appearance</div>
 
           <label>
-            Theme · {THEMES[themeIdx].label}
-            <input
-              type="range"
-              min={0}
-              max={THEMES.length - 1}
-              value={themeIdx}
-              onChange={(e) => set({ theme: THEMES[Number(e.target.value)].value })}
-            />
+            Theme
+            <select
+              className="select"
+              value={a.theme}
+              onChange={(e) => set({ theme: e.target.value as AppearanceSettings['theme'] })}
+            >
+              {THEMES.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
           </label>
 
           <label>
@@ -303,35 +303,40 @@ export default function Settings({ onClose }: { onClose: () => void }): React.JS
           </label>
 
           <label>
-            Blur · {BLUR[idx].label}
-            <input
-              type="range"
-              min={0}
-              max={BLUR.length - 1}
-              value={idx}
-              onChange={(e) => set({ vibrancy: BLUR[Number(e.target.value)].value })}
-            />
-            <span style={{ color: 'rgb(var(--text-faint))', fontSize: 10 }}>
+            Blur
+            {/* '' stands in for null: an <option> value is always a string, and
+                null is the one setting that leaves the native Liquid Glass
+                material alone. No real vibrancy material is the empty string, so
+                it round-trips through the DOM unharmed. */}
+            <select
+              className="select"
+              value={a.vibrancy ?? ''}
+              onChange={(e) => set({ vibrancy: e.target.value || null })}
+            >
+              {BLUR.map((b) => (
+                <option key={b.label} value={b.value ?? ''}>
+                  {b.label}
+                </option>
+              ))}
+            </select>
+            <span className="settings-hint">
               Any blur replaces the Liquid Glass material with a macOS vibrancy one.
             </span>
           </label>
 
-          <label>
-            Window buttons
-            {/* A two-stop range rather than a checkbox, to match the sliders it
-                sits between — the theme picker already does the same thing. */}
-            <input
-              type="range"
-              min={0}
-              max={1}
-              value={a.trafficLights ? 1 : 0}
-              onChange={(e) => set({ trafficLights: e.target.value === '1' })}
-            />
-            <span style={{ color: 'rgb(var(--text-faint))', fontSize: 10 }}>
+          <label className="settings-toggle">
+            <span className="settings-lbl">Window buttons</span>
+            <span className="settings-hint">
               {a.trafficLights
                 ? 'Shown. The window has no title bar, so these are its only close and zoom controls.'
                 : 'Hidden. ⌘W closes and ⌘Q quits.'}
             </span>
+            <input
+              className="switch"
+              type="checkbox"
+              checked={a.trafficLights}
+              onChange={(e) => set({ trafficLights: e.target.checked })}
+            />
           </label>
         </div>
       </div>

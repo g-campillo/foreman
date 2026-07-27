@@ -87,16 +87,18 @@ export default function SessionPanel({
         <span>Context</span>
         {/* The busy state is `:disabled` (opacity .4) rather than a "Refreshing…"
             word — there's no room for one beside a 12px glyph. */}
-        <button
-          className="code-btn"
-          onClick={() => void refresh()}
-          disabled={busy}
-          data-tip="Refresh — context usage is only meaningful between turns"
-          data-tip-end=""
-          aria-label="Refresh"
-        >
-          <RefreshCw size={12} />
-        </button>
+        {/* data-tip on the wrapper: a disabled control fires no pointer events,
+            and this tip exists precisely to explain the disabled state. */}
+        <span className="tw" data-tip="Refresh — context usage is only meaningful between turns">
+          <button
+            className="code-btn"
+            onClick={() => void refresh()}
+            disabled={busy}
+            aria-label="Refresh"
+          >
+            <RefreshCw size={12} />
+          </button>
+        </span>
       </div>
 
       {!ctx ? (
@@ -226,7 +228,6 @@ export default function SessionPanel({
                 <button
                   className="code-btn"
                   data-tip={srv.status === 'disabled' ? 'Enable this server' : 'Disable this server'}
-                  data-tip-end=""
                   aria-label={
                     srv.status === 'disabled' ? 'Enable this server' : 'Disable this server'
                   }
@@ -241,7 +242,6 @@ export default function SessionPanel({
                 <button
                   className="code-btn"
                   data-tip="Reconnect this server"
-                  data-tip-end=""
                   aria-label="Reconnect"
                   onClick={() => void window.foreman.reconnectMcp(session.id, srv.name).then(refresh)}
                 >
@@ -253,7 +253,6 @@ export default function SessionPanel({
                   className="code-btn"
                   defaultValue=""
                   data-tip="Permission override — can restrict this server, never widen it"
-                  data-tip-end=""
                   onChange={(e) =>
                     void window.foreman.setMcpPermissionOverride(
                       session.id,
@@ -277,7 +276,6 @@ export default function SessionPanel({
         <button
           className="code-btn"
           data-tip="Reload skills — the SDK has no read-only listing, so this is how you see them"
-          data-tip-end=""
           aria-label="Reload skills"
           onClick={() => void window.foreman.reloadSkills(session.id).then(setSkills)}
         >

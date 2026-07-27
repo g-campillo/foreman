@@ -12,6 +12,7 @@ import SessionPanel from './components/SessionPanel'
 import ProjectChooser from './components/ProjectChooser'
 import Home from './components/Home'
 import CommandPalette, { type PaletteActions } from './components/CommandPalette'
+import Tooltip from './components/Tooltip'
 
 export type Panel = 'diff' | 'terminal' | 'session'
 
@@ -225,7 +226,6 @@ export default function App(): React.JSX.Element {
               aria-pressed={panel === 'diff'}
               aria-label="Diff"
               data-tip="Diff — files this agent has changed  ⌘1"
-              data-tip-below=""
               disabled={!session}
               onClick={() => toggle('diff')}
             >
@@ -238,7 +238,6 @@ export default function App(): React.JSX.Element {
               aria-pressed={panel === 'terminal'}
               aria-label="Terminal"
               data-tip="Terminal — a shell in this session's directory  ⌘2"
-              data-tip-below=""
               disabled={!session}
               onClick={() => toggle('terminal')}
             >
@@ -250,7 +249,6 @@ export default function App(): React.JSX.Element {
               aria-pressed={panel === 'session'}
               aria-label="Session info"
               data-tip="Session info — context window, cost, MCP servers, skills  ⌘3"
-              data-tip-below=""
               disabled={!session}
               onClick={() => toggle('session')}
             >
@@ -264,7 +262,6 @@ export default function App(): React.JSX.Element {
               aria-pressed={showSettings}
               aria-label="Settings"
               data-tip="Settings  ⌘,"
-              data-tip-below=""
               onClick={() => setShowSettings((v) => !v)}
             >
               <SlidersHorizontal size={ICON} />
@@ -301,8 +298,6 @@ export default function App(): React.JSX.Element {
           <button
             className="plan-close no-drag"
             data-tip="Close panel"
-            data-tip-below=""
-            data-tip-end=""
             aria-label="Close panel"
             onClick={() => setPanel(null)}
           >
@@ -367,12 +362,18 @@ export default function App(): React.JSX.Element {
         onDoubleClick={() => setAppearance({ sideWidth: DEFAULT_APPEARANCE.sideWidth })}
       />
 
-      {/* Both are position:fixed, so they sit outside the panes — Settings in
-          particular must not live in a section that can be display:none. */}
+      {/* All three are position:fixed, so they sit outside the panes — Settings
+          in particular must not live in a section that can be display:none, and
+          the tooltip is here for the stronger version of the same reason: a
+          pane's backdrop-filter would make it the containing block for a fixed
+          child, and the pane's overflow would then clip the bubble. Tooltip
+          renders last so its z-index:70 and its DOM order agree about painting
+          over both scrims. */}
       {showSettings && <Settings onClose={() => setShowSettings(false)} />}
       {showPalette && (
         <CommandPalette actions={paletteActions} onClose={() => setShowPalette(false)} />
       )}
+      <Tooltip />
     </div>
   )
 }

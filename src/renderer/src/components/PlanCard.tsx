@@ -82,7 +82,6 @@ export default function PlanCard({
               <button
                 className="plan-close"
                 data-tip="Close — the plan stays pending, reopen from the transcript"
-                data-tip-end=""
                 aria-label="Close plan"
                 onClick={() => setOpen(false)}
               >
@@ -152,7 +151,6 @@ export default function PlanCard({
                       data-variant="primary"
                       onClick={() => approve('acceptEdits')}
                       data-tip="Approve, and stop asking about each edit"
-                      data-tip-end=""
                     >
                       <Zap size={14} />
                       Approve · auto-accept

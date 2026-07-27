@@ -306,7 +306,6 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
               {a.name}
               <button
                 data-tip={`Remove ${a.name}`}
-                data-tip-start=""
                 aria-label={`Remove ${a.name}`}
                 onClick={() => setAttachments((list) => list.filter((x) => x.id !== a.id))}
               >
@@ -324,7 +323,6 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
           <button
             className="ghost"
             data-tip="Predicted next prompt — Tab to use"
-            data-tip-start=""
             onClick={acceptGhost}
           >
             {session.promptSuggestion}
@@ -415,7 +413,6 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
                 [t.progress, t.lastTool && `last: ${t.lastTool}`].filter(Boolean).join('\n') ||
                 'Running — no progress reported yet'
               }
-              data-tip-start=""
             >
               <Cog size={12} className="bg-spin" />
               <span className="bg-desc">{t.description || t.taskType}</span>
@@ -547,7 +544,6 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
             <button
               className="btn"
               data-tip="Run in-flight work in the background, so the turn continues"
-              data-tip-end=""
               aria-label="Run in-flight work in the background"
               onClick={() => void window.foreman.backgroundTasks(session.id)}
             >
@@ -559,7 +555,6 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
               className="btn"
               data-variant="danger"
               data-tip="Stop the agent  Esc"
-              data-tip-end=""
               aria-label="Stop the agent"
               onClick={() => void window.foreman.interrupt(session.id)}
             >
@@ -570,11 +565,11 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         {/* Icon-only: this is the core loop, bound to ⏎ and pressed hundreds of
             times a session — the two glyphs read the state better than the two
             words did, and the word was pure chrome. */}
-        <button
-          className="btn"
-          data-variant="primary"
-          onClick={submit}
-          disabled={empty}
+        {/* data-tip rides on the wrapper, not the button: the button is disabled
+            while `empty`, and a disabled control fires no pointer events, so the
+            one tip that explains the disabled state would never appear. */}
+        <span
+          className="tw"
           data-tip={
             empty
               ? 'Type a message first'
@@ -582,11 +577,17 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
                 ? 'Queue this message — the agent picks it up when the turn ends  ⏎'
                 : 'Send  ⏎'
           }
-          data-tip-end=""
-          aria-label={busy ? 'Queue this message' : 'Send'}
         >
-          {busy ? <ListPlus size={14} /> : <SendHorizontal size={14} />}
-        </button>
+          <button
+            className="btn"
+            data-variant="primary"
+            onClick={submit}
+            disabled={empty}
+            aria-label={busy ? 'Queue this message' : 'Send'}
+          >
+            {busy ? <ListPlus size={14} /> : <SendHorizontal size={14} />}
+          </button>
+        </span>
       </div>
 
       {/* Keyed: Composer is rendered unkeyed by App, so without this the strip's

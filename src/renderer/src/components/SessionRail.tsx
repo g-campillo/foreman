@@ -160,7 +160,11 @@ export default function SessionRail(): React.JSX.Element {
       <header className="pane-head rail-head drag">Sessions</header>
 
       {notice && (
-        <button className="rail-notice" onClick={() => setNotice(null)} data-tip="Dismiss this notice" data-tip-start="">
+        <button
+          className="rail-notice"
+          onClick={() => setNotice(null)}
+          data-tip="Dismiss this notice"
+        >
           {notice}
         </button>
       )}
@@ -172,7 +176,6 @@ export default function SessionRail(): React.JSX.Element {
           data-active={home}
           onClick={showHome}
           data-tip="Home — sessions, projects, usage  ⌘0"
-          data-tip-start=""
         >
           <span className="activity" data-activity="idle">
             <HardHat size={12} />
@@ -201,19 +204,16 @@ export default function SessionRail(): React.JSX.Element {
         )}
 
         {groups.map((g) => (
-          /* The wrapper is structural, not cosmetic, and deliberately has no CSS
-             rule: a sticky header releases when its own PARENT scrolls past, so
-             flat in .rail-list every header would share one containing block and
-             the last one would stay pinned over the history list below. Do not
-             give it display:contents (removes the box) or a z-index (creates a
-             stacking context, letting a later group paint over a pinned header). */
+          /* Boxes one project's header with its rows, and deliberately has no
+             CSS rule. It used to be load-bearing — a sticky header releases when
+             its own PARENT scrolls past, so flat in .rail-list the last header
+             would have stayed pinned over the history list below — but
+             .rail-group-head is static now, so this is plain grouping. */
           <div key={g.root}>
             <div className="rail-group-head" title={g.root}>
               {g.root.split('/').filter(Boolean).pop() ?? g.root}
               {/* Only when the group has depth. Next to a single row it restates
-                  what you can already see; under a header pinned over a group
-                  running past the fold, it is the only thing that tells you how
-                  much is below. */}
+                  what you can already see. */}
               {g.sessions.length > 1 && (
                 <span className="rail-group-n">{g.sessions.length}</span>
               )}
@@ -232,37 +232,52 @@ export default function SessionRail(): React.JSX.Element {
                   }}
                 />
               ) : (
-                <button
-                  key={s.id}
-                  className="session"
-                  // `&& !home` or two rows look selected at once.
-                  data-active={s.id === activeId && !home}
-                  onClick={() => select(s.id)}
-                  onDoubleClick={() => setRenaming(s.id)}
-                  onAuxClick={(e) => {
-                    if (e.button === 1) void close(s.id)
-                  }}
-                  title={`${s.cwd}\nDouble-click to rename`}
-                >
-                  <ActivityIcon session={s} />
-                  <span className="session-body">
-                    <span className="session-title">{s.title}</span>
-                    {/* No sub-line at all. The icon carries state, the group
-                        header carries the project, and position carries
-                        recency — so every row is one line and the list reads as
-                        a list. Cost used to live here; it is in ContextStrip,
-                        SessionPanel and Home, all of which have room for the
-                        token count beside it. */}
-                    {/* Which checkout this agent is editing. Without it, three
-                        sessions on one repo are indistinguishable in the rail. */}
-                    {s.worktree && (
-                      <span className="session-branch">
-                        <GitBranch size={11} />
-                        {s.worktree.branch}
-                      </span>
-                    )}
-                  </span>
-                </button>
+                <div key={s.id} className="rail-row">
+                  <button
+                    className="session"
+                    // `&& !home` or two rows look selected at once.
+                    data-active={s.id === activeId && !home}
+                    onClick={() => select(s.id)}
+                    onDoubleClick={() => setRenaming(s.id)}
+                    onAuxClick={(e) => {
+                      if (e.button === 1) void close(s.id)
+                    }}
+                    title={`${s.cwd}\nDouble-click to rename`}
+                  >
+                    <ActivityIcon session={s} />
+                    <span className="session-body">
+                      <span className="session-title">{s.title}</span>
+                      {/* No sub-line at all. The icon carries state, the group
+                          header carries the project, and position carries
+                          recency — so every row is one line and the list reads
+                          as a list. Cost used to live here; it is in
+                          ContextStrip, SessionPanel and Home, all of which have
+                          room for the token count beside it. */}
+                      {/* Which checkout this agent is editing. Without it, three
+                          sessions on one repo are indistinguishable in the rail. */}
+                      {s.worktree && (
+                        <span className="session-branch">
+                          <GitBranch size={11} />
+                          {s.worktree.branch}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                  {/* Archive, not delete. close() drops the session from the
+                      rail and stops the agent, but the transcript stays in
+                      ~/.claude/projects and comes back from the history search
+                      below — so this is reversible, and the tip says so rather
+                      than making the user find out. Middle-click on the row
+                      still does the same thing for anyone who knew about it. */}
+                  <button
+                    className="session-x"
+                    data-tip="Archive — the transcript is kept, and resumes from past sessions"
+                    aria-label={`Archive ${s.title}`}
+                    onClick={() => void close(s.id)}
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
               ),
             )}
           </div>
@@ -291,7 +306,6 @@ export default function SessionRail(): React.JSX.Element {
                 data-tip={
                   scope ? 'Showing this project — click for all projects' : 'Showing all projects'
                 }
-                data-tip-end=""
               >
                 {scope ? scope.split('/').pop() : 'all projects'}
               </button>
@@ -368,7 +382,6 @@ export default function SessionRail(): React.JSX.Element {
           className="btn grow"
           data-variant="primary"
           data-tip="New conversation in this project  ⌘N"
-          data-tip-start=""
           onClick={() => void newSession()}
         >
           <Plus size={14} />
@@ -379,7 +392,6 @@ export default function SessionRail(): React.JSX.Element {
           data-active={draft}
           onClick={startDraft}
           data-tip="New conversation in another project  ⇧⌘N"
-          data-tip-start=""
           aria-label="New conversation in another project"
         >
           <FolderPlus size={14} />
@@ -388,7 +400,6 @@ export default function SessionRail(): React.JSX.Element {
           className="btn"
           onClick={() => setBranching(true)}
           data-tip="New agent in its own git worktree, on its own branch"
-          data-tip-start=""
           aria-label="New worktree session"
         >
           <GitBranchPlus size={14} />
@@ -398,7 +409,6 @@ export default function SessionRail(): React.JSX.Element {
           data-active={showPast}
           onClick={() => setShowPast((v) => !v)}
           data-tip={showPast ? 'Hide past sessions' : 'Resume or search past sessions'}
-          data-tip-end=""
           aria-label={showPast ? 'Hide past sessions' : 'Past sessions'}
         >
           <History size={14} />
@@ -408,7 +418,6 @@ export default function SessionRail(): React.JSX.Element {
             className="btn"
             data-variant="danger"
             data-tip="Close this session"
-            data-tip-end=""
             aria-label="Close this session"
             onClick={() => void close(activeId)}
           >

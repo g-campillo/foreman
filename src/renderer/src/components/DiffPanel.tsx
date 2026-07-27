@@ -147,7 +147,6 @@ export default function DiffPanel({
               ? `Commit the ticked files to ${session.worktree.branch}`
               : 'Commit the ticked files'
           }
-          data-tip-end=""
         >
           <GitCommitHorizontal size={14} />
           {committing ? 'Committing…' : 'Commit'}
@@ -164,7 +163,6 @@ export default function DiffPanel({
                 className="diff-pick"
                 checked={!excluded[d.path]}
                 data-tip="Include in the next commit"
-                data-tip-start=""
                 onChange={(e) =>
                   setExcluded((x) => ({ ...x, [d.path]: !e.target.checked }))
                 }
@@ -194,7 +192,6 @@ export default function DiffPanel({
                     ? 'Delete this new file'
                     : 'Discard all uncommitted changes to this file — yours as well as the agent\'s'
                 }
-                data-tip-end=""
               >
                 <Undo2 size={12} />
                 Revert
