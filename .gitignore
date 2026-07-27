@@ -12,3 +12,7 @@ release/
 # belong in the environment, never in the repo.
 .env
 .env.*
+
+# Serena's per-project language-server cache. Written by whichever editor or
+# agent has the MCP server attached, so it is local tooling state, not ours.
+.serena/
