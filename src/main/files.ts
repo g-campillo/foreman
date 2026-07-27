@@ -1,6 +1,8 @@
 import { ipcMain } from 'electron'
 import { readFile, writeFile, stat, realpath, readdir } from 'node:fs/promises'
-import { dirname, basename, join, relative } from 'node:path'
+import type { Dirent } from 'node:fs'
+import { dirname, basename, join, relative, isAbsolute } from 'node:path'
+import { homedir } from 'node:os'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { IPC, type FileRead, type FileWrite, type FileList } from '../shared/types'
@@ -41,6 +43,75 @@ export const FILE_LIMIT = 4000
 
 /** Cap on files offered to the tree. Higher, because a tree implies completeness. */
 export const TREE_LIMIT = 20000
+
+/**
+ * Directories the non-git walk never descends into.
+ *
+ * NOT a .gitignore reimplementation — that is exactly what `listProjectFiles`
+ * exists to avoid. This is a fixed deny-list standing in for the one thing
+ * `--exclude-standard` was buying us, and it only has to cover the directories
+ * whose sheer size would make an unfiltered walk useless: build output and
+ * vendored dependencies. Anything else showing up in a non-git project is a
+ * file the user actually has.
+ */
+const SKIP_DIRS = new Set([
+  '.git',
+  'node_modules',
+  'target', // maven, cargo
+  'build', // gradle, cmake
+  'dist',
+  'out',
+  '.gradle',
+  '.idea',
+  '.venv',
+  'venv',
+  '__pycache__',
+  'vendor',
+  '.next',
+  '.cache',
+  'Pods',
+])
+
+/**
+ * Every file under `root`, root-relative, pruned and capped.
+ *
+ * Iterative rather than recursive so the cap stops the whole walk instead of
+ * just the current branch — on a directory that is not a project at all (a home
+ * folder picked by mistake) that is the difference between a pause and a hang.
+ *
+ * Symlinks are skipped outright, and for once the default does the right thing:
+ * `Dirent` reports a symlink as neither `isFile()` nor `isDirectory()`, so
+ * following them would have to be opt-in. Not following them means no cycle
+ * detection, which is worth more than the rare symlinked source dir.
+ */
+async function walkFiles(root: string, limit: number): Promise<FileList> {
+  const paths: string[] = []
+  const stack = ['']
+
+  while (stack.length) {
+    const rel = stack.pop()!
+    let entries: Dirent[]
+    try {
+      entries = await readdir(join(root, rel), { withFileTypes: true })
+    } catch {
+      // One unreadable directory must not cost us the rest of the tree.
+      continue
+    }
+    for (const e of entries) {
+      // POSIX separators, because buildTree splits on '/' and this runs on mac.
+      const path = rel ? `${rel}/${e.name}` : e.name
+      if (e.isDirectory()) {
+        if (!SKIP_DIRS.has(e.name)) stack.push(path)
+      } else if (e.isFile()) {
+        paths.push(path)
+        // Stop one PAST the cap, so `truncated` can tell "landed exactly on the
+        // limit" from "there was more" without a second count.
+        if (paths.length > limit) return { paths: paths.slice(0, limit), truncated: true }
+      }
+    }
+  }
+  return { paths, truncated: false }
+}
 
 /**
  * Resolve a renderer-supplied path and prove it is inside the project.
@@ -200,20 +271,81 @@ export async function listProjectFiles(cwd: string, limit: number): Promise<File
     )
     const files = stdout.split('\0').filter(Boolean)
     return { paths: files.slice(0, limit), truncated: files.length > limit }
-  } catch {
-    // Not a git repo, or git is missing. A shallow readdir beats nothing, and
-    // deliberately does not recurse — an un-ignored deep walk is the slow,
-    // node_modules-filled case this whole function exists to avoid.
-    try {
-      const entries = await readdir(cwd, { withFileTypes: true })
-      const names = entries
-        .filter((e) => e.isFile() && !e.name.startsWith('.'))
-        .map((e) => e.name)
-      return { paths: names.slice(0, limit), truncated: names.length > limit }
-    } catch {
-      return { paths: [], truncated: false }
-    }
+  } catch (err) {
+    // Not a git repo, git missing from PATH, or a `safe.directory` refusal —
+    // all three land here, and the failure used to be both silent and severe.
+    //
+    // This once fell back to a single-level readdir filtered by `isFile()`,
+    // which discarded every directory. buildTree derives folders by splitting
+    // paths on '/', so bare filenames produce NO folders at all: a Maven
+    // project rendered as `pom.xml`, `README.md`, `HELP.md`, `mvnw`,
+    // `mvnw.cmd` and nothing else, which reads as a broken language filter
+    // rather than as git having failed.
+    //
+    // Walking is fine here; what the old comment was really rejecting was an
+    // *un-ignored* walk. SKIP_DIRS plus the caller's cap covers that.
+    console.warn('[files] git ls-files failed for', cwd, '- walking instead:', err)
+    return walkFiles(cwd, limit)
   }
+}
+
+/** Entries offered for one directory. The popover shows ~50; this is headroom. */
+const BROWSE_LIMIT = 300
+
+/**
+ * Complete an absolute or `~`-rooted path, one directory at a time.
+ *
+ * A second source alongside `listProjectFiles` rather than a loosening of it,
+ * because the two are genuinely different shapes. Inside a project you want
+ * every path at once and a fuzzy match over the lot — `git ls-files` gives you
+ * that for the price of one call. Outside one there is no project to enumerate
+ * and no ignore file to respect, so this completes a segment at a time against a
+ * real directory, the way a shell does.
+ *
+ * `~` is expanded HERE because the renderer cannot: its preload surface is IPC
+ * only, so it has no `os.homedir()`. derive.mts's `relPath` says the same thing
+ * from the other side, and this is the IPC call it declined to add for display
+ * purposes — worth it now that completion needs it.
+ *
+ * No `within` guard, and that is deliberate rather than overlooked. This lists
+ * directories for a human who already has a Finder, which is the argument this
+ * file's own header makes about editor reads. It grants the AGENT nothing: the
+ * result is text in a prompt, and the agent's own Read still goes through
+ * canUseTool. `resolveWithin` still guards every actual file I/O below.
+ */
+export async function browsePath(query: string): Promise<string[]> {
+  const abs = query.startsWith('~') ? join(homedir(), query.slice(1)) : query
+  if (!isAbsolute(abs)) return []
+
+  // A trailing slash means "list this directory"; anything else means "complete
+  // this last segment" — which is what the caret sitting after it implies, and
+  // what every shell does.
+  const listing = abs.endsWith('/')
+  const dir = listing ? abs : dirname(abs)
+  const prefix = listing ? '' : basename(abs).toLowerCase()
+
+  let entries: Dirent[]
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    // Half-typed directory names are the normal case here, not an error.
+    return []
+  }
+
+  const out: string[] = []
+  for (const e of entries) {
+    if (!e.name.toLowerCase().startsWith(prefix)) continue
+    // Hide dotfiles until they are actually being asked for, as a shell does.
+    if (!prefix.startsWith('.') && e.name.startsWith('.')) continue
+    const full = join(dir, e.name)
+    // The trailing slash is the drill-down affordance: Composer keeps the
+    // mention open when a value ends in one, so the next segment can be typed.
+    if (e.isDirectory()) out.push(`${full}/`)
+    else if (e.isFile()) out.push(full)
+  }
+  // Sort before the cap, or the cap would hand back an arbitrary subset in
+  // readdir's filesystem order.
+  return out.sort().slice(0, BROWSE_LIMIT)
 }
 
 export function registerFileIpc(): void {
@@ -253,6 +385,8 @@ export function registerFileIpc(): void {
   ipcMain.handle(IPC.fileStat, (_e, { cwd, paths }: { cwd: string; paths: string[] }) =>
     statFiles(cwd, paths),
   )
+
+  ipcMain.handle(IPC.fileBrowse, (_e, { query }: { query: string }) => browsePath(query))
 
   // One round-trip for both halves. `git status` next to the `git ls-files` we
   // are already making is close to free, and it is what lets the tree show what

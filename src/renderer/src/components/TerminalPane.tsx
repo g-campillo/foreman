@@ -49,6 +49,28 @@ function slotFor(session: SessionMeta): Slot {
   term.onData((data) => void window.foreman.writePty(session.id, data))
   term.onResize(({ cols, rows }) => void window.foreman.resizePty(session.id, cols, rows))
 
+  // Escape belongs to the shell, not to the modal above it.
+  //
+  // TerminalModal registers the same bare-window Escape listener FileModal does,
+  // and that is only safe THERE because Monaco calls stopPropagation() on keys
+  // it handles. xterm does not — so without this, Escape inside vim, less, htop
+  // or a readline vi-mode prompt would tear down the terminal instead of
+  // reaching the program.
+  //
+  // Returning true is the whole point: xterm still processes the key and the ESC
+  // goes down the pty unchanged. Only the bubble to window is cut. xterm's own
+  // typings name this as the intended use — "allowing consumers to stop
+  // propagation ... returns whether the event should be processed by xterm.js".
+  //
+  // Deliberately NOT a `buffer.active.type === 'alternate'` test. That detects
+  // full-screen TUIs and misses exactly the two cases that bite: `fzf --height`
+  // and shell vi-mode both read Escape in the NORMAL buffer, so it would fail in
+  // the direction that destroys work.
+  term.attachCustomKeyEventHandler((ev) => {
+    if (ev.type === 'keydown' && ev.key === 'Escape') ev.stopPropagation()
+    return true
+  })
+
   const slot: Slot = { term, fit, started: false }
   slots.set(session.id, slot)
   return slot

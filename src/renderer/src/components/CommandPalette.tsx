@@ -15,8 +15,11 @@ interface Entry {
 export interface PaletteActions {
   /** Opens the side panel. Deliberately not a toggle — "Show diff" from the
    *  palette must never close a diff that's already open. */
-  showPanel(panel: 'diff' | 'terminal' | 'session'): void
+  showPanel(panel: 'diff' | 'session' | 'files'): void
   showSettings(): void
+  /** Its own action, not a `showPanel` case: the terminal is a window-level
+   *  modal now rather than one of the side pane's tabs. */
+  showTerminal(): void
 }
 
 /**
@@ -85,7 +88,7 @@ export default function CommandPalette({
       },
       { id: 'settings', label: 'Settings', hint: '⌘,', group: 'View', run: actions.showSettings },
       { id: 'diff', label: 'Show diff', hint: '⌘1', group: 'View', run: () => actions.showPanel('diff') },
-      { id: 'term', label: 'Show terminal', hint: '⌘2', group: 'View', run: () => actions.showPanel('terminal') },
+      { id: 'term', label: 'Show terminal', hint: '⌘2', group: 'View', run: actions.showTerminal },
       { id: 'sess', label: 'Show session info', hint: '⌘3', group: 'View', run: () => actions.showPanel('session') },
     )
 

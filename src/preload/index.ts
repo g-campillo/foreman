@@ -73,7 +73,19 @@ const api = {
     setMode?: PermissionMode,
     /** Indices of the edits/hunks accepted. Absent means all of them. */
     keep?: number[],
-  ) => ipcRenderer.invoke(IPC.permRespond, { requestId, behavior, message, setMode, keep }),
+    /** Approving a plan AND handing the work to subagents. Rides the answer
+     *  because the queue gate makes a follow-up message arrive too late — see
+     *  main/agent/plan.ts. */
+    subagents?: boolean,
+  ) =>
+    ipcRenderer.invoke(IPC.permRespond, {
+      requestId,
+      behavior,
+      message,
+      setMode,
+      keep,
+      subagents,
+    }),
 
   // MCP elicitation
   respondElicitation: (
@@ -102,6 +114,10 @@ const api = {
   ) => ipcRenderer.invoke(IPC.fileWrite, { sessionId, cwd, path, text, bom, expectMtimeMs }),
   statFiles: (cwd: string, paths: string[]) => ipcRenderer.invoke(IPC.fileStat, { cwd, paths }),
   fileTree: (cwd: string) => ipcRenderer.invoke(IPC.fileTree, { cwd }),
+  /** Complete an absolute or `~`-rooted path, one directory at a time. No cwd:
+   *  this is the source for mentions that point outside the project. */
+  browsePath: (query: string): Promise<string[]> =>
+    ipcRenderer.invoke(IPC.fileBrowse, { query }),
 
   // lsp — raw JSON-RPC frames to and from the session's server fleet
   lspSend: (sessionId: string, msg: unknown) =>

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Check, ChevronLeft, FileText, Pencil, SendHorizontal, X, Zap } from 'lucide-react'
+import { Check, ChevronLeft, FileText, Pencil, SendHorizontal, Users, X, Zap } from 'lucide-react'
 import type { PermissionMode, PermissionRequest } from '../../../shared/types'
 import { PLAN_FEEDBACK_PREFIX, planTitle, type PlanProposal } from '../derive.mts'
 import Markdown from './Markdown'
@@ -11,9 +11,10 @@ import Markdown from './Markdown'
  * replaces the "Allow ExitPlanMode?" card, which showed a 20KB plan as escaped
  * JSON and offered Allow/Deny with no hint that Deny meant "keep planning".
  *
- * Three exits, matching the CLI's own:
+ * Four exits, matching the CLI's own:
  *  - approve, and auto-accept the edits that follow
  *  - approve, and keep approving each edit by hand
+ *  - approve, and hand the work to subagents (implement / review / test)
  *  - send feedback, which leaves the session in plan mode for a revision
  *
  * A modal rather than an inline card because plans run to tens of kilobytes;
@@ -32,8 +33,18 @@ export default function PlanCard({
   const [writing, setWriting] = useState(false)
   const title = planTitle(plan.markdown)
 
-  const approve = (mode: PermissionMode): void => {
-    void window.foreman.respondPermission(req.requestId, 'allow', undefined, mode)
+  // The `undefined` before `subagents` is `keep`, which only the partial-approval
+  // path uses. If a seventh parameter ever lands here, that is the argument for
+  // turning respondPermission into an options object.
+  const approve = (mode: PermissionMode, subagents?: boolean): void => {
+    void window.foreman.respondPermission(
+      req.requestId,
+      'allow',
+      undefined,
+      mode,
+      undefined,
+      subagents,
+    )
   }
   const revise = (): void => {
     if (!feedback.trim()) return
@@ -135,7 +146,7 @@ export default function PlanCard({
                     </span>
                   )}
                   <div className="plan-buttons">
-                    {/* All three keep their words. Two of them are Approve —
+                    {/* All four keep their words. THREE of them are Approve —
                         telling those apart by glyph alone is a coin flip on an
                         irreversible choice. */}
                     <button className="btn" onClick={() => setWriting(true)}>
@@ -148,12 +159,25 @@ export default function PlanCard({
                     </button>
                     <button
                       className="btn"
-                      data-variant="primary"
                       onClick={() => approve('acceptEdits')}
                       data-tip="Approve, and stop asking about each edit"
                     >
                       <Zap size={14} />
                       Approve · auto-accept
+                    </button>
+                    {/* Same acceptEdits as the button beside it, plus a directive
+                        that reaches the model through a PostToolUse hook. Not a
+                        checkbox crossed with the other two: a delegated run that
+                        stopped on every implementer edit would defeat the point
+                        of delegating it, so this is genuinely a third approve. */}
+                    <button
+                      className="btn"
+                      data-variant="primary"
+                      onClick={() => approve('acceptEdits', true)}
+                      data-tip="Approve, and have subagents implement it, review it against the plan, and run the tests"
+                    >
+                      <Users size={14} />
+                      Approve · subagents
                     </button>
                   </div>
                 </>

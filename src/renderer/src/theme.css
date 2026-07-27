@@ -242,7 +242,8 @@ select {
    then yields exactly one hairline (rail↔chat), which is what we want.
    Driven off the attribute rather than a modifier class because the attribute
    already IS the state: nothing to keep in sync, and per-panel width overrides
-   (`.app[data-panel='terminal']`) come for free without touching the TSX. */
+   (`.app[data-panel='files']`, further down) come free without touching the
+   TSX. */
 .app:not([data-panel]) {
   grid-template-columns: var(--rail-w) minmax(0, 1fr);
 }
@@ -690,6 +691,23 @@ select {
    and let .convo scroll instead. */
 .convo > * {
   flex-shrink: 0;
+}
+
+/* Every row is wrapped in [data-item-id] so the editor's gutter can jump to one.
+   That wrapper is the flex item now, not the message — which silently killed
+   `align-self` on .msg-user (flex-end) and .msg-result (center), since the
+   property only means anything on a flex item. Both then rendered as ordinary
+   block boxes: full width, anchored left.
+
+   Re-establishing a column flex context inside the wrapper hands them back
+   without touching the JSX. `display: contents` would also work, but it would
+   erase the wrapper's own [data-flash] background and radius, which is the whole
+   point of having it. Direct child on purpose: nested subagent items are
+   rendered by the byParent recursion with no wrapper, so .tool-nest's
+   align-self overrides must not be caught by this. */
+.convo > [data-item-id] {
+  display: flex;
+  flex-direction: column;
 }
 
 .msg-user {
@@ -3225,6 +3243,10 @@ button.diff-more:hover {
 }
 .plan-buttons {
   display: flex;
+  /* Four buttons plus the plan path fit at the modal's 1040px and do not at
+     94vw on a small window. Wrapping costs the footer a second line; not
+     wrapping costs .plan-path its entire width and then overflows anyway. */
+  flex-wrap: wrap;
   gap: 7px;
   margin-left: auto;
   justify-content: flex-end;
@@ -3376,6 +3398,49 @@ button.diff-more:hover {
   border-top: 1px solid rgb(var(--border));
   color: rgb(var(--text-faint));
   font-size: 11.5px;
+}
+
+/* ----------------------------------------------------------- terminal modal
+
+   The fifth member of the .plan-modal family. Ladder: 400 (settings) /
+   760 (ask) / 1040 (plan) / 1240 here / 1400 (file).
+
+   `height`, not `max-height`, and it is the file modal's reason below reached
+   from the other side: .term-host is `flex: 1; min-height: 0`, which resolves to
+   ZERO against an auto-height parent — and xterm measures its character cell at
+   open() exactly as Monaco does, so a zero-height box caches a bogus cell and
+   FitAddon then divides the real height by it. That is the half-height-scrollbar
+   bug TerminalPane documents. The modal has to be told how big it is. */
+.plan-modal.term-modal {
+  width: min(1240px, 92vw);
+  height: 80vh;
+}
+
+/* BELOW the palette (50), unlike every other .plan-scrim (60). The terminal is
+   the least modal of the modals: ⌘K has to paint over a shell you left open,
+   and so does a plan or a question the agent is blocked on. A workspace you
+   opened yourself does not outrank a decision someone is waiting for. */
+.term-scrim {
+  z-index: 45;
+}
+
+.term-head {
+  align-items: center; /* one line, unlike a plan title that can wrap */
+}
+.term-title {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* Says out loud why Escape did not close this. Without it the modal reads as
+   broken the first time someone hits Escape inside vim and nothing happens. */
+.term-hint {
+  flex: none;
+  font-size: 10.5px;
+  color: rgb(var(--text-faint));
 }
 
 /* --------------------------------------------------------------- file modal

@@ -567,6 +567,9 @@ export const IPC = {
   fileWrite: 'file:write',
   fileStat: 'file:stat',
   fileTree: 'file:tree',
+  /** Directory listing for an @-mention that has left the project. Takes a raw
+   *  query and no cwd — being session-free is the entire point of it. */
+  fileBrowse: 'file:browse',
 
   // The renderer's LSP client, multiplexed onto the host's fleet by lsp/proxy.
   // A raw JSON-RPC frame in each direction: the message IS the payload.

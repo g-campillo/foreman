@@ -26,6 +26,7 @@ import { createInputQueue, type InputQueue } from './queue'
 import { makeCanUseTool, cancelPending } from './permissions'
 import { makeOnElicitation, cancelPendingElicitations } from './elicitation'
 import { makeDiffHook } from './gitdiff'
+import { PLAN_AGENTS, makePlanHook } from './plan'
 import { lspMcpServer, READ_ONLY_TOOLS } from '../../lsp/tools'
 import { makeDiagnosticsHook } from '../../lsp/diagnose'
 import { claudeExecutable } from './executable'
@@ -249,8 +250,21 @@ export class Session {
         // compiler where a symbol lives reveals less than reading it would. The
         // write tools are deliberately absent and keep prompting.
         allowedTools: READ_ONLY_TOOLS,
+        // Named roles for the plan-approval "with subagents" path. Constructor-
+        // only — Query cannot add an agent mid-session and reinitialize() takes
+        // no arguments — so they are passed for every session and cost nothing
+        // until one is invoked. settingSources is not passed, so any filesystem
+        // agents in ~/.claude/agents still load and merge alongside these.
+        agents: PLAN_AGENTS,
         hooks: {
-          PostToolUse: makeDiffHook(this.meta.id, init.cwd),
+          // Two matchers on one event: a one-git-call badge refresh on writes,
+          // and the plan-orchestration directive on ExitPlanMode. Verified live
+          // that both are heard — the diff badge still refreshes with the second
+          // installed.
+          PostToolUse: [
+            ...makeDiffHook(this.meta.id, init.cwd),
+            ...makePlanHook(this.meta.id),
+          ],
           // Separate from the diff hook on purpose. That one is a one-git-call
           // badge refresh per tool; this one runs once per BATCH, because five
           // parallel Edits should diagnose once rather than five times racing,

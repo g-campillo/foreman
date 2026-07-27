@@ -87,6 +87,16 @@ const windowTag = (m: ModelInfo): string =>
 /** A displayName without its parenthetical: `Opus 5 (1M context)` -> `Opus 5`. */
 const plainName = (s: string): string => s.replace(/\s*\([^)]*\)\s*$/, '').trim()
 
+/* Path split for the browse popover. String arithmetic rather than node:path,
+   which the renderer does not have — the preload surface is IPC only. Both keep
+   a directory's trailing slash on the NAME, so the list says `Downloads/`. */
+const baseOf = (p: string): string => p.slice(stem(p).lastIndexOf('/') + 1)
+const dirOf = (p: string): string => {
+  const s = stem(p)
+  return s.slice(0, s.lastIndexOf('/')) || '/'
+}
+const stem = (p: string): string => (p.endsWith('/') ? p.slice(0, -1) : p)
+
 /**
  * Labels for every picker row, computed over the whole list — because two
  * <option>s that render identically are indistinguishable, and uniqueness is not
@@ -163,6 +173,8 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
   const [cursor, setCursor] = useState(0)
   const [commands, setCommands] = useState<SlashCommandInfo[]>([])
   const [files, setFiles] = useState<string[]>([])
+  /** Directory listing for a mention that points outside the project. */
+  const [browsed, setBrowsed] = useState<string[]>([])
   const box = useRef<EditorView | null>(null)
 
   const busy = session.status === 'running' || session.status === 'awaiting-approval'
@@ -186,11 +198,45 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     if (mentioning) void window.foreman.projectFiles(session.id).then(setFiles)
   }, [mentioning, session.id])
 
+  /** The mention has left the project: `@/Users/…` or `@~/…`. Null otherwise. */
+  const browsing = mentioning && /^[~/]/.test(trigger.query) ? trigger.query : null
+
+  // The project's file list structurally cannot answer these — `git ls-files`
+  // only ever emits paths inside the repo — so they get their own source, which
+  // completes one directory at a time.
+  //
+  // Refetched per keystroke rather than once per `@`, unlike the branch above,
+  // because the query IS the directory: there is nothing to cache across it.
+  // That is a local readdir of a single directory, so no debounce. `live` guards
+  // the out-of-order resolve that fast typing would otherwise produce.
+  useEffect(() => {
+    if (browsing === null) {
+      setBrowsed([])
+      return
+    }
+    let live = true
+    void window.foreman.browsePath(browsing).then((p) => {
+      if (live) setBrowsed(p)
+    })
+    return () => {
+      live = false
+    }
+  }, [browsing])
+
   /** Showing the predicted next prompt as an overlay on the empty input. */
   const ghost = !text && !busy && session.promptSuggestion
 
   const suggestions = useMemo<Suggestion[]>(() => {
     if (!trigger) return []
+    // Already prefix-matched against a real directory in main, and already
+    // sorted. filterEntries would re-filter what is correct and, worse, reorder
+    // it by subsequence score — so this branch skips it. Name in front, folder
+    // behind: an absolute path is mostly prefix, and the tail is what you read.
+    if (browsing !== null) {
+      return browsed
+        .map((p) => ({ value: `@${p}`, label: baseOf(p), hint: dirOf(p) }))
+        .slice(0, MAX_SUGGESTIONS)
+    }
     const pool: Suggestion[] =
       trigger.kind === 'command'
         ? commands.map((c) => ({
@@ -200,17 +246,22 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
           }))
         : files.map((f) => ({ value: `@${f}`, label: f }))
     return filterEntries(pool, trigger.query).slice(0, MAX_SUGGESTIONS)
-  }, [trigger?.kind, trigger?.query, commands, files])
+  }, [trigger?.kind, trigger?.query, commands, files, browsing, browsed])
 
   // A stale cursor would insert the wrong completion once the list shrinks.
   useEffect(() => setCursor(0), [trigger?.query, trigger?.kind])
 
   const pick = (s: Suggestion): void => {
     if (!trigger) return
+    // A directory completes to itself and keeps the mention OPEN, so the next
+    // segment can be typed straight away. The trailing space that normally ends
+    // a mention would end the trigger on a half-typed path — and browsePath
+    // marks directories with the trailing slash precisely so this can tell.
+    const tail = s.value.endsWith('/') ? '' : ' '
     // Replace from the trigger character to the caret, keeping whatever the
     // user had already typed after it.
-    const next = `${text.slice(0, trigger.start)}${s.value} ${text.slice(caret)}`
-    const pos = trigger.start + s.value.length + 1
+    const next = `${text.slice(0, trigger.start)}${s.value}${tail}${text.slice(caret)}`
+    const pos = trigger.start + s.value.length + tail.length
     setText(next)
     setCaret(pos)
     // The editor syncs both from props; it just needs the focus back, since the

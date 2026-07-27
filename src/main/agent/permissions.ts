@@ -129,6 +129,38 @@ export interface PermissionAnswer {
    * See subsetMultiEdit in shared/diff.mts for the property that buys.
    */
   keep?: number[]
+  /**
+   * Approving a plan AND handing the work to subagents.
+   *
+   * Rides the permission answer for the same reason `setMode` does, only more
+   * so: it has to be known BEFORE the tool runs. The input queue is gated shut
+   * for the whole turn, so a follow-up message would not reach the model until
+   * after it had already implemented the plan alone. The directive itself
+   * travels on a PostToolUse hook — see plan.ts — and this flag is only how the
+   * click reaches it.
+   */
+  subagents?: boolean
+}
+
+/**
+ * Sessions whose next ExitPlanMode result should carry the orchestration
+ * directive. Written here, read exactly once by the PostToolUse hook in plan.ts.
+ *
+ * A module-level set rather than a field on the PermissionResult because the SDK
+ * gives a permission answer nowhere to put extra context — `updatedInput` and
+ * `updatedPermissions` are the whole surface, and the live probe showed
+ * ExitPlanMode's hook payload carries an EMPTY tool_input anyway. Safe as module
+ * state because this file and the hook run in the SAME process: host/index.ts
+ * owns both the waiters and the Session.
+ */
+const orchestrate = new Set<string>()
+
+/**
+ * Read-and-clear. One approval, one directive — a later plain approval in the
+ * same session must not inherit this one's choice.
+ */
+export function takeOrchestration(sessionId: string): boolean {
+  return orchestrate.delete(sessionId)
 }
 
 /**
@@ -142,6 +174,7 @@ export async function respondPermission({
   setMode,
   alwaysAllow,
   keep,
+  subagents,
 }: PermissionAnswer): Promise<boolean> {
   void alwaysAllow // ponytail: rule persistence needs updatedPermissions + the SDK's
   // suggestions passed back through; add when the always-allow button ships.
@@ -191,6 +224,13 @@ export async function respondPermission({
     }
     // No `Edit` branch, deliberately: an Edit is one old_string and one
     // new_string, a single atom with nothing to subset. Allow or deny.
+  }
+
+  // Armed BEFORE settle(), not after. settle() resolves the SDK's promise, the
+  // tool runs, and the PostToolUse hook in plan.ts can fire before any statement
+  // below this line executes.
+  if (behavior === 'allow' && subagents && !denyInstead && waiter?.req.toolName === 'ExitPlanMode') {
+    orchestrate.add(waiter.sessionId)
   }
 
   const settled = settle(

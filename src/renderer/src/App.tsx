@@ -5,7 +5,7 @@ import SessionRail from './components/SessionRail'
 import Conversation from './components/Conversation'
 import Composer from './components/Composer'
 import DiffPanel from './components/DiffPanel'
-import TerminalPane from './components/TerminalPane'
+import TerminalModal from './components/TerminalModal'
 import FileTree from './components/FileTree'
 import FileModal from './components/FileModal'
 import Settings from './components/Settings'
@@ -16,20 +16,22 @@ import Home from './components/Home'
 import CommandPalette, { type PaletteActions } from './components/CommandPalette'
 import Tooltip from './components/Tooltip'
 
-export type Panel = 'diff' | 'terminal' | 'session' | 'files'
+export type Panel = 'diff' | 'session' | 'files'
 
 const PANEL_LABEL: Record<Panel, string> = {
   diff: 'Diff',
-  terminal: 'Terminal',
   session: 'Session',
   files: 'Files',
 }
 
-/** ⌘1-⌘4. `undefined` for every other key — that lookup IS the guard in onKey.
- *  A record rather than a `'1' <= key <= '4'` range, which also admits junk. */
+/** ⌘1/⌘3/⌘4. `undefined` for every other key — that lookup IS the guard in onKey.
+ *  A record rather than a `'1' <= key <= '4'` range, which also admits junk.
+ *
+ *  ⌘2 is deliberately absent and handled beside ⌘, and ⌘0 instead: the terminal
+ *  kept its key but stopped being a panel, so the numbering already learned is
+ *  unchanged even though it is no longer one of the display:none siblings. */
 const PANEL_KEYS: Record<string, Panel | undefined> = {
   '1': 'diff',
-  '2': 'terminal',
   '3': 'session',
   '4': 'files',
 }
@@ -68,6 +70,11 @@ export default function App(): React.JSX.Element {
   const [panel, setPanel] = useState<Panel | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [showPalette, setShowPalette] = useState(false)
+  // App-local like Settings and the palette, NOT in the store like `editor`.
+  // The file modal is in the store because a tree row, a diff row, a tool card
+  // six levels down and the palette all open it; the terminal has exactly three
+  // openers and all three are in this file or already take an actions object.
+  const [showTerminal, setShowTerminal] = useState(false)
 
   // Opening the initial project lives in the store's bootstrap(), not here: it
   // has to run after the session rehydration it would otherwise race.
@@ -158,7 +165,11 @@ export default function App(): React.JSX.Element {
   // showPanel is setPanel, NOT toggle: "Show diff" from the palette must open
   // the panel, never close one that already is.
   const paletteActions = useMemo<PaletteActions>(
-    () => ({ showPanel: setPanel, showSettings: () => setShowSettings(true) }),
+    () => ({
+      showPanel: setPanel,
+      showSettings: () => setShowSettings(true),
+      showTerminal: () => setShowTerminal(true),
+    }),
     [],
   )
 
@@ -169,6 +180,11 @@ export default function App(): React.JSX.Element {
       if (p) {
         e.preventDefault()
         toggle(p)
+      } else if (e.key === '2') {
+        // Kept its key, lost its panel. Out of PANEL_KEYS because it is no
+        // longer one of the display:none siblings in .side — it is a modal now.
+        e.preventDefault()
+        setShowTerminal((v) => !v)
       } else if (e.key === ',') {
         // The standard macOS Preferences key. Free: the app installs no Menu,
         // and Electron's default template has no Preferences role.
@@ -247,14 +263,15 @@ export default function App(): React.JSX.Element {
             >
               <FolderTree size={ICON} />
             </button>
+            {/* Still ⌘2, no longer a panel — it opens the window-level modal. */}
             <button
               className="tab"
-              data-active={panel === 'terminal'}
-              aria-pressed={panel === 'terminal'}
+              data-active={showTerminal}
+              aria-pressed={showTerminal}
               aria-label="Terminal"
               data-tip="Terminal — a shell in this session's directory  ⌘2"
               disabled={!session}
-              onClick={() => toggle('terminal')}
+              onClick={() => setShowTerminal((v) => !v)}
             >
               <SquareTerminal size={ICON} />
             </button>
@@ -320,12 +337,10 @@ export default function App(): React.JSX.Element {
           </button>
         </header>
 
-        {/* All three stay mounted. NOT for the terminal's sake — its xterm lives
-            in a module-level map inside TerminalPane and survives unmounting —
-            but because DiffPanel holds an unsent commit message plus per-file
-            tick and collapse state, and a panel toggle silently discarding those
-            is worse than three hidden subtrees. SessionPanel already no-ops
-            while `visible` is false. */}
+        {/* All three stay mounted rather than swapping, because DiffPanel holds
+            an unsent commit message plus per-file tick and collapse state, and a
+            panel toggle silently discarding those is worse than three hidden
+            subtrees. SessionPanel already no-ops while `visible` is false. */}
         <div className="pane pane-body" style={{ display: panel === 'diff' ? 'flex' : 'none' }}>
           {session ? (
             <DiffPanel session={session} visible={panel === 'diff'} />
@@ -336,13 +351,6 @@ export default function App(): React.JSX.Element {
         <div className="pane pane-body" style={{ display: panel === 'files' ? 'flex' : 'none' }}>
           {session ? (
             <FileTree session={session} visible={panel === 'files'} />
-          ) : (
-            <div className="empty">No session</div>
-          )}
-        </div>
-        <div className="pane pane-body" style={{ display: panel === 'terminal' ? 'flex' : 'none' }}>
-          {session ? (
-            <TerminalPane session={session} visible={panel === 'terminal'} />
           ) : (
             <div className="empty">No session</div>
           )}
@@ -400,6 +408,13 @@ export default function App(): React.JSX.Element {
           chat pane. A file needs the whole window, so it mounts as a sibling of
           Settings. Before Tooltip, so a tip still paints over a suggest list. */}
       {session && <FileModal session={session} />}
+      {/* Same reason as FileModal — a pane's backdrop-filter would make it the
+          containing block and the pane's overflow would clip it. Unlike the
+          others it sits BELOW the palette in z (see .term-scrim): ⌘K has to
+          stay reachable over a terminal you left open. */}
+      {session && showTerminal && (
+        <TerminalModal session={session} onClose={() => setShowTerminal(false)} />
+      )}
       <Tooltip />
     </div>
   )
