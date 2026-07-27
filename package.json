@@ -17,7 +17,7 @@
     "check:derive": "node src/renderer/src/derive.check.mts",
     "check:transcript": "node src/main/agent/transcript.check.mts",
     "check:lspwire": "node src/shared/lspwire.check.mts",
-    "check:lsp": "node src/lsp/languages.check.mts",
+    "check:lsp": "node src/shared/languages.check.mts",
     "check": "npm run check:derive && npm run check:diff && npm run check:lsp && npm run check:lspwire && npm run check:policy && npm run check:porcelain && npm run check:transcript",
     "notarize:dmg": "bash scripts/notarize-dmg.sh",
     "check:diff": "node src/shared/diff.check.mts"

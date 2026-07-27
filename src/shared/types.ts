@@ -459,6 +459,27 @@ export interface FileList {
   dirty?: Record<string, string>
 }
 
+/**
+ * What one language's server support looks like for a given project.
+ *
+ * A wire type, so it lives here with the others. Built by asking the same
+ * `resolveServer` the runtime uses rather than a parallel list — a status
+ * screen claiming "installed" for a server that then fails to start is worse
+ * than no status screen.
+ */
+export type ServerId = 'ts' | 'swift' | 'python' | 'rust' | 'go' | 'clangd'
+
+export interface ServerReport {
+  id: ServerId
+  label: string
+  extensions: string
+  state: 'ready' | 'missing' | 'unconfigured'
+  detail: string
+  /** A shell command that fixes it, if there is one. */
+  install?: string
+  hint?: string
+}
+
 export const IPC = {
   // session lifecycle
   sessionCreate: 'session:create',
@@ -548,6 +569,12 @@ export const IPC = {
   /** Request/response for the hand-rolled location providers, which need a
    *  promise rather than a frame that comes back later as an event. */
   lspRequest: 'lsp:request',
+  /** Which language servers this project can actually use. Answered in MAIN,
+   *  not the host: it is pure detection against a cwd, so it works for a
+   *  session whose host has gone away — same posture as the diff handlers. */
+  lspServers: 'lsp:servers',
+  /** Forget cached "not installed" results, after the user installs one. */
+  lspRecheck: 'lsp:recheck',
 
   // terminal
   ptyStart: 'pty:start',

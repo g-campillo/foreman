@@ -402,6 +402,10 @@ export function registerSessionIpc(): void {
       callOr(sessionId, null, 'lspRequest', method, params),
   )
 
+  ipcMain.handle(IPC.lspRecheck, (_e, { sessionId }: { sessionId: string }) =>
+    callOr(sessionId, false, 'lspRecheck'),
+  )
+
   ipcMain.handle(IPC.sessionInterrupt, (_e, { sessionId }: { sessionId: string }) =>
     callOr(sessionId, undefined, 'interrupt'),
   )

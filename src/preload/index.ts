@@ -108,6 +108,8 @@ const api = {
     ipcRenderer.invoke(IPC.lspSend, { sessionId, msg }),
   lspRequest: (sessionId: string, method: string, params: unknown) =>
     ipcRenderer.invoke(IPC.lspRequest, { sessionId, method, params }),
+  lspServers: (cwd: string) => ipcRenderer.invoke(IPC.lspServers, { cwd }),
+  lspRecheck: (sessionId: string) => ipcRenderer.invoke(IPC.lspRecheck, { sessionId }),
 
   // terminal
   startPty: (sessionId: string, cwd: string, cols: number, rows: number) =>

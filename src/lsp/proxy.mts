@@ -1,5 +1,5 @@
 import * as reg from './registry.mts'
-import { fromUri, serverFor, type ServerId } from './languages.mts'
+import { fromUri, serverFor, type ServerId } from '../shared/languages.mts'
 
 /**
  * A virtual LSP server for the renderer, multiplexed onto the real fleet.
@@ -30,6 +30,26 @@ import { fromUri, serverFor, type ServerId } from './languages.mts'
  */
 
 type Json = Record<string, unknown>
+
+/**
+ * The empty answer for a method, when no server handles this language.
+ *
+ * `null` is right for most of LSP — "no hover here" is a legitimate reply — but
+ * NOT for the pull-diagnostics request, whose result is a report object the
+ * client immediately reads `.kind` off. Answering null there throws inside
+ * Monaco's provider ("Cannot read properties of null") on every open of a file
+ * in a language with no server, which is exactly the common case this feature
+ * exists to explain rather than to break.
+ *
+ * Unhandled languages are normal here — json, css, markdown and anything with
+ * no installed server all take this path — so the empty has to be well-formed.
+ */
+function emptyFor(method: string): unknown {
+  if (method === 'textDocument/diagnostic') return { kind: 'full', items: [] }
+  if (method === 'workspace/diagnostic') return { items: [] }
+  if (method.startsWith('textDocument/semanticTokens')) return { data: [] }
+  return null
+}
 
 /** Where a request should go, from whatever carries a URI. */
 function routeOf(params: unknown): ServerId | null {
@@ -71,14 +91,9 @@ export async function handleFromRenderer(msg: Json): Promise<Json | null> {
     if (method === 'shutdown') return { jsonrpc: '2.0', id, result: null }
 
     const route = routeOf(msg.params)
-    if (!route) {
-      // No server owns this language. An empty result is the honest answer to
-      // the editor — unlike the agent-facing tools, a provider returning null
-      // simply means "no hover here", which is exactly right.
-      return { jsonrpc: '2.0', id, result: null }
-    }
+    if (!route) return { jsonrpc: '2.0', id, result: emptyFor(method) }
     const entry = await reg.ensure(route)
-    if (!entry) return { jsonrpc: '2.0', id, result: null }
+    if (!entry) return { jsonrpc: '2.0', id, result: emptyFor(method) }
     try {
       const result = await entry.client.request(method, msg.params)
       return { jsonrpc: '2.0', id, result: result ?? null }
@@ -87,7 +102,7 @@ export async function handleFromRenderer(msg: Json): Promise<Json | null> {
       // red banner in the editor for something as ordinary as a race with a
       // server restart.
       console.error(`[lsp-proxy] ${method} failed:`, err)
-      return { jsonrpc: '2.0', id, result: null }
+      return { jsonrpc: '2.0', id, result: emptyFor(method) }
     }
   }
 

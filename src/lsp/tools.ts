@@ -7,7 +7,7 @@ import type {
   SdkMcpToolDefinition,
 } from '@anthropic-ai/claude-agent-sdk'
 import * as reg from './registry.mts'
-import { serverFor, toUri, type ServerId } from './languages.mts'
+import { serverFor, toUri, type ServerId } from '../shared/languages.mts'
 import {
   diagnostics as fmtDiagnostics,
   empty,

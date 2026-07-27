@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { encode, makeFrameReader, LSP_ERR } from '../shared/lspwire.mts'
-import { toUri } from './languages.mts'
+import { toUri } from '../shared/languages.mts'
 
 /**
  * One language server, spoken to over stdio.

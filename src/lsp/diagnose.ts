@@ -1,6 +1,6 @@
 import type { HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
 import * as reg from './registry.mts'
-import { serverFor } from './languages.mts'
+import { serverFor } from '../shared/languages.mts'
 import { diagnostics as fmtDiagnostics, provenance, type Diag } from './format.mts'
 
 /**

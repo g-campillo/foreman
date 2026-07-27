@@ -9,8 +9,10 @@
  * .tsx files silently lose JSX handling rather than fail loudly.
  */
 
-/** Server ids. One process per id, per session. */
-export type ServerId = 'ts' | 'swift' | 'python' | 'rust' | 'go' | 'clangd'
+/** Server ids. One process per id, per session. Declared in types.ts with the
+ *  other wire types, since ServerReport carries it across IPC. */
+export type { ServerId } from './types'
+import type { ServerId } from './types'
 
 const BY_EXT: Record<string, string> = {
   ts: 'typescript',

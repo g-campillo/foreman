@@ -7,6 +7,7 @@ import type {
   PermissionMode,
 } from '../../../shared/types'
 import { useStore } from '../store'
+import LspServers from './LspServers'
 import { EFFORTS, MODES, modelLabels } from './Composer'
 
 const THEMES: { label: string; value: AppearanceSettings['theme'] }[] = [
@@ -338,6 +339,11 @@ export default function Settings({ onClose }: { onClose: () => void }): React.JS
               onChange={(e) => set({ trafficLights: e.target.checked })}
             />
           </label>
+
+          {/* Last, because it is the only section about the PROJECT rather than
+              the app, and it is read far less often than it is scrolled past. */}
+          <div className="settings-sect">Language servers</div>
+          <LspServers />
         </div>
       </div>
     </div>

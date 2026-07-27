@@ -3510,6 +3510,155 @@ button.diff-more:hover {
   background: rgb(var(--accent) / 0.14);
 }
 
+/* ------------------------------------------------------- language servers
+
+   Two surfaces for one fact. The Settings list answers "what is my setup";
+   the strip in the editor answers "why is this file not smart", at the moment
+   you would otherwise wonder. */
+
+.lsp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  grid-column: 1 / -1; /* the settings grid is two columns; this wants both */
+}
+.lsp-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  color: rgb(var(--text-faint));
+  font-size: 11.5px;
+  line-height: 1.5;
+}
+.lsp-head .btn {
+  flex: none;
+}
+
+.lsp-row {
+  display: flex;
+  gap: 9px;
+  padding: 9px 11px;
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--r-md);
+}
+.lsp-row[data-state='ready'] {
+  border-color: rgb(var(--ok) / 0.35);
+  background: rgb(var(--ok) / 0.05);
+}
+/* Installed-but-unusable is its own state, not a shade of missing: sending
+   someone to `brew install` for a clangd they already have is worse than
+   saying nothing. */
+.lsp-row[data-state='unconfigured'] {
+  border-color: rgb(var(--warn) / 0.4);
+  background: rgb(var(--warn) / 0.05);
+}
+.lsp-icon {
+  flex: none;
+  margin-top: 1px;
+  color: rgb(var(--text-faint));
+}
+.lsp-row[data-state='ready'] .lsp-icon {
+  color: rgb(var(--ok));
+}
+.lsp-row[data-state='unconfigured'] .lsp-icon {
+  color: rgb(var(--warn));
+}
+.lsp-row-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.lsp-row-title {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 12.5px;
+}
+.lsp-ext {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-weight: 400;
+  color: rgb(var(--text-faint));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.lsp-detail {
+  font-size: 11.5px;
+  color: rgb(var(--text-dim));
+  overflow-wrap: anywhere;
+}
+.lsp-hint {
+  color: rgb(var(--text-faint));
+}
+.lsp-cmd {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 2px;
+  flex-wrap: wrap;
+}
+.lsp-cmd code {
+  flex: 1;
+  min-width: 160px;
+  padding: 4px 8px;
+  border-radius: var(--r-sm);
+  background: rgb(var(--surface-3) / 0.7);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.lsp-empty {
+  padding: 10px 0;
+  color: rgb(var(--text-faint));
+  font-size: 12px;
+}
+
+/* The strip inside the file modal. Between the header and the editor, so it
+   reads as being about this file rather than about the app. */
+.lsp-note {
+  flex: none;
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 9px 16px;
+  border-bottom: 1px solid rgb(var(--border));
+  background: rgb(var(--warn) / 0.07);
+  color: rgb(var(--text-dim));
+  font-size: 11.5px;
+  line-height: 1.55;
+}
+.lsp-note > svg {
+  margin-top: 2px;
+  color: rgb(var(--warn));
+}
+.lsp-note-body {
+  flex: 1;
+  min-width: 0;
+}
+.lsp-note-cmd {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}
+.lsp-note-cmd code {
+  padding: 3px 7px;
+  border-radius: var(--r-sm);
+  background: rgb(var(--surface-3) / 0.8);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.lsp-note-hint {
+  margin-top: 5px;
+  color: rgb(var(--text-faint));
+}
+
 /* --------------------------------------------------- partial approval
 
    One hunk of a proposed change, with its tick. Only drawn when accepting part

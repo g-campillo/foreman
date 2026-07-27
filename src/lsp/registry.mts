@@ -1,7 +1,7 @@
 import { readFile, stat } from 'node:fs/promises'
 import { LspClient } from './client.mts'
 import { resolveServer, searchedFor, type Resolved } from './detect.mts'
-import { languageOf, serverFor, toUri, sameUri, type ServerId } from './languages.mts'
+import { languageOf, serverFor, toUri, sameUri, type ServerId } from '../shared/languages.mts'
 
 /**
  * The fleet: which servers are running, and what each believes about the files.
@@ -329,6 +329,18 @@ export async function diagnose(path: string): Promise<unknown[]> {
     if (sameUri(pushedUri, uri)) return diags
   }
   return []
+}
+
+/**
+ * Forget every cached failure, so the next request re-runs detection.
+ *
+ * `failed` exists so twenty tool calls do not each re-run `which` for a binary
+ * that is not installed — but that also means installing one mid-session has no
+ * effect until something clears it. This is what makes "install it, then click
+ * Recheck" work without restarting the app.
+ */
+export function recheck(): void {
+  failed.clear()
 }
 
 /** Every path any server currently has open — the default set to diagnose. */

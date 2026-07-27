@@ -5,6 +5,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { IPC, type FileRead, type FileWrite, type FileList } from '../shared/types'
 import { within } from './agent/policy.mts'
+import { reportServers } from '../lsp/detect.mts'
 import { emitCount, readStatus } from './agent/gitdiff'
 
 const exec = promisify(execFile)
@@ -216,6 +217,13 @@ export async function listProjectFiles(cwd: string, limit: number): Promise<File
 }
 
 export function registerFileIpc(): void {
+  // Language-server availability. In main rather than the host because it is
+  // pure detection against a directory — no session state — so Settings can
+  // answer it before any agent exists and for a session whose host has idled
+  // out. Asks the same resolveServer the runtime uses, so the list can never
+  // claim a server is ready that then fails to start.
+  ipcMain.handle(IPC.lspServers, (_e, { cwd }: { cwd: string }) => reportServers(cwd))
+
   ipcMain.handle(IPC.fileRead, (_e, { cwd, path }: { cwd: string; path: string }) =>
     readFileFor(cwd, path),
   )

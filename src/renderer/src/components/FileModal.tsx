@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { X } from 'lucide-react'
+import { TriangleAlert, X } from 'lucide-react'
 import type { FileRead, SessionMeta } from '../../../shared/types'
+import type { ServerReport } from '../../../shared/types'
 import { authorEdits, relPath, resolveAnchors } from '../derive.mts'
 import { useStore } from '../store'
 import { loadedMonaco } from '../editor/monaco'
@@ -20,6 +21,11 @@ import {
   setAuthored,
 } from '../editor/models'
 import { useAgentFocus } from '../useAgentFocus'
+import { serverFor } from '../../../shared/languages.mts'
+
+/** Languages the user has waved away this session. Module scope, so it survives
+ *  the modal closing — otherwise every file reopens the same note. */
+const dismissed = new Set<string>()
 
 /**
  * A file, in the same modal frame as PlanCard and QuestionCard — wider, because
@@ -58,6 +64,8 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
   // that does not work. Same shape as the theme bug: `loadedMonaco()` returning
   // null is not a state React knows to re-run on.
   const [ready, setReady] = useState(0)
+  const [noServer, setNoServer] = useState<ServerReport | null>(null)
+  const send = useStore((st) => st.send)
   const body = useRef<HTMLDivElement | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [dirty, setDirty] = useState(false)
@@ -250,6 +258,43 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
     if (monaco) retheme(monaco)
   }, [resolvedTheme])
 
+  /**
+   * Does this file's language actually have a server?
+   *
+   * Asked per open, because the answer depends on the project — clangd is
+   * installed on this machine but useless without a compilation database, and
+   * that is a per-project fact, not a per-machine one.
+   */
+  useEffect(() => {
+    if (!path) return
+    let cancelled = false
+    void window.foreman.lspServers(session.cwd).then((reports: ServerReport[]) => {
+      if (cancelled) return
+      const id = serverFor(path)
+      const mine = id ? reports.find((r) => r.id === id) : null
+      // Languages Monaco handles itself (json, css, html, markdown) have no
+      // server by design and must not be reported as missing one.
+      setNoServer(mine && mine.state !== 'ready' && !dismissed.has(mine.id) ? mine : null)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [path, session.cwd])
+
+  const dismiss = (id: string): void => {
+    dismissed.add(id)
+    setNoServer(null)
+  }
+
+  const askAgent = (r: ServerReport): void => {
+    setNoServer(null)
+    void send(
+      `Install a ${r.label} language server for this project. Prefer the project's own ` +
+        `environment over a global install. \`${r.install}\` is the usual way. When it is ` +
+        `done, tell me the absolute path to the executable.`,
+    )
+  }
+
   if (!path) return null
   // (path, cwd) — that order, not the other one. relPath does prefix arithmetic
   // and returns its first argument unchanged when the second does not prefix it,
@@ -285,6 +330,41 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
             <X size={14} />
           </button>
         </header>
+
+        {/* Why this file has no hover or go-to-definition, said at the moment
+            you would otherwise wonder. Dismissible, and remembered per language
+            for the session — a note you cannot silence is an ad. */}
+        {noServer && (
+          <div className="lsp-note">
+            <TriangleAlert size={13} />
+            <div className="lsp-note-body">
+              <b>No {noServer.label} language server.</b> Syntax highlighting works; hover,
+              go-to-definition and diagnostics need one.
+              {noServer.install && (
+                <div className="lsp-note-cmd">
+                  <code>{noServer.install}</code>
+                  <button
+                    className="btn"
+                    onClick={() => void navigator.clipboard.writeText(noServer.install!)}
+                  >
+                    Copy
+                  </button>
+                  {/* Composes a message rather than running anything. The agent
+                      owns a terminal already, and the install raises the same
+                      approval card any other command would — so this adds no
+                      privilege that was not already there. */}
+                  <button className="btn" onClick={() => askAgent(noServer)}>
+                    Ask the agent
+                  </button>
+                </div>
+              )}
+              {noServer.hint && <div className="lsp-note-hint">{noServer.hint}</div>}
+            </div>
+            <button className="plan-close" aria-label="Dismiss" onClick={() => dismiss(noServer.id)}>
+              <X size={13} />
+            </button>
+          </div>
+        )}
 
         {err ? (
           <div className="plan-body file-body">

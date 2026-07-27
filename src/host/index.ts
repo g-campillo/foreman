@@ -21,7 +21,7 @@ import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
 import { setSink, send } from '../shared/sink'
-import { serverPids, disposeAll } from '../lsp/registry.mts'
+import { serverPids, disposeAll, recheck } from '../lsp/registry.mts'
 import { handleFromRenderer, lspRequest } from '../lsp/proxy.mts'
 import { IPC } from '../shared/types'
 import { HOST_FILES, makeLineReader, type HostCall, type HostFrame, type HostMeta } from '../shared/hostwire'
@@ -167,6 +167,9 @@ const METHODS: Record<string, (...a: never[]) => unknown> = {
   mcpStatus: () => session.mcpStatus(),
   reloadSkills: () => session.reloadSkills(),
   setTitle: (title: never) => session.setTitle(title),
+
+  /** Drop cached detection failures after the user installs a server. */
+  lspRecheck: () => { recheck(); return true },
 
   /** A direct LSP request from the renderer, answered in the same round-trip. */
   lspRequest: (method: never, params: never) => lspRequest(method, params),

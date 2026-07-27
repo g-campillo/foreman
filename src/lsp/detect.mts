@@ -2,7 +2,8 @@ import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, sep } from 'node:path'
 import { execFileSync } from 'node:child_process'
 import { createRequire } from 'node:module'
-import type { ServerId } from './languages.mts'
+import { type ServerId } from '../shared/languages.mts'
+import type { ServerReport } from '../shared/types'
 
 // require.resolve, from an ESM module. .mts is ESM under the root's
 // "type": "commonjs", which is the whole reason these files carry that
@@ -122,6 +123,33 @@ function tsgo(from?: string): string | null {
   }
 }
 
+/**
+ * Where clangd's compilation database lives, or null.
+ *
+ * `compile_flags.txt` and `.clangd` count too: both are legitimate ways to tell
+ * clangd how the project builds, and a header-only or single-TU project may
+ * reasonably have only those.
+ */
+const DB_DIRS = ['', 'build', 'out', 'cmake-build-debug', '.build']
+
+function compileDb(cwd: string): string | null {
+  for (const d of DB_DIRS) {
+    const dir = d ? join(cwd, d) : cwd
+    if (
+      existsSync(join(dir, 'compile_commands.json')) ||
+      existsSync(join(dir, 'compile_flags.txt')) ||
+      existsSync(join(dir, '.clangd'))
+    ) {
+      return dir
+    }
+  }
+  return null
+}
+
+function relOf(cwd: string, path: string): string {
+  return path === cwd ? '.' : path.slice(cwd.length + 1)
+}
+
 export function resolveServer(id: ServerId, cwd: string): Resolved | null {
   const override = readOverrides()[`${cwd}::${id}`] ?? readOverrides()[id]
   if (override?.cmd && existsSync(override.cmd)) {
@@ -178,9 +206,97 @@ export function resolveServer(id: ServerId, cwd: string): Resolved | null {
     case 'clangd': {
       const found = onPath('clangd') ?? firstFile('/usr/bin/clangd') ?? run('xcrun', ['--find', 'clangd'])
       if (!found || !existsSync(found)) return null
-      return { cmd: found, args: [`--compile-commands-dir=${cwd}`], via: 'clangd' }
+      // A clangd with no compilation database is the silent-empty failure this
+      // codebase keeps trying to avoid: it starts, it answers every request,
+      // and every answer is nothing, because it does not know the include paths
+      // or the standard the project builds with. Refusing to start is the loud
+      // version, and `whyMissing` turns it into a sentence the user can act on.
+      const db = compileDb(cwd)
+      if (!db) return null
+      return { cmd: found, args: [`--compile-commands-dir=${db}`], via: `clangd (${relOf(cwd, db)})` }
     }
   }
+}
+
+/**
+ * Everything the UI needs to say about one language, in one object.
+ *
+ * Built by asking the same `resolveServer` the runtime uses — not a parallel
+ * list that can disagree with it. A status screen that says "installed" for a
+ * server the registry then fails to start is worse than no status screen.
+ */
+
+const META: Record<ServerId, { label: string; extensions: string; install?: string }> = {
+  ts: {
+    label: 'TypeScript · JavaScript',
+    extensions: '.ts .tsx .mts .cts .js .jsx .mjs .cjs',
+    // Nothing to install: tsgo ships with the app.
+  },
+  swift: {
+    label: 'Swift',
+    extensions: '.swift',
+    install: 'xcode-select --install',
+  },
+  python: {
+    label: 'Python',
+    extensions: '.py .pyi',
+    // npm rather than pip: it does not need a virtualenv to be active, which is
+    // the failure mode of `pip install` from a shell that is not in one.
+    install: 'npm install -g pyright',
+  },
+  rust: {
+    label: 'Rust',
+    extensions: '.rs',
+    install: 'rustup component add rust-analyzer',
+  },
+  go: {
+    label: 'Go',
+    extensions: '.go',
+    install: 'go install golang.org/x/tools/gopls@latest',
+  },
+  clangd: {
+    label: 'C · C++ · Objective-C',
+    extensions: '.c .h .cc .cpp .hpp .m .mm',
+    install: 'xcode-select --install',
+  },
+}
+
+export const SERVER_IDS: ServerId[] = ['ts', 'swift', 'python', 'rust', 'go', 'clangd']
+
+/** One report per language, for the Settings list and the editor's strip. */
+export function reportServers(cwd: string): ServerReport[] {
+  return SERVER_IDS.map((id) => {
+    const meta = META[id]
+    const resolved = resolveServer(id, cwd)
+    if (resolved) {
+      // `install` deliberately dropped once it is ready. Leaving it set makes
+      // the object read as "here is how to install this" for something already
+      // installed, and invites a caller to show it without checking `state`.
+      return { id, label: meta.label, extensions: meta.extensions, state: 'ready' as const, detail: resolved.via }
+    }
+
+    // clangd is the one case where "not ready" usually means "installed but the
+    // project has no compilation database" — a different problem with a
+    // different fix, and saying "not installed" would send the user to brew for
+    // something they already have.
+    if (id === 'clangd' && (onPath('clangd') ?? firstFile('/usr/bin/clangd'))) {
+      return {
+        id,
+        ...meta,
+        state: 'unconfigured' as const,
+        detail: 'clangd is installed, but this project has no compilation database.',
+        install: 'cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -B build',
+        hint: 'Or `bear -- make`, or commit a compile_flags.txt. clangd cannot resolve includes without one, so it would answer every request with nothing.',
+      }
+    }
+
+    return {
+      id,
+      ...meta,
+      state: 'missing' as const,
+      detail: `Looked in ${searchedFor(id, cwd).join(', ')}`,
+    }
+  })
 }
 
 /**
