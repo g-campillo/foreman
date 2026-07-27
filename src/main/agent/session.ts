@@ -26,6 +26,8 @@ import { createInputQueue, type InputQueue } from './queue'
 import { makeCanUseTool, cancelPending } from './permissions'
 import { makeOnElicitation, cancelPendingElicitations } from './elicitation'
 import { makeDiffHook } from './gitdiff'
+import { lspMcpServer, READ_ONLY_TOOLS } from '../../lsp/tools'
+import { makeDiagnosticsHook } from '../../lsp/diagnose'
 import { claudeExecutable } from './executable'
 import { proposeTitle } from './title'
 import { readUsage, writeUsage } from './usage'
@@ -237,8 +239,25 @@ export class Session {
         // Without this the SDK auto-declines every MCP elicitation, which
         // silently kills OAuth for any server that needs it.
         onElicitation: makeOnElicitation(this.meta.id),
+        // The language servers, as tools. One field — the MCP panel,
+        // mcpStatus(), the toggle and the permission override all already
+        // exist and pick this up for free.
+        mcpServers: { lsp: lspMcpServer() },
+        // The read-only half auto-allowed. Measured: MCP calls DO reach
+        // canUseTool, so without this every reference lookup raises a prompt.
+        // It widens nothing — the agent can already Read any file, and asking a
+        // compiler where a symbol lives reveals less than reading it would. The
+        // write tools are deliberately absent and keep prompting.
+        allowedTools: READ_ONLY_TOOLS,
         hooks: {
           PostToolUse: makeDiffHook(this.meta.id, init.cwd),
+          // Separate from the diff hook on purpose. That one is a one-git-call
+          // badge refresh per tool; this one runs once per BATCH, because five
+          // parallel Edits should diagnose once rather than five times racing,
+          // and because PostToolBatch lands before the next model request —
+          // which is the only place a "you just broke three things" message is
+          // worth anything.
+          PostToolBatch: makeDiagnosticsHook(init.cwd),
         },
         pathToClaudeCodeExecutable: claudeExecutable(),
         abortController: this.abort,

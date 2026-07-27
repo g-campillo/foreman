@@ -21,6 +21,7 @@ import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
 import { setSink } from '../shared/sink'
+import { serverPids, disposeAll } from '../lsp/registry.mts'
 import { HOST_FILES, makeLineReader, type HostCall, type HostFrame, type HostMeta } from '../shared/hostwire'
 import { Session } from '../main/agent/session'
 import { hydrateInto } from './hydrate'
@@ -84,6 +85,9 @@ function writeMeta(session: Session): void {
     pid: process.pid,
     // Recorded so a crashed host's orphaned agent is killable on next launch.
     agentPid,
+    // Same, for the language servers. writeMeta runs on a timer, so this stays
+    // current as servers start lazily rather than only reflecting session start.
+    lspPids: serverPids(),
     cwd: session.meta.cwd,
     title: session.meta.title,
     sdkSessionId: session.meta.sdkSessionId,
@@ -313,6 +317,10 @@ function shutdown(): void {
   } catch {
     /* already gone */
   }
+  // Language servers are children of THIS process, so nothing else collects
+  // them. Fire-and-forget: the exit timeout below bounds how long we wait, and
+  // the pid list in meta is the backstop if it does not finish.
+  void disposeAll()
   try {
     server.close()
     if (existsSync(sockPath)) unlinkSync(sockPath)

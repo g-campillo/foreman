@@ -16,6 +16,9 @@ export const HOST_FILES = {
   meta: 'meta.json',
   events: 'events.ndjson',
   sock: 'sock',
+  /** The host's stdout+stderr. A detached process has no terminal to inherit,
+   *  so without this its console output goes nowhere at all. */
+  log: 'host.log',
 } as const
 
 /**
@@ -30,6 +33,15 @@ export interface HostMeta {
   sessionId: string
   pid: number
   agentPid?: number
+  /**
+   * Language servers this host spawned.
+   *
+   * Recorded for the same reason agentPid is: a host that dies without running
+   * its shutdown leaves grandchildren nobody owns, and a language server on a
+   * big project is not a small process. `processId` in the LSP initialize
+   * handshake covers the well-behaved ones; this covers the rest.
+   */
+  lspPids?: number[]
   cwd: string
   title: string
   sdkSessionId: string | null

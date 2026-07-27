@@ -16,7 +16,9 @@
     "check:policy": "node src/main/agent/policy.check.mts",
     "check:derive": "node src/renderer/src/derive.check.mts",
     "check:transcript": "node src/main/agent/transcript.check.mts",
-    "check": "npm run check:porcelain && npm run check:policy && npm run check:derive && npm run check:transcript",
+    "check:lspwire": "node src/shared/lspwire.check.mts",
+    "check:lsp": "node src/lsp/languages.check.mts",
+    "check": "npm run check:porcelain && npm run check:policy && npm run check:derive && npm run check:transcript && npm run check:lspwire && npm run check:lsp",
     "notarize:dmg": "bash scripts/notarize-dmg.sh"
   },
   "keywords": [],
@@ -42,6 +44,7 @@
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
+    "zod": "^4.4.3",
     "zustand": "^5.0.14"
   },
   "devDependencies": {

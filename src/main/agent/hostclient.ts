@@ -1,6 +1,6 @@
 import { app, shell } from 'electron'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync } from 'node:fs'
 import { connect, type Socket } from 'node:net'
 import { join } from 'node:path'
 import { IPC, type SessionMeta } from '../../shared/types'
@@ -86,7 +86,14 @@ export class HostClient {
         ),
       },
       detached: true,
-      stdio: 'ignore',
+      // Was 'ignore', which threw away everything the host said. That is fine
+      // right up until something inside it misbehaves — a language server that
+      // will not spawn, an SDK warning, a stack trace — and then there is no
+      // record of it anywhere, because a detached process has no terminal to
+      // inherit. Appending to a file in the host's own directory keeps the
+      // process detached (the fds are real files, not our pipes, so nothing
+      // holds this parent alive) and makes the host debuggable at all.
+      stdio: ['ignore', openSync(join(dir, HOST_FILES.log), 'a'), openSync(join(dir, HOST_FILES.log), 'a')],
     })
     child.unref()
 
@@ -268,11 +275,22 @@ export function scanHosts(): FoundHost[] {
  * only handle on it.
  */
 export function reapDeadHost(found: FoundHost): void {
-  const { agentPid } = found.meta
+  const { agentPid, lspPids } = found.meta
   if (agentPid && isAlive(agentPid)) {
     try {
       process.kill(agentPid, 'SIGTERM')
       console.warn(`[hosts] reaped orphaned agent pid=${agentPid} from a crashed host`)
+    } catch {
+      /* already gone, or not ours */
+    }
+  }
+  // Same treatment for the language servers. They are grandchildren, so nothing
+  // else in the tree will collect them.
+  for (const pid of lspPids ?? []) {
+    if (!isAlive(pid)) continue
+    try {
+      process.kill(pid, 'SIGTERM')
+      console.warn(`[hosts] reaped orphaned language server pid=${pid}`)
     } catch {
       /* already gone, or not ours */
     }

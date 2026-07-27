@@ -17,5 +17,16 @@
     "noEmit": true,
     "composite": true
   },
-  "include": ["src/main/**/*", "src/preload/**/*", "src/shared/**/*", "electron.vite.config.ts"]
+  // src/host and src/lsp are in here for a reason worth writing down: they were
+  // NOT, and `npm run typecheck` therefore never looked at the detached host at
+  // all. It builds — electron.vite.config.ts has it as a second rollup input —
+  // so nothing announced that a whole process was unchecked.
+  "include": [
+    "src/main/**/*",
+    "src/preload/**/*",
+    "src/shared/**/*",
+    "src/host/**/*",
+    "src/lsp/**/*",
+    "electron.vite.config.ts"
+  ]
 }
