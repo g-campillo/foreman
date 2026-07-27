@@ -467,13 +467,19 @@ export interface FileList {
  * screen claiming "installed" for a server that then fails to start is worse
  * than no status screen.
  */
-export type ServerId = 'ts' | 'swift' | 'python' | 'rust' | 'go' | 'clangd'
+export type ServerId = 'ts' | 'swift' | 'java' | 'python' | 'rust' | 'go' | 'clangd'
 
 export interface ServerReport {
   id: ServerId
   label: string
   extensions: string
-  state: 'ready' | 'missing' | 'unconfigured'
+  /**
+   * `unconfigured` — the binary is there but the project is not set up for it
+   *   (clangd with no compilation database, jdtls with no JDK).
+   * `highlight-only` — Monaco colours it and no server here understands it.
+   *   Listed rather than omitted, so silence never has to mean two things.
+   */
+  state: 'ready' | 'missing' | 'unconfigured' | 'highlight-only'
   detail: string
   /** A shell command that fixes it, if there is one. */
   install?: string

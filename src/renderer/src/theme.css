@@ -3563,6 +3563,12 @@ button.diff-more:hover {
 .lsp-row[data-state='unconfigured'] .lsp-icon {
   color: rgb(var(--warn));
 }
+/* Quieter than missing: these are not a problem to fix, they are the honest
+   answer to "why is my .kt file not smart" — which used to be silence. */
+.lsp-row[data-state='highlight-only'] {
+  border-style: dashed;
+  opacity: 0.72;
+}
 .lsp-row-body {
   flex: 1;
   min-width: 0;

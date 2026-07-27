@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react'
-import { Check, RefreshCw, TriangleAlert, X } from 'lucide-react'
+import { Check, Palette, RefreshCw, TriangleAlert, X } from 'lucide-react'
 import type { ServerReport } from '../../../shared/types'
 import { activeSession, useStore } from '../store'
 
@@ -57,8 +57,8 @@ export default function LspServers(): React.JSX.Element {
     <div className="lsp-list">
       <div className="lsp-head">
         <span>
-          Syntax highlighting works everywhere. These add hover, go-to-definition, references and
-          diagnostics — for you and for the agent.
+          Syntax highlighting works for ~84 languages with no setup. These add hover,
+          go-to-definition, references and diagnostics — for you and for the agent.
         </span>
         <button className="btn" disabled={busy} onClick={() => void recheck()}>
           <RefreshCw size={13} />
@@ -69,7 +69,15 @@ export default function LspServers(): React.JSX.Element {
       {reports?.map((r) => (
         <div key={r.id} className="lsp-row" data-state={r.state}>
           <span className="lsp-icon">
-            {r.state === 'ready' ? <Check size={13} /> : r.state === 'unconfigured' ? <TriangleAlert size={13} /> : <X size={13} />}
+            {r.state === 'ready' ? (
+              <Check size={13} />
+            ) : r.state === 'unconfigured' ? (
+              <TriangleAlert size={13} />
+            ) : r.state === 'highlight-only' ? (
+              <Palette size={13} />
+            ) : (
+              <X size={13} />
+            )}
           </span>
           <div className="lsp-row-body">
             <div className="lsp-row-title">

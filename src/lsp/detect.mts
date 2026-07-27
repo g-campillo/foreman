@@ -146,6 +146,55 @@ function compileDb(cwd: string): string | null {
   return null
 }
 
+/**
+ * The Eclipse JDT language server's launcher.
+ *
+ * Homebrew installs it as an opt/ symlink and does NOT put it on PATH, so
+ * `which jdtls` misses a perfectly good install — checking the well-known
+ * locations first is what makes this work out of the box.
+ */
+function jdtlsBin(): string | null {
+  return (
+    onPath('jdtls') ??
+    onPath('jdt-language-server') ??
+    firstFile(
+      '/opt/homebrew/opt/jdtls/bin/jdtls',
+      '/usr/local/opt/jdtls/bin/jdtls',
+      `${process.env.HOME ?? ''}/.local/share/nvim/mason/bin/jdtls`,
+    )
+  )
+}
+
+/**
+ * A real JDK, or null.
+ *
+ * `/usr/libexec/java_home` is the canonical macOS answer and, importantly,
+ * FAILS when none is installed rather than pointing at the stub — which is
+ * exactly the distinction that matters here.
+ */
+function javaHome(): string | null {
+  if (process.env.JAVA_HOME && existsSync(join(process.env.JAVA_HOME, 'bin', 'java'))) {
+    return process.env.JAVA_HOME
+  }
+  const home = run('/usr/libexec/java_home', [])
+  if (home && existsSync(join(home, 'bin', 'java'))) return home
+  // java_home only knows about system-registered JVMs, so a perfectly good
+  // SDKMAN or Homebrew JDK is invisible to it — which is how a machine with
+  // three JDKs installed still reports "Unable to locate a Java Runtime".
+  const h = process.env.HOME ?? ''
+  return firstFile(
+    join(h, '.sdkman/candidates/java/current/bin/java'),
+    '/opt/homebrew/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java',
+    '/usr/local/opt/openjdk/libexec/openjdk.jdk/Contents/Home/bin/java',
+    join(h, '.asdf/shims/java'),
+  )
+}
+
+/** A filesystem-safe key for a project path. */
+function slug(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]+/g, '-').replace(/^-|-$/g, '').slice(-80) || 'root'
+}
+
 function relOf(cwd: string, path: string): string {
   return path === cwd ? '.' : path.slice(cwd.length + 1)
 }
@@ -177,6 +226,24 @@ export function resolveServer(id: ServerId, cwd: string): Resolved | null {
       // name-based reference search returns literally zero on same-module Swift.
       const found = firstFile('/usr/bin/sourcekit-lsp') ?? onPath('sourcekit-lsp') ?? run('xcrun', ['--find', 'sourcekit-lsp'])
       return found && existsSync(found) ? { cmd: found, args: [], via: 'sourcekit-lsp' } : null
+    }
+
+    case 'java': {
+      const bin = jdtlsBin()
+      // jdtls is a Java program. Without a JDK it starts, fails to launch the
+      // JVM, and dies — the same "installed but unusable" shape as clangd
+      // without a compilation database, and worth the same refusal. On macOS
+      // this is especially easy to miss: /usr/bin/java EXISTS on a machine with
+      // no JDK at all, as a stub whose only job is to tell you to install one.
+      if (!bin || !javaHome()) return null
+      return {
+        cmd: bin,
+        // jdtls keeps per-project index state and will not share one directory
+        // between projects. Keyed by cwd under userData rather than written
+        // into the project, which would show up in the user's git status.
+        args: ['-data', join(process.env.FOREMAN_USER_DATA ?? '/tmp', 'jdtls', slug(cwd))],
+        via: 'jdtls',
+      }
     }
 
     case 'python': {
@@ -237,6 +304,11 @@ const META: Record<ServerId, { label: string; extensions: string; install?: stri
     extensions: '.swift',
     install: 'xcode-select --install',
   },
+  java: {
+    label: 'Java',
+    extensions: '.java',
+    install: 'brew install jdtls openjdk',
+  },
   python: {
     label: 'Python',
     extensions: '.py .pyi',
@@ -261,11 +333,38 @@ const META: Record<ServerId, { label: string; extensions: string; install?: stri
   },
 }
 
-export const SERVER_IDS: ServerId[] = ['ts', 'swift', 'python', 'rust', 'go', 'clangd']
+export const SERVER_IDS: ServerId[] = ['ts', 'swift', 'java', 'python', 'rust', 'go', 'clangd']
+
+/**
+ * Languages Monaco colours but no server here understands.
+ *
+ * Listed EXPLICITLY, and that is the point. Without this, a .java file looked
+ * exactly like a .json one — `serverFor` returns null for both, so the editor
+ * said nothing and the user could not tell "we deliberately let Monaco handle
+ * this" from "we have never heard of your language". Silence meaning two
+ * opposite things is the failure this whole surface exists to prevent.
+ */
+const HIGHLIGHT_ONLY: { label: string; extensions: string; why: string }[] = [
+  { label: 'Kotlin', extensions: '.kt .kts', why: 'kotlin-language-server is a separate project.' },
+  { label: 'Scala', extensions: '.scala .sc', why: 'Metals is a separate project.' },
+  { label: 'Groovy · Gradle', extensions: '.groovy .gradle', why: 'No widely-used server.' },
+  { label: 'Ruby, PHP, Elixir, and ~70 more', extensions: '', why: 'Monaco has grammars; no server is wired.' },
+]
+
+/** The highlight-only languages, as reports, so one list can show everything. */
+export function highlightOnly(): ServerReport[] {
+  return HIGHLIGHT_ONLY.map((h, i) => ({
+    id: `hl${i}` as ServerId,
+    label: h.label,
+    extensions: h.extensions,
+    state: 'highlight-only' as const,
+    detail: h.why,
+  }))
+}
 
 /** One report per language, for the Settings list and the editor's strip. */
 export function reportServers(cwd: string): ServerReport[] {
-  return SERVER_IDS.map((id) => {
+  return [...SERVER_IDS.map((id) => {
     const meta = META[id]
     const resolved = resolveServer(id, cwd)
     if (resolved) {
@@ -290,13 +389,27 @@ export function reportServers(cwd: string): ServerReport[] {
       }
     }
 
+    // Same shape as clangd's: installed but unusable is a different problem
+    // with a different fix, and "not installed" would send the user to brew for
+    // something they already have.
+    if (id === 'java' && jdtlsBin() && !javaHome()) {
+      return {
+        id,
+        ...meta,
+        state: 'unconfigured' as const,
+        detail: 'jdtls is installed, but there is no JDK to run it.',
+        install: 'brew install openjdk',
+        hint: 'On macOS /usr/bin/java exists even with no JDK — it is a stub that only tells you to install one, which is why this is easy to miss.',
+      }
+    }
+
     return {
       id,
       ...meta,
       state: 'missing' as const,
       detail: `Looked in ${searchedFor(id, cwd).join(', ')}`,
     }
-  })
+  }), ...highlightOnly()]
 }
 
 /**
@@ -309,6 +422,8 @@ export function searchedFor(id: ServerId, cwd: string): string[] {
   switch (id) {
     case 'ts':
       return [`${cwd}/node_modules/typescript`, `${cwd}/node_modules/.bin`, 'bundled tsgo', '$PATH']
+    case 'java':
+      return ['$PATH', '/opt/homebrew/opt/jdtls/bin', '~/.local/share/nvim/mason/bin']
     case 'python':
       return [`${cwd}/.venv/bin`, `${cwd}/node_modules/.bin`, '$PATH']
     case 'swift':

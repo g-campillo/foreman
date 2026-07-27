@@ -24,6 +24,13 @@ const BY_EXT: Record<string, string> = {
   cjs: 'javascript',
   jsx: 'javascriptreact',
   swift: 'swift',
+  java: 'java',
+  kt: 'kotlin',
+  kts: 'kotlin',
+  scala: 'scala',
+  sc: 'scala',
+  groovy: 'groovy',
+  gradle: 'groovy',
   py: 'python',
   pyi: 'python',
   rs: 'rust',
@@ -55,6 +62,13 @@ const OWNER: Record<string, ServerId> = {
   javascript: 'ts',
   javascriptreact: 'ts',
   swift: 'swift',
+  java: 'java',
+  // Kotlin, Scala and Groovy deliberately absent. They highlight — Monaco ships
+  // grammars for all three — but their servers are separate projects
+  // (kotlin-language-server, Metals, groovy-language-server) with their own
+  // launch requirements, and claiming them here would promise intelligence the
+  // fleet cannot deliver. `reportServers` says "highlighting only" for these
+  // rather than staying silent, which is the whole point of that list.
   python: 'python',
   rust: 'rust',
   go: 'go',
