@@ -3510,6 +3510,47 @@ button.diff-more:hover {
   background: rgb(var(--accent) / 0.14);
 }
 
+/* --------------------------------------------------- partial approval
+
+   One hunk of a proposed change, with its tick. Only drawn when accepting part
+   is actually expressible — see the ApprovalCard docblock for why that is Write
+   and nothing else today. */
+.approval-hunk {
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+/* A rejected hunk stays VISIBLE and readable, just clearly out. Hiding it would
+   mean approving a set you can no longer see. */
+.approval-hunk[data-off] {
+  opacity: 0.42;
+}
+.approval-tick {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 9px;
+  border-bottom: 1px solid rgb(var(--border));
+  background: rgb(var(--surface-2) / 0.6);
+  font-size: 11px;
+  color: rgb(var(--text-dim));
+  cursor: default;
+  user-select: none;
+}
+.approval-tick input {
+  accent-color: rgb(var(--accent));
+  cursor: default;
+}
+/* Pushed to its own end of the row: it is not a third answer to the question,
+   it is a way to go and look before answering. */
+.approval-open {
+  margin-left: auto;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 /* Opens the file a tool card touched. Only appears on hover: every Read and
    Edit card would otherwise carry a permanent button nobody asked for. */
 .tool-open {

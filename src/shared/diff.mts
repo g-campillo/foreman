@@ -67,3 +67,99 @@ export function diffRow(
     }
   return { ...base, added, removed, hunks }
 }
+
+// ------------------------------------------------------------ partial approval
+
+/**
+ * Approving only part of what the agent proposed.
+ *
+ * `canUseTool` returns ONE result for ONE tool call, so "accept these two edits
+ * and not that one" is not expressible as allow-or-deny and no amount of UI
+ * changes that. What is expressible is `updatedInput` on the allow arm — the
+ * permission result may rewrite the tool's input before it runs — and these two
+ * functions build that rewrite.
+ *
+ * THE RENDERER SENDS INDICES, NEVER CONTENT. These take a `keep` array of
+ * integers and subset the host's OWN copy of the input, so a compromised or
+ * simply buggy renderer cannot name bytes that reach disk. That collapses what
+ * would be a nasty new trust boundary into a bounds check, and it gives the
+ * property this codebase already relies on elsewhere:
+ *
+ *   A subset is always a subset. The UI can only remove edits from what the
+ *   agent proposed; it can never add or alter one. The worst case of a bug here
+ *   is that LESS lands than was ticked. Nothing the user did not see can ever
+ *   be written.
+ *
+ * That is the same argument `setMcpPermissionOverride` makes for being safe to
+ * expose directly — tighten-only, never widen — and it is safe here for the
+ * same structural reason.
+ *
+ * Note what is absent: there is no `subsetEdit`. An Edit is one old_string and
+ * one new_string; it is a single atom with nothing to subset. The UI must not
+ * imply otherwise, which is the same refusal DiffLines already makes by
+ * rendering an Edit's preview with numbers={false}.
+ */
+
+/**
+ * A MultiEdit's input with the unticked edits removed.
+ *
+ * Returns null when nothing survives. An empty `edits` array is NOT a harmless
+ * no-op — the tool errors on it — so the caller has to deny outright instead,
+ * which is also what the user meant by unticking everything.
+ */
+export function subsetMultiEdit(input: unknown, keep: readonly number[]): unknown | null {
+  const i = input as Record<string, unknown> | null
+  const edits = Array.isArray(i?.edits) ? (i.edits as unknown[]) : null
+  if (!i || !edits) return null
+
+  // Bounds-check and de-duplicate. This is the entire validation surface,
+  // because indices are the entire attack surface.
+  const wanted = [...new Set(keep)].filter((n) => Number.isInteger(n) && n >= 0 && n < edits.length)
+  if (!wanted.length) return null
+  // Original order, not click order: the tool applies edits sequentially and a
+  // reordered MultiEdit is a different edit.
+  wanted.sort((a, b) => a - b)
+  if (wanted.length === edits.length) return input // nothing dropped, send it back untouched
+
+  return { ...i, edits: wanted.map((n) => edits[n]) }
+}
+
+/**
+ * A Write's `content` rebuilt from only the accepted hunks.
+ *
+ * `before` must be read at DECISION time, from disk, in the host — not carried
+ * in the request payload. A prompt can sit parked for a long time, and
+ * recomposing against a snapshot taken when it was raised would silently revert
+ * whatever the user did in the meantime.
+ */
+export function recomposeWrite(before: string, after: string, keep: readonly number[]): string {
+  const hunks = toHunks(before, after, 'write')
+  const kept = new Set(keep)
+  const out: string[] = []
+  const beforeLines = before.split('\n')
+  let cursor = 0 // 0-based index into beforeLines
+
+  hunks.forEach((h, n) => {
+    // Everything between the last hunk and this one is untouched context.
+    const start = h.oldStart - 1
+    while (cursor < start && cursor < beforeLines.length) out.push(beforeLines[cursor++]!)
+
+    for (const line of h.lines) {
+      if (line.type === 'ctx') {
+        out.push(line.text)
+        cursor++
+      } else if (line.type === 'add') {
+        // An added line only survives if its hunk was accepted.
+        if (kept.has(n)) out.push(line.text)
+      } else {
+        // A deleted line survives only if its hunk was REJECTED — rejecting a
+        // deletion means keeping what was there.
+        if (!kept.has(n)) out.push(line.text)
+        cursor++
+      }
+    }
+  })
+
+  while (cursor < beforeLines.length) out.push(beforeLines[cursor++]!)
+  return out.join('\n')
+}

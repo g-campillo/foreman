@@ -71,7 +71,9 @@ const api = {
     message?: string,
     /** Switch the session to this mode as part of the same allow. */
     setMode?: PermissionMode,
-  ) => ipcRenderer.invoke(IPC.permRespond, { requestId, behavior, message, setMode }),
+    /** Indices of the edits/hunks accepted. Absent means all of them. */
+    keep?: number[],
+  ) => ipcRenderer.invoke(IPC.permRespond, { requestId, behavior, message, setMode, keep }),
 
   // MCP elicitation
   respondElicitation: (

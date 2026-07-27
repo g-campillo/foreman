@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import type { CanUseTool, PermissionResult } from '@anthropic-ai/claude-agent-sdk'
 import { IPC, type PermissionMode, type PermissionRequest } from '../../shared/types'
 import { send } from '../../shared/sink'
+import { recomposeWrite, subsetMultiEdit } from '../../shared/diff.mts'
 
 interface Waiter {
   resolve: (r: PermissionResult) => void
@@ -118,19 +120,29 @@ export interface PermissionAnswer {
    */
   setMode?: PermissionMode
   alwaysAllow?: boolean
+  /**
+   * Indices of the edits/hunks the user actually accepted. Absent means all.
+   *
+   * INDICES, never content, and that is the whole safety argument. The host
+   * subsets its OWN copy of the tool input, so the renderer cannot name bytes
+   * that reach disk — a nasty new trust boundary collapses into a bounds check.
+   * See subsetMultiEdit in shared/diff.mts for the property that buys.
+   */
+  keep?: number[]
 }
 
 /**
  * Answer a parked prompt. Runs wherever the waiter lives — which is the host
  * process, since that is where canUseTool was called.
  */
-export function respondPermission({
+export async function respondPermission({
   requestId,
   behavior,
   message,
   setMode,
   alwaysAllow,
-}: PermissionAnswer): boolean {
+  keep,
+}: PermissionAnswer): Promise<boolean> {
   void alwaysAllow // ponytail: rule persistence needs updatedPermissions + the SDK's
   // suggestions passed back through; add when the always-allow button ships.
 
@@ -146,17 +158,52 @@ export function respondPermission({
   // Read before settling — settle() unparks the waiter and drops it.
   const waiter = waiting.get(requestId)
 
+  // Partial approval. `updatedInput` was passed as undefined here from the
+  // start; this is the field finally being used for the thing it exists for.
+  //
+  // Only ever a SUBSET of what the agent proposed, built from the host's own
+  // copy of the input — so the worst case of a bug is that less lands than the
+  // user ticked, never something they did not see. Tighten-only, never widen,
+  // the same property setMcpPermissionOverride is safe for.
+  let updatedInput: Record<string, unknown> | undefined
+  let denyInstead: string | null = null
+
+  if (behavior === 'allow' && keep && waiter) {
+    const { toolName, input } = waiter.req
+    if (toolName === 'MultiEdit') {
+      const subset = subsetMultiEdit(input, keep)
+      // Nothing kept. An empty edits array is not a no-op — the tool errors on
+      // it — so unticking everything has to become a deny, which is what the
+      // user meant anyway.
+      if (!subset) denyInstead = 'The user rejected all of the proposed edits.'
+      else if (subset !== input) updatedInput = subset as Record<string, unknown>
+    } else if (toolName === 'Write') {
+      // `before` is read HERE, at decision time, from disk — never carried in
+      // the request. A prompt can sit parked for a long time, and recomposing
+      // against a snapshot from when it was raised would silently revert
+      // whatever the user did in the meantime.
+      const path = typeof input.file_path === 'string' ? input.file_path : ''
+      const proposed = typeof input.content === 'string' ? input.content : ''
+      const current = path ? await readFile(path, 'utf8').catch(() => '') : ''
+      const content = recomposeWrite(current, proposed, keep)
+      if (content === current) denyInstead = 'The user rejected all of the proposed changes.'
+      else if (content !== proposed) updatedInput = { ...input, content }
+    }
+    // No `Edit` branch, deliberately: an Edit is one old_string and one
+    // new_string, a single atom with nothing to subset. Allow or deny.
+  }
+
   const settled = settle(
     requestId,
-    behavior === 'allow'
+    behavior === 'allow' && !denyInstead
       ? {
           behavior: 'allow',
-          updatedInput: undefined,
+          updatedInput,
           ...(setMode
             ? { updatedPermissions: [{ type: 'setMode', mode: setMode, destination: 'session' }] }
             : {}),
         }
-      : { behavior: 'deny', message: message || 'Denied by user' },
+      : { behavior: 'deny', message: denyInstead ?? message ?? 'Denied by user' },
   )
 
   // The CLI now has the new mode, but nothing told our own meta — and the
