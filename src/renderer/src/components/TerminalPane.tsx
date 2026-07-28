@@ -8,9 +8,10 @@ import { token, vars } from '../tokens'
 function termTheme(): ITheme {
   const css = vars()
   return {
-    // Stays transparent in both themes: .term-host paints the themed fill
-    // underneath, and the glass has to read through it.
-    background: 'rgba(0,0,0,0)',
+    // The same fill .term-host paints, rather than transparent. Transparency
+    // here bought a look at the glass behind the window, and the window is
+    // opaque now — see allowTransparency below.
+    background: token(css, '--bg'),
     foreground: token(css, '--text'),
     cursor: token(css, '--accent'),
     selectionBackground: token(css, '--accent', 0.35),
@@ -29,12 +30,20 @@ interface Slot {
  */
 const slots = new Map<string, Slot>()
 
+/** How fast the second Escape has to land to close the modal. Long enough to be
+ *  reachable, short enough that Esc-to-normal-mode then Esc a second later — two
+ *  separate intentions — is not read as one gesture. */
+const ESC_DOUBLE_MS = 500
+
 function slotFor(session: SessionMeta): Slot {
   const existing = slots.get(session.id)
   if (existing) return existing
 
   const term = new Terminal({
-    allowTransparency: true, // required to see the glass through the terminal
+    // false is the fast path: allowTransparency forces xterm to composite every
+    // cell against what is behind it instead of blitting an opaque background.
+    // It only ever existed to see the glass through the terminal.
+    allowTransparency: false,
     fontFamily: "'SF Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
     fontSize: 12,
     lineHeight: 1.25,
@@ -49,7 +58,8 @@ function slotFor(session: SessionMeta): Slot {
   term.onData((data) => void window.foreman.writePty(session.id, data))
   term.onResize(({ cols, rows }) => void window.foreman.resizePty(session.id, cols, rows))
 
-  // Escape belongs to the shell, not to the modal above it.
+  // Escape belongs to the shell, not to the modal above it — until you press it
+  // twice.
   //
   // TerminalModal registers the same bare-window Escape listener FileModal does,
   // and that is only safe THERE because Monaco calls stopPropagation() on keys
@@ -57,17 +67,40 @@ function slotFor(session: SessionMeta): Slot {
   // or a readline vi-mode prompt would tear down the terminal instead of
   // reaching the program.
   //
-  // Returning true is the whole point: xterm still processes the key and the ESC
-  // goes down the pty unchanged. Only the bubble to window is cut. xterm's own
-  // typings name this as the intended use — "allowing consumers to stop
-  // propagation ... returns whether the event should be processed by xterm.js".
+  // So the FIRST Escape behaves exactly as it always has: stopPropagation(),
+  // return true, and the ESC goes down the pty unchanged while the bubble to
+  // window is cut. xterm's own typings name this as the intended use —
+  // "allowing consumers to stop propagation ... returns whether the event should
+  // be processed by xterm.js".
+  //
+  // A SECOND Escape within ESC_DOUBLE_MS returns **false**, and false rather
+  // than true is the deliberate half. xterm bails on a false handler before any
+  // pty write and without calling preventDefault/stopPropagation, so the event
+  // bubbles to window, TerminalModal closes — and the shell never sees the
+  // stray ESC. With `true` the shell would get it, and oh-my-zsh's `sudo` plugin
+  // (bound to `\e\e`) would silently rewrite a half-typed line to `sudo <line>`
+  // on the way out.
   //
   // Deliberately NOT a `buffer.active.type === 'alternate'` test. That detects
   // full-screen TUIs and misses exactly the two cases that bite: `fzf --height`
   // and shell vi-mode both read Escape in the NORMAL buffer, so it would fail in
-  // the direction that destroys work.
+  // the direction that destroys work. Nothing is lost to a stray double-tap
+  // either: the pty is never killed from the renderer and the scrollback lives
+  // in `slots`, so ⌘2 brings the same shell — and the same vim — straight back.
+  let lastEsc = 0
   term.attachCustomKeyEventHandler((ev) => {
-    if (ev.type === 'keydown' && ev.key === 'Escape') ev.stopPropagation()
+    if (ev.type !== 'keydown') return true
+    if (ev.key !== 'Escape') {
+      lastEsc = 0 // only a *consecutive* pair closes; typing in between resets
+      return true
+    }
+    const now = Date.now()
+    if (now - lastEsc < ESC_DOUBLE_MS) {
+      lastEsc = 0
+      return false
+    }
+    lastEsc = now
+    ev.stopPropagation()
     return true
   })
 
@@ -119,7 +152,26 @@ export default function TerminalPane({
     // better default anyway — no orphan shell per session you never open a
     // terminal for — and the effect re-runs on `visible`, so it starts on time.
     if (!visible || el.clientHeight === 0) return
-    if (!el.contains(slot.term.element ?? null)) slot.term.open(el)
+
+    // Two states, not one, and `el.contains(...)` could not tell them apart — it
+    // is false both for "never opened" and for "opened into a host that has
+    // since been unmounted", and only the first wants open(). xterm's open()
+    // early-returns once `element` exists and does NOT re-parent, so on the
+    // second path it appended nothing and the reopened terminal stayed grey
+    // forever. `slot.term.element` being null is the honest test.
+    //
+    // Moving the element by hand is safe: open() uses its parent for exactly
+    // appendChild and ownerDocument.defaultView, and keeps no reference to it.
+    // appendChild IS the move, so no remove() first. The CSS follows for free —
+    // theme.css's rules are descendant selectors on `.xterm`, which the moved
+    // element carries.
+    let reparented = false
+    if (!slot.term.element) {
+      slot.term.open(el)
+    } else if (slot.term.element.parentElement !== el) {
+      el.appendChild(slot.term.element)
+      reparented = true
+    }
 
     const resize = (): void => {
       if (el.clientHeight === 0) return
@@ -143,15 +195,29 @@ export default function TerminalPane({
     // was always here, just one frame too early.
     const frame = requestAnimationFrame(() => {
       resize()
+      // A re-parented terminal usually reopens at the same size, and fit()
+      // no-ops when cols/rows are unchanged — so without this nothing would ask
+      // for a repaint and the new host would show the frame from before it was
+      // detached.
+      if (reparented) slot.term.refresh(0, slot.term.rows - 1)
       slot.term.focus()
     })
 
+    // Synchronous on purpose: React 19's StrictMode double-invokes effects, and
+    // a latch set inside the promise would let the second invocation spawn a
+    // second shell. Released again only on failure — main's startPty is
+    // idempotent, and otherwise a spawn that failed once could never be retried
+    // for the life of the app, since only onPtyExit clears this and a shell that
+    // never started never exits.
     if (!slot.started) {
       slot.started = true
       void window.foreman
         .startPty(session.id, session.cwd, slot.term.cols || 80, slot.term.rows || 24)
         .then((ok: boolean) => {
-          if (!ok) slot.term.writeln('\x1b[31m[failed to start shell]\x1b[0m')
+          if (!ok) {
+            slot.started = false
+            slot.term.writeln('\x1b[31m[failed to start shell]\x1b[0m')
+          }
         })
     }
 

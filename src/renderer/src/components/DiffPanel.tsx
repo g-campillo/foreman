@@ -202,6 +202,13 @@ export default function DiffPanel({
               (d.note ? (
                 <div className="diff-note">{d.note}</div>
               ) : (
+                /* No `lang` here, deliberately, and the tool cards do pass one.
+                   This call is UNCAPPED — no maxLines — and refresh() rebuilds
+                   brand-new FileDiff objects from IPC every POLL_MS, so a
+                   useMemo keyed on d.hunks is busted four times a minute. That
+                   would re-tokenize the entire working set forever, for a panel
+                   whose job is reviewing what changed rather than reading code.
+                   The ask was highlighting in the chat area; this is not it. */
                 <DiffLines hunks={d.hunks} />
               ))}
           </div>

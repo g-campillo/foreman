@@ -6,10 +6,11 @@ import TerminalPane from './TerminalPane'
 /**
  * The shell, as a window-level card rather than a column in the side pane.
  *
- * Mounted at `.app` level, and that is mandatory rather than stylistic: a pane's
- * backdrop-filter makes it the containing block for `position: fixed`
- * descendants and its `overflow: hidden` then clips them — which is exactly why
- * PlanCard's scrim is chat-column-sized. Same reason FileModal lives up there.
+ * Mounted at `.app` level, and that is mandatory rather than stylistic:
+ * `.pane-fill`'s `contain: paint` makes a pane the containing block for
+ * `position: fixed` descendants and its `overflow: hidden` then clips them —
+ * which is exactly why PlanCard's scrim is chat-column-sized. Same reason
+ * FileModal lives up there.
  *
  * Unmounting on close loses NOTHING. The pty lives in main/pty.ts and is only
  * ever reaped at quit; the xterm instance, its scrollback and its shell state
@@ -36,9 +37,11 @@ export default function TerminalModal({
 }): React.JSX.Element {
   // Bare window listener, copying FileModal's — and safe here for the same
   // reason, which TerminalPane had to be taught: its attachCustomKeyEventHandler
-  // calls stopPropagation() on Escape, so while focus is inside xterm this never
-  // fires and the key reaches the shell. It fires when focus is on the header,
-  // the close button, or the scrim.
+  // calls stopPropagation() on the FIRST Escape, so while focus is inside xterm
+  // a single press reaches the shell and never gets here. A second press within
+  // 500ms is let through untouched — and not sent to the pty — which is the only
+  // way this fires from inside the terminal. It also fires as normal when focus
+  // is on the header, the close button, or the scrim.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose()
@@ -56,8 +59,8 @@ export default function TerminalModal({
           </h2>
           <span className="spacer" />
           {/* The honest answer to "why didn't Escape close this", said before
-              you have to wonder. */}
-          <span className="term-hint">esc goes to the shell</span>
+              you have to wonder — and now also the way out. */}
+          <span className="term-hint">esc esc to close</span>
           <button
             className="plan-close"
             data-tip="Close terminal  ⌘2"

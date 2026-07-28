@@ -3,6 +3,7 @@ import { Ban, Check, FileCode2 } from 'lucide-react'
 import type { DiffHunk, PermissionRequest } from '../../../shared/types'
 import { toHunks } from '../../../shared/diff.mts'
 import { focusTarget, relPath } from '../derive.mts'
+import { hljsLang } from '../highlight.mts'
 import { useStore } from '../store'
 import { summarise } from './ToolCard'
 import DiffLines from './DiffLines'
@@ -114,7 +115,7 @@ export default function ApprovalCard({ req }: { req: PermissionRequest }): React
               <span>Hunk {n + 1}</span>
             </label>
           )}
-          <DiffLines hunks={[h]} numbers={partial} maxLines={14} />
+          <DiffLines hunks={[h]} numbers={partial} maxLines={14} lang={hljsLang(path)} />
         </div>
       ))}
 

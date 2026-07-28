@@ -15,10 +15,12 @@
     "dist:release": "electron-vite build && electron-builder --mac -c.mac.notarize=true && npm run notarize:dmg",
     "check:policy": "node src/main/agent/policy.check.mts",
     "check:derive": "node src/renderer/src/derive.check.mts",
+    "check:highlight": "node src/renderer/src/highlight.check.mts",
     "check:transcript": "node src/main/agent/transcript.check.mts",
     "check:lspwire": "node src/shared/lspwire.check.mts",
     "check:lsp": "node src/shared/languages.check.mts",
-    "check": "npm run check:derive && npm run check:diff && npm run check:lsp && npm run check:lspwire && npm run check:policy && npm run check:porcelain && npm run check:transcript",
+    "check:lspstatus": "node src/lsp/status.check.mts",
+    "check": "npm run check:derive && npm run check:diff && npm run check:highlight && npm run check:lsp && npm run check:lspstatus && npm run check:lspwire && npm run check:policy && npm run check:porcelain && npm run check:transcript",
     "notarize:dmg": "bash scripts/notarize-dmg.sh",
     "check:diff": "node src/shared/diff.check.mts"
   },
@@ -37,7 +39,7 @@
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/xterm": "^6.0.0",
     "diff": "^9.0.0",
-    "electron-liquid-glass": "^1.1.1",
+    "lowlight": "^3.3.0",
     "lucide-react": "^1.27.0",
     "monaco-editor": "^0.56.0",
     "react": "^19.2.8",
@@ -45,6 +47,7 @@
     "react-markdown": "^10.1.0",
     "rehype-highlight": "^7.0.2",
     "remark-gfm": "^4.0.1",
+    "typescript": "^7.0.2",
     "zod": "^4.4.3",
     "zustand": "^5.0.14"
   },
@@ -56,7 +59,6 @@
     "electron": "^43.2.0",
     "electron-builder": "^26.15.3",
     "electron-vite": "^5.0.0",
-    "typescript": "^7.0.2",
     "vite": "^7.3.6"
   },
   "allowScripts": {
@@ -78,7 +80,7 @@
       "node_modules/@anthropic-ai/claude-agent-sdk/**",
       "node_modules/@anthropic-ai/claude-agent-sdk-*/**",
       "node_modules/@lydell/node-pty/**",
-      "node_modules/electron-liquid-glass/**"
+      "node_modules/@typescript/**"
     ],
     "mac": {
       "target": "dmg",

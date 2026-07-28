@@ -104,6 +104,15 @@ export interface SessionMeta {
   sdkSessionId: string | null
   /** Set when this session runs in its own worktree instead of the project cwd. */
   worktree?: WorktreeInfo
+  /**
+   * This session's language servers, as they report themselves.
+   *
+   * REPLACE semantics, like backgroundTasks: the host sends the whole fleet
+   * every time, because a per-server patch would need the renderer to know when
+   * a server has gone away. Absent until the first one starts, which is on the
+   * first document opened in a language — see LspStrip for why that is lazy.
+   */
+  lspStatus?: LspStatus[]
 }
 
 /**
@@ -377,8 +386,6 @@ export interface Prefs {
 
 /** Appearance knobs the renderer persists and applies as CSS custom properties. */
 export interface Appearance {
-  surfaceAlpha: number
-  terminalAlpha: number
   /**
    * Session rail width in px, as the user dragged it.
    *
@@ -389,20 +396,16 @@ export interface Appearance {
   railWidth: number
   /** Side panel width in px. Same clamping story as railWidth. */
   sideWidth: number
-  /** 'auto' follows the OS live via matchMedia; the other two pin it. */
-  theme: 'auto' | 'dark' | 'light'
   /**
-   * macOS vibrancy material, or null for none.
+   * 'auto' follows the OS live via matchMedia; the other two pin it.
    *
-   * This is the only thing that actually blurs the desktop behind the window.
-   * CSS backdrop-filter can't: the window is transparent, so Chromium has no
-   * in-page backdrop to sample. NSGlassEffectView (electron-liquid-glass) gives
-   * translucency and the Tahoe material but leaves the desktop sharp.
-   *
-   * Trade-off: vibrancy overrides the Liquid Glass material. Blur on means
-   * vibrancy's look; blur off means pure Liquid Glass.
+   * The only look knob left. Surface opacity, terminal opacity and the macOS
+   * vibrancy material all went with the transparent window — see theme.css's
+   * header for why none of them were rendering anything worth their frame cost.
+   * Persisted Appearance objects still carry those keys; loadAppearance picks
+   * key by key, so they are simply never read again.
    */
-  vibrancy: string | null
+  theme: 'auto' | 'dark' | 'light'
   /**
    * The macOS close/minimise/zoom buttons.
    *
@@ -474,6 +477,11 @@ export interface ServerReport {
   label: string
   extensions: string
   /**
+   * `ready` means A BINARY WAS DETECTED — nothing more. It is `resolveServer`
+   *   answering in the main process, and says nothing about whether the fleet in
+   *   the host has one running, let alone one that has finished indexing. That
+   *   is `LspStatus.phase`, computed from a different fact in a different
+   *   process; conflating the two is how a green light ends up meaning nothing.
    * `unconfigured` — the binary is there but the project is not set up for it
    *   (clangd with no compilation database, jdtls with no JDK).
    * `highlight-only` — Monaco colours it and no server here understands it.
@@ -484,6 +492,37 @@ export interface ServerReport {
   /** A shell command that fixes it, if there is one. */
   install?: string
   hint?: string
+}
+
+/**
+ * What one running language server is doing right now.
+ *
+ * The counterpart to ServerReport, and deliberately not merged with it: that one
+ * answers "is a server installed", this one answers "is it answering yet". The
+ * gap between those is the whole reason this type exists — jdtls returns from
+ * `initialize` in under four seconds on a Maven project and then spends minutes
+ * building the project model, during which every completion comes back empty.
+ * A `ready` that only meant "the handshake finished" would be a green light over
+ * a server that cannot answer anything, which is worse than no light at all.
+ *
+ * Per session, because the LSP registry is a host-process singleton and one host
+ * serves one session: three sessions on one repo really do run three fleets.
+ */
+export interface LspStatus {
+  id: ServerId
+  /** The resolution rung, e.g. 'jdtls', 'project tsgo' — Resolved.via. */
+  via: string
+  /**
+   * `starting` — spawned, handshake in flight.
+   * `indexing` — initialized, but its own reports say it is still working.
+   * `ready` — nothing outstanding; answers can be trusted.
+   * `failed` — detection or the handshake gave up. `detail` says why.
+   */
+  phase: 'starting' | 'indexing' | 'ready' | 'failed'
+  /** 0-100 when the server reports it; null when it only says "busy". */
+  percent: number | null
+  /** The server's own message, e.g. 'Building eeo-nrc-efile-dev'. */
+  detail: string | null
 }
 
 export const IPC = {

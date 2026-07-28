@@ -32,11 +32,13 @@ const dismissed = new Set<string>()
  * it is a file.
  *
  * MOUNTED AT .app LEVEL, and that is not a detail. PlanCard renders its scrim
- * inside .convo, which sits in a `section.pane.glass`; a backdrop-filter makes
- * that pane the containing block for its position:fixed descendants, and the
- * pane's own overflow:hidden then clips them. Settings, CommandPalette and
- * Tooltip all mount at .app for exactly this reason, and App.tsx says so. Move
- * this into Conversation and it silently becomes a chat-column-sized modal.
+ * inside .convo, which sits in a `section.pane.pane-fill`; that rule's
+ * `contain: paint` makes the pane the containing block for its position:fixed
+ * descendants, and the pane's own overflow:hidden then clips them. That
+ * confinement is deliberate for a plan, and wrong for a file. Settings,
+ * CommandPalette and Tooltip all mount at .app for exactly this reason, and
+ * App.tsx says so. Move this into Conversation and it silently becomes a
+ * chat-column-sized modal.
  *
  * Which file is open lives in the store rather than here, so a tree row, a diff
  * row, a tool card and the palette can all open one without a threaded callback.

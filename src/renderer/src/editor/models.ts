@@ -282,12 +282,25 @@ export function retheme(monaco: Monaco): void {
  *
  * Below the tooltip's z-index 70 so a tip still paints over a suggest list, and
  * above the scrims' 50/60 so the list is not painted over by its own modal.
+ *
+ * `monaco-editor` in the class list is not a mistake and is not decoration —
+ * without it the widgets render as unstyled transparent DOM. Every rule in
+ * Monaco's suggest.css, hover.css and parameterHints.css is scoped under
+ * `.monaco-editor`, and standaloneThemeService declares the whole `--vscode-*`
+ * variable block on `.monaco-editor, .monaco-diff-editor, .monaco-component`
+ * only. Monaco does exactly this to its own overflow container
+ * (multiDiffEditorWidgetImpl builds `h('div.monaco-editor@overflowWidgetsDomNode')`).
+ *
+ * Do NOT also add a theme class (`vs-dark` / `foreman`): Monaco applies that
+ * only to an editor's own root, so a hand-added one goes stale on every theme
+ * flip. The variable block above is theme-independent and retheme() rewrites it
+ * globally, so `monaco-editor` alone is both sufficient and correct.
  */
 let overflow: HTMLDivElement | null = null
 function overflowHost(): HTMLElement {
   if (!overflow) {
     overflow = document.createElement('div')
-    overflow.className = 'monaco-overflow'
+    overflow.className = 'monaco-overflow monaco-editor'
     document.body.appendChild(overflow)
   }
   return overflow

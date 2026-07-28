@@ -349,6 +349,31 @@ export const ANSWER_PREFIX = 'The user answered:'
  * than by question text: a question containing ' → ' would otherwise split
  * wrong, and the two lists are generated from the same array.
  *
+ * The full format is a strict superset of that, and this parser handles all of
+ * it without a special case:
+ *
+ *     <question> → <pick>, <pick>, Other: <typed text> — note: <note>
+ *
+ * `Other: ` tags free text so the model can tell typed from picked, and the
+ * note appends to the RIGHT of the arrow — which is why `lastIndexOf(' → ')`
+ * still finds the right split and why everything after it is the answer.
+ *
+ * TWO INVARIANTS THE SENDER OWNS, because nothing here can recover from a
+ * violation:
+ *
+ *  1. **One line per question.** Matching is by index, so a single newline
+ *     inside an answer shifts every later question's answer by one. Senders
+ *     collapse whitespace runs, newlines included, to a space.
+ *  2. **No ' → ' to the right of the real one.** A user who types an arrow into
+ *     a note would otherwise steal the split from the question. Senders rewrite
+ *     ' → ' to ' -> ' in every user-authored fragment.
+ *
+ * Both are enforced by QuestionCard's `oneLine`/`sanitize`. Do NOT relax them by
+ * making this parser cleverer: transcripts recorded by older builds are replayed
+ * on resume and carry no version marker to branch on, so this parser has to keep
+ * reading the old format and the new one identically. It does, because the new
+ * one only ever adds text to the right of the arrow.
+ *
  * Returns null when this isn't an answerable question set, so the caller falls
  * back to an ordinary tool card rather than rendering an empty row.
  */

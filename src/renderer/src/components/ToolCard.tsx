@@ -35,6 +35,7 @@ import {
   toolLabel,
   focusTarget,
 } from '../derive.mts'
+import { hljsLang } from '../highlight.mts'
 import { useStore } from '../store'
 import Markdown from './Markdown'
 import DiffLines from './DiffLines'
@@ -314,6 +315,10 @@ export default function ToolCard({
         <DiffLines
           hunks={hunks}
           numbers={false}
+          // The edited file's grammar, so the diff reads as code rather than as
+          // a wall of green. Null for a language hljs has no grammar for, which
+          // degrades to exactly what this rendered before.
+          lang={hljsLang(target?.path ?? '')}
           maxLines={allLines ? MAX_EXPANDED_DIFF_LINES : MAX_INLINE_DIFF_LINES}
           // Dropped once expanded, so past the second ceiling the row degrades
           // to a static count rather than offering a click that does nothing.

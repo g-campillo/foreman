@@ -8,6 +8,7 @@ import {
   type ChatItem,
   type ContextUsage,
   type EffortLevel,
+  type LspStatus,
   type McpServerInfo,
   type ModelInfo,
   type PermissionMode,
@@ -691,6 +692,19 @@ export class Session {
 
   setTitle(title: string): void {
     this.patchMeta({ title })
+  }
+
+  /**
+   * This session's language servers, as the LSP registry in this process sees
+   * them. REPLACE semantics — the whole fleet, every time.
+   *
+   * A method rather than the host sending evtMeta by hand, so `this.meta` stays
+   * in step with what the renderer was told: `hello` and the `meta` call both
+   * answer from it, and a client attaching mid-index would otherwise be told
+   * nothing until the next frame happened to arrive.
+   */
+  setLspStatus(list: LspStatus[]): void {
+    this.patchMeta({ lspStatus: list })
   }
 
   /**

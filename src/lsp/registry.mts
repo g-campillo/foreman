@@ -1,7 +1,8 @@
 import { readFile, stat } from 'node:fs/promises'
-import { LspClient } from './client.mts'
+import { LspClient, phaseOf, type LspSignal } from './client.mts'
 import { resolveServer, searchedFor, type Resolved } from './detect.mts'
 import { languageOf, serverFor, toUri, sameUri, type ServerId } from '../shared/languages.mts'
+import type { LspStatus } from '../shared/types'
 
 /**
  * The fleet: which servers are running, and what each believes about the files.
@@ -35,7 +36,7 @@ interface Doc {
   dirty?: boolean
 }
 
-interface Entry {
+export interface Entry {
   client: LspClient
   resolved: Resolved
   startedAt: number
@@ -45,11 +46,139 @@ interface Entry {
   /** Latest push diagnostics, by uri. Servers that only support pull leave
    *  this empty and are read through textDocument/diagnostic instead. */
   pushed: Map<string, unknown[]>
+  /** What the UI shows. Distinct from ServerReport.state, which only means "a
+   *  binary was detected" and is computed in a different process entirely. */
+  phase: LspStatus['phase']
+  percent: number | null
+  detail: string | null
 }
 
 const servers = new Map<ServerId, Entry>()
-const failed = new Map<ServerId, string>()
+/**
+ * Servers given up on, and why.
+ *
+ * `via` rides along because three of the four ways in here — a refused position
+ * encoding, a failed handshake, a crash cap — happen AFTER a rung was resolved
+ * and the command run, and the Entry holding it is deleted on the way. Without
+ * this, the tooltip loses "jdtls" for exactly the failures where knowing which
+ * binary died is the whole question.
+ */
+const failed = new Map<ServerId, { reason: string; via: string }>()
 let root = ''
+
+/**
+ * Where fleet status goes, as a seam rather than an import.
+ *
+ * No .mts file here runtime-imports a value from a .ts one — the extension is
+ * what lets these run under bare node for the check scripts — so this cannot
+ * reach `send`/`IPC` itself. src/host/index.ts registers the listener, exactly
+ * as tools.ts and diagnose.ts sidestep the same boundary.
+ */
+let statusListener: ((list: LspStatus[]) => void) | null = null
+
+export function setStatusListener(fn: ((list: LspStatus[]) => void) | null): void {
+  statusListener = fn
+}
+
+/** Every server the fleet has an opinion about: running, or given up on. */
+export function lspStatuses(): LspStatus[] {
+  const out: LspStatus[] = []
+  for (const [id, e] of servers) {
+    out.push({ id, via: e.resolved.via, phase: e.phase, percent: e.percent, detail: e.detail })
+  }
+  for (const [id, f] of failed) {
+    // A server can be in both while a crashed one waits out its backoff; the
+    // live entry is the truer of the two.
+    if (servers.has(id)) continue
+    // `via` is empty only for a detection failure, which never got as far as
+    // resolving a rung; inventing one there would put a command in the tooltip
+    // that was never run.
+    out.push({ id, via: f.via, phase: 'failed', percent: null, detail: f.reason })
+  }
+  return out
+}
+
+/**
+ * How two snapshots differ — which is what decides whether one is worth an event.
+ *
+ * `phase` — something started, finished, or failed. That is the thing the user
+ *   is waiting to see, so it goes out immediately.
+ * `percent` — only the numbers moved. Worth at most one event a second.
+ * `same` — nothing moved. The host's sink does a synchronous appendFileSync per
+ *   event and replays every one of them to every future client, so an event
+ *   that says nothing new is a real cost, not a rounding error.
+ */
+export function statusDiff(a: LspStatus[], b: LspStatus[]): 'same' | 'percent' | 'phase' {
+  if (a.length !== b.length) return 'phase'
+  let diff: 'same' | 'percent' = 'same'
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i]!
+    const y = b[i]!
+    if (x.id !== y.id || x.phase !== y.phase || x.via !== y.via) return 'phase'
+    if (x.percent !== y.percent || x.detail !== y.detail) diff = 'percent'
+  }
+  return diff
+}
+
+/**
+ * What the host's throttle should hold, and whether to send it now.
+ *
+ * Split out of src/host/index.ts so `check:lspstatus` can pin it — the host is
+ * a .ts file that spawns a session on load, so nothing here can import it, and
+ * this is the half that is easy to get wrong.
+ *
+ * The subtle case is `same`. Live state catching back up with what the renderer
+ * already has must CLEAR whatever the timer is holding, not just skip the send:
+ * a frame armed a moment earlier is now older than the truth, and letting the
+ * timer deliver it would leave `sentStatus` describing a state that no longer
+ * exists — with nothing to correct it, because the very next comparison is
+ * against that stale record. On a server that then goes quiet, nothing ever does.
+ */
+export function throttleStatus(
+  list: LspStatus[],
+  sent: LspStatus[],
+): { pending: LspStatus[] | null; now: boolean } {
+  const diff = statusDiff(list, sent)
+  if (diff === 'same') return { pending: null, now: false }
+  return { pending: list, now: diff === 'phase' }
+}
+
+function publish(): void {
+  statusListener?.(lspStatuses())
+}
+
+function setPhase(entry: Entry, phase: LspStatus['phase'], detail: string | null): void {
+  entry.phase = phase
+  // A percentage only ever describes work in flight; carrying one into any
+  // other phase would leave a half-full bar under a finished or dead server.
+  // The words go the same way at `ready`: a server with nothing outstanding has
+  // nothing to describe, and relaying the chatter of one that has latched ready
+  // would be an event a second for a row the strip does not even render.
+  if (phase !== 'indexing') entry.percent = null
+  entry.detail = phase === 'ready' ? null : detail
+  publish()
+}
+
+/** A frame from a server's own reports. */
+function onServerStatus(id: ServerId, entry: Entry, sig: LspSignal): void {
+  // A late frame from a client that has already been replaced by a restart.
+  if (servers.get(id) !== entry) return
+  // `starting` outranks anything the server says about its work: until the
+  // handshake resolves we do not know there is a usable server at all, and
+  // `failed` is terminal for this entry. Between those, its own reports decide
+  // — with the entry's current phase passed in, because that is what latches a
+  // server which has already reached `ready` (see phaseOf).
+  const phase =
+    entry.phase === 'starting' || entry.phase === 'failed'
+      ? entry.phase
+      : phaseOf(sig, entry.phase)
+  // Through setPhase rather than around it. Assigning percent unconditionally
+  // is what broke the invariant setPhase documents: a progress token opened
+  // during the handshake left a 40%-full bar under `data-phase="starting"`,
+  // which LspStrip does not even pulse.
+  entry.percent = sig.percent
+  setPhase(entry, phase, sig.detail)
+}
 
 export function setRoot(cwd: string): void {
   root = cwd
@@ -66,13 +195,13 @@ export function serverPids(): number[] {
 
 /** Why a language has no server, for the "ask the agent" strip. */
 export function whyMissing(id: ServerId): { reason: string; tried: string[] } | null {
-  const r = failed.get(id)
-  return r ? { reason: r, tried: searchedFor(id, root) } : null
+  const f = failed.get(id)
+  return f ? { reason: f.reason, tried: searchedFor(id, root) } : null
 }
 
 export function statusLine(id: ServerId): string {
   const e = servers.get(id)
-  if (!e) return failed.get(id) ?? 'not started'
+  if (!e) return failed.get(id)?.reason ?? 'not started'
   const secs = Math.round((Date.now() - e.startedAt) / 1000)
   return `${e.resolved.via}, up ${secs}s, ${e.docs.size} open`
 }
@@ -85,13 +214,19 @@ export function statusLine(id: ServerId): string {
  */
 export async function ensure(id: ServerId): Promise<Entry | null> {
   const existing = servers.get(id)
+  // Returned even while its initialize is still in flight — `servers.set` below
+  // precedes the await — so a didChange arriving first finds the entry and no
+  // doc, and editorChanged drops that edit. Self-heals on the next keystroke,
+  // because sync is full-text. Pre-dates the proxy; not fixed here.
   if (existing && !existing.client.exited) return existing
   if (failed.has(id)) return null
 
   const resolved = resolveServer(id, root)
   console.error(`[lsp] ${id}: ${resolved ? resolved.via : 'no server found'}`)
   if (!resolved) {
-    failed.set(id, 'no server found')
+    // The one failure with no rung to name: nothing was resolved, so nothing ran.
+    failed.set(id, { reason: 'no server found', via: '' })
+    publish()
     return null
   }
 
@@ -103,14 +238,22 @@ export async function ensure(id: ServerId): Promise<Entry | null> {
       root,
       (uri, diags) => entry.pushed.set(uri, diags),
       (self) => onServerExit(id, self),
+      (signal) => onServerStatus(id, entry, signal),
     ),
     resolved,
     startedAt: Date.now(),
     restarts: existing?.restarts ?? 0,
     docs: existing?.docs ?? new Map(),
     pushed: new Map(),
+    phase: 'starting',
+    percent: null,
+    detail: null,
   }
   servers.set(id, entry)
+  // BEFORE the await, deliberately: the gap documented above is the handshake
+  // window — 3.7s for jdtls on a Maven project — and leaving it unannounced is
+  // most of what makes a warming server look like a broken one.
+  setPhase(entry, 'starting', null)
 
   try {
     const caps = await entry.client.start()
@@ -120,9 +263,10 @@ export async function ensure(id: ServerId): Promise<Entry | null> {
     // available, so refuse instead.
     const enc = caps.positionEncoding ?? 'utf-16'
     if (enc !== 'utf-16') {
-      failed.set(id, `unsupported positionEncoding "${enc}"`)
+      failed.set(id, { reason: `unsupported positionEncoding "${enc}"`, via: resolved.via })
       void entry.client.dispose()
       servers.delete(id)
+      publish()
       return null
     }
     // A restart has to re-open every document, or the server's view is empty
@@ -132,11 +276,23 @@ export async function ensure(id: ServerId): Promise<Entry | null> {
         textDocument: { uri: doc.uri, languageId: doc.languageId, version: doc.version, text: doc.text },
       })
     }
+    // The handshake is done. Whether ANSWERS are is a separate question, and
+    // only the server's own reports settle it — read from the client rather
+    // than waited for, since both arrive during the handshake.
+    const sig = entry.client.status
+    entry.percent = sig.percent
+    setPhase(entry, phaseOf(sig, entry.phase), sig.detail)
     return entry
   } catch (err) {
     console.error(`[lsp:${id}] initialize failed:`, err)
-    failed.set(id, `initialize failed: ${String(err)}`)
+    failed.set(id, { reason: `initialize failed: ${String(err)}`, via: resolved.via })
+    // Including the timeout case, which is the whole reason this is here: a
+    // server that has not answered `initialize` in fifteen seconds is still
+    // RUNNING, and dropping the entry without this leaves it alive with nothing
+    // referencing it and nothing left to kill it.
+    void entry.client.dispose()
     servers.delete(id)
+    publish()
     return null
   }
 }
@@ -151,12 +307,18 @@ function onServerExit(id: ServerId, self: LspClient): void {
   const entry = servers.get(id)
   if (!entry || entry.client !== self) return
   if (entry.restarts >= 5) {
-    failed.set(id, `crashed ${entry.restarts} times; giving up`)
+    const reason = `crashed ${entry.restarts} times; giving up`
+    failed.set(id, { reason, via: entry.resolved.via })
     servers.delete(id)
+    publish()
     return
   }
   const delay = Math.min(16000, 1000 * 2 ** entry.restarts)
   entry.restarts += 1
+  // Back to `starting` for the backoff: the entry stays in the map so an open
+  // document still finds it, but nothing it is asked right now gets answered,
+  // and leaving it reading `ready` would be a plain lie.
+  setPhase(entry, 'starting', `restarting after crash ${entry.restarts}`)
   setTimeout(() => {
     if (servers.get(id) === entry) {
       servers.delete(id)
@@ -303,18 +465,27 @@ export async function filesChanged(paths: string[]): Promise<void> {
 }
 
 /**
- * Diagnostics for a file.
+ * Diagnostics for one document a server already has open.
  *
  * Pull first, because tsgo does NOT push publishDiagnostics for open documents
  * — measured: after an incremental edit that introduced two errors, zero push
  * frames arrived and only the pull returned them. Push is still handled, since
- * plenty of other servers use it and some use both.
+ * plenty of other servers use it and some use both: jdtls is push-ONLY and
+ * rejects `textDocument/diagnostic` outright.
+ *
+ * Which is why "rejected the pull" and "answered the pull with nothing" have to
+ * stay distinct, and the truthiness of `res.items` is doing that on purpose: an
+ * empty items array is a server saying "no problems in this file", and it must
+ * WIN over `pushed`, which still holds whatever it published before the edit
+ * that fixed them. Only a rejection — or a server that never advertised
+ * diagnosticProvider at all — falls through. Getting that backwards leaves
+ * corrected errors underlined until the file is closed.
+ *
+ * Shared with the editor: the proxy answers the renderer's pull with this
+ * rather than forwarding it, so a push-only server's diagnostics reach Monaco,
+ * whose only diagnostics path is a pull provider.
  */
-export async function diagnose(path: string): Promise<unknown[]> {
-  const entry = await openDoc(path, 'diag')
-  if (!entry) return []
-  const uri = toUri(path)
-
+export async function diagnosticsFor(entry: Entry, uri: string): Promise<unknown[]> {
   if (entry.client.caps.diagnosticProvider) {
     try {
       const res = (await entry.client.request('textDocument/diagnostic', {
@@ -331,6 +502,13 @@ export async function diagnose(path: string): Promise<unknown[]> {
   return []
 }
 
+/** Diagnostics for a path, opening it for the diagnostics loop if need be. */
+export async function diagnose(path: string): Promise<unknown[]> {
+  const entry = await openDoc(path, 'diag')
+  if (!entry) return []
+  return diagnosticsFor(entry, toUri(path))
+}
+
 /**
  * Forget every cached failure, so the next request re-runs detection.
  *
@@ -341,6 +519,9 @@ export async function diagnose(path: string): Promise<unknown[]> {
  */
 export function recheck(): void {
   failed.clear()
+  // The strip shows failures too, so clearing them here without saying so would
+  // leave a red row for a server that is no longer considered broken.
+  publish()
 }
 
 /** Every path any server currently has open — the default set to diagnose. */

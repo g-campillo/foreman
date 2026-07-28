@@ -21,9 +21,16 @@ import { createInterface } from 'node:readline'
 import { join } from 'node:path'
 import { execFile } from 'node:child_process'
 import { setSink, send } from '../shared/sink'
-import { serverPids, disposeAll, recheck } from '../lsp/registry.mts'
+import {
+  serverPids,
+  disposeAll,
+  recheck,
+  setStatusListener,
+  statusDiff,
+  throttleStatus,
+} from '../lsp/registry.mts'
 import { handleFromRenderer, lspRequest } from '../lsp/proxy.mts'
-import { IPC } from '../shared/types'
+import { IPC, type LspStatus } from '../shared/types'
 import { HOST_FILES, makeLineReader, type HostCall, type HostFrame, type HostMeta } from '../shared/hostwire'
 import { Session } from '../main/agent/session'
 import { hydrateInto } from './hydrate'
@@ -135,6 +142,53 @@ setSink((channel, payload) => {
 let session: Session
 let metaTimer: NodeJS.Timeout | null = null
 
+// ----------------------------------------------------------- lsp status
+
+/**
+ * How often a percentage-only change may become an event.
+ *
+ * The sink above is why this exists at all: every event costs a SYNCHRONOUS
+ * appendFileSync before it is delivered, and is replayed to every client that
+ * ever reconnects. Relaying $/progress at the server's own cadence would put a
+ * write on the critical path per frame and grow the log without bound, for a
+ * number that changes faster than anyone can read it.
+ */
+const LSP_STATUS_MS = 1000
+
+let sentStatus: LspStatus[] = []
+let pendingStatus: LspStatus[] | null = null
+let statusTimer: NodeJS.Timeout | null = null
+
+function flushLspStatus(): void {
+  if (statusTimer) {
+    clearTimeout(statusTimer)
+    statusTimer = null
+  }
+  const list = pendingStatus
+  pendingStatus = null
+  if (!list || statusDiff(list, sentStatus) === 'same') return
+  sentStatus = list
+  session?.setLspStatus(list)
+}
+
+/**
+ * The registry's listener. A phase change is what the user is actually waiting
+ * for, so it goes out on the spot; a moving percentage rides the timer.
+ *
+ * The decision itself is `throttleStatus`, in the registry, so `check:lspstatus`
+ * can pin it — including the case that has no send at all, where what matters is
+ * that the pending frame is DROPPED rather than left for the timer.
+ */
+function onLspStatus(list: LspStatus[]): void {
+  const { pending, now } = throttleStatus(list, sentStatus)
+  pendingStatus = pending
+  if (now) return flushLspStatus()
+  if (pending && !statusTimer) {
+    statusTimer = setTimeout(flushLspStatus, LSP_STATUS_MS)
+    statusTimer.unref?.()
+  }
+}
+
 // --------------------------------------------------------------- control
 
 /**
@@ -227,6 +281,14 @@ async function handleCall(sock: Socket, call: HostCall): Promise<void> {
 function replay(sock: Socket): void {
   const done = (): void => {
     if (!sock.destroyed) sock.write(`${JSON.stringify({ t: 'replayed' } satisfies HostFrame)}\n`)
+    // The log is read asynchronously while live frames keep going out on the
+    // same socket, so an old lspStatus patch can land AFTER a newer one and the
+    // store merges in arrival order. Every other REPLACE-semantics meta field is
+    // corrected by the next turn; this one is not — once the fleet settles,
+    // onLspStatus dedups everything and no corrective event is ever emitted, so
+    // a reconnecting renderer would sit under "indexing 40%" forever. Re-stating
+    // the truth once the seam is past closes it.
+    if (sentStatus.length) session?.setLspStatus(sentStatus)
   }
   if (!existsSync(eventsPath)) return done()
   const rl = createInterface({ input: createReadStream(eventsPath, 'utf8'), crlfDelay: Infinity })
@@ -281,6 +343,9 @@ async function main(): Promise<void> {
   }
 
   session = new Session(init)
+  // Before anything can open a document, so the first server to start is seen
+  // starting rather than appearing already warm.
+  setStatusListener(onLspStatus)
   writeMeta(session)
   findAgentPid()
   // meta.json is written once at startup, but sdkSessionId and title are only

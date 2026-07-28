@@ -227,7 +227,10 @@ export function editorOptions(css = vars()): Record<string, unknown> {
     renderLineHighlight: 'gutter',
     renderWhitespace: 'selection',
     detectIndentation: true,
-    smoothScrolling: true,
+    // The three below are off for one reason: each is a per-frame cost the
+    // editor pays whether or not you look at it. smoothScrolling animates every
+    // wheel tick over several frames instead of one.
+    smoothScrolling: false,
     padding: { top: 10, bottom: 10 },
     // Fights a deliberate six-colour palette — the brackets end up louder than
     // the keywords.
@@ -235,9 +238,11 @@ export function editorOptions(css = vars()): Record<string, unknown> {
     // Nothing else in the app has a context menu, and Monaco's is a VS Code
     // menu full of commands this app does not implement.
     contextmenu: false,
-    // Affordable here in a way a 520px panel would not have been.
-    minimap: { enabled: true, renderCharacters: false, maxColumn: 80 },
-    stickyScroll: { enabled: true },
+    // A second full-document render, repainted on every edit and every scroll,
+    // for a document you are already looking at in a near-fullscreen modal.
+    minimap: { enabled: false },
+    // Re-computes the enclosing scopes on every scroll frame.
+    stickyScroll: { enabled: false },
     scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
   }
 }

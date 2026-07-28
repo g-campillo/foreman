@@ -25,40 +25,6 @@ let quitting = false
  */
 let trafficLights = true
 
-/** Handle to the native glass view, so the Appearance popover can restyle it. */
-let glass: { mod: { unstable_setVariant(id: number, v: number): void }; id: number } | null = null
-
-export function setGlassVariant(variant: number): boolean {
-  if (!glass) return false
-  try {
-    glass.mod.unstable_setVariant(glass.id, variant)
-    return true
-  } catch {
-    return false
-  }
-}
-
-function applyLiquidGlass(win: BrowserWindow): void {
-  if (process.platform !== 'darwin') return
-  try {
-    // Lazy require: the module is a native addon and no-ops off macOS, but a
-    // top-level import would still cost us a load on every platform.
-    const liquidGlass = require('electron-liquid-glass').default ?? require('electron-liquid-glass')
-    const id = liquidGlass.addView(win.getNativeWindowHandle(), { cornerRadius: 12 })
-    glass = { mod: liquidGlass, id }
-    // Private API — guarded because Apple can move it out from under us.
-    try {
-      liquidGlass.unstable_setVariant(id, 2)
-    } catch {
-      /* variant is cosmetic; the base glass is already applied */
-    }
-  } catch (err) {
-    // macOS < 26 or the addon failed to load. The renderer's backdrop-filter
-    // layer is the fallback, so the app still looks intentional.
-    console.warn('[glass] native Liquid Glass unavailable, using CSS fallback:', err)
-  }
-}
-
 function createWindow(): void {
   mainWindow = new BrowserWindow({
     width: 1440,
@@ -66,14 +32,19 @@ function createWindow(): void {
     minWidth: 900,
     minHeight: 600,
     show: false,
-    transparent: true, // mandatory for Liquid Glass
-    // `vibrancy` is deliberately unset here and applied from the renderer's
-    // saved Appearance instead — it overrides the Liquid Glass material, and
-    // that trade-off is the user's to make (it's also the only real blur).
+    // Opaque, deliberately. A transparent window makes WindowServer alpha-blend
+    // the whole thing against the desktop every frame, and the CSS glass it
+    // existed for was rendering nothing anyway — backdrop-filter has no in-page
+    // backdrop to sample over a transparent window. `frame: false`,
+    // titleBarStyle and trafficLightPosition stay: that chrome is not the glass.
+    transparent: false,
     frame: false,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 18 },
-    backgroundColor: '#00000000',
+    // What Chromium paints before the renderer's first frame, so launch does not
+    // flash. Dark is the default theme; the renderer pushes the resolved theme's
+    // real --bg through app:background on boot and on every theme flip.
+    backgroundColor: '#000000',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -109,11 +80,6 @@ function createWindow(): void {
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
     shell.openExternal(url)
     return { action: 'deny' }
-  })
-
-  // Glass must be attached after content exists or it renders behind nothing.
-  mainWindow.webContents.once('did-finish-load', () => {
-    if (mainWindow) applyLiquidGlass(mainWindow)
   })
 
   const devUrl = process.env['ELECTRON_RENDERER_URL']
@@ -163,13 +129,15 @@ app.whenReady().then(async () => {
   process.env.FOREMAN_USER_DATA = app.getPath('userData')
 
   ipcMain.handle('app:initialProject', () => initialProject())
-  ipcMain.handle('app:vibrancy', (_e, { v }: { v: string | null }) => {
-    mainWindow?.setVibrancy(v as Parameters<BrowserWindow['setVibrancy']>[0])
+  // The colour Chromium paints before the renderer's first frame of a resize or
+  // a reload. Pushed by applyAppearance so a theme flip does not leave the old
+  // theme's fill showing through in those gaps.
+  ipcMain.handle('app:background', (_e, { hex }: { hex: string }) => {
+    mainWindow?.setBackgroundColor(hex)
     return true
   })
   ipcMain.handle('app:trafficLights', (_e, { on }: { on: boolean }) => {
-    // macOS-only API, same guard as the Liquid Glass path. Elsewhere there are
-    // no window buttons to hide.
+    // macOS-only API. Elsewhere there are no window buttons to hide.
     if (process.platform !== 'darwin') return false
     // Remembered so a window recreated from the dock (see `activate`) comes back
     // with the user's setting rather than flashing the buttons on until the

@@ -140,7 +140,7 @@ const api = {
   pendingRequests: () => ipcRenderer.invoke(IPC.pendingList),
   pickDirectory: () => ipcRenderer.invoke(IPC.pickDirectory),
   initialProject: () => ipcRenderer.invoke('app:initialProject'),
-  setVibrancy: (v: string | null) => ipcRenderer.invoke('app:vibrancy', { v }),
+  setBackground: (hex: string) => ipcRenderer.invoke('app:background', { hex }),
   setTrafficLights: (on: boolean) => ipcRenderer.invoke('app:trafficLights', { on }),
   setAgentPolicy: (policy: {
     lifetime: 'persist' | 'stop'

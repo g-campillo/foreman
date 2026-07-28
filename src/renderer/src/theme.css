@@ -2,23 +2,20 @@
  * Semantic tokens only. No component writes a literal colour, so light mode is
  * a matter of filling in the [data-theme='light'] block below.
  *
- * --surface-alpha / --terminal-alpha are user-driven: the Appearance popover
- * writes them onto :root at runtime. Blur is NOT a CSS knob — the window is
- * transparent, so backdrop-filter has no in-page backdrop to sample and does
- * nothing over the desktop. Window vibrancy is the only thing that blurs it;
- * the popover drives that through app:vibrancy. --backdrop-blur below only
- * affects elements layered over other page content (popover, sticky headers).
+ * The window is OPAQUE, and there is no backdrop-filter left in this file. It
+ * used to be transparent, for a native Liquid Glass material — but on a
+ * transparent window backdrop-filter has no in-page backdrop to sample, so
+ * three full-window-height blur(20px) saturate(160%) passes ran on every frame
+ * and showed nothing, while the transparency itself made WindowServer
+ * alpha-blend the whole window against the desktop. Both are gone.
+ *
+ * Translucency survives only where something is layered over other PAGE content
+ * and therefore reads as depth rather than as wallpaper: the command palette,
+ * the autocomplete list, tooltips and the plan modal. Those keep their alphas.
  */
 
 :root {
   color-scheme: dark;
-
-  /* user knobs. Default is tuned for legibility over a busy wallpaper — the
-     native glass is already very clear, so a low fill makes text unreadable.
-     Drag it down in the Appearance popover for a more see-through look. */
-  --surface-alpha: 0.82;
-  --backdrop-blur: 20px;
-  --terminal-alpha: 0.45;
 
   /* base palette (dark) */
   --bg: 0 0 0;
@@ -149,17 +146,24 @@ body {
   font-size: 13px;
   line-height: 1.5;
   color: rgb(var(--text));
-  /* Transparent all the way down so the native glass reads through. */
-  background: transparent;
+  background: rgb(var(--bg));
   -webkit-font-smoothing: antialiased;
 }
 
-/* The universal glass surface. Also the fallback when the native
-   NSGlassEffectView is unavailable (macOS < 26). */
-.glass {
-  background: rgb(var(--surface) / var(--surface-alpha));
-  backdrop-filter: blur(var(--backdrop-blur)) saturate(160%);
-  -webkit-backdrop-filter: blur(var(--backdrop-blur)) saturate(160%);
+/* The universal pane fill. Was `.glass`, and was a blur; the name outlived the
+   effect by a while, which is why it is now named for what it does.
+
+   `contain: paint` is NOT an optimisation here, it is a REPLACEMENT. The
+   backdrop-filter this rule used to carry had two side effects the layout
+   depends on: it made every pane the containing block for its `position: fixed`
+   descendants, and it made each one a stacking context. `.plan-scrim` is
+   rendered INSIDE `.convo` by PlanCard and QuestionCard precisely so it stays
+   chat-column-sized (see App.tsx, which cites that confinement), and dropping
+   the filter without this would let those scrims escape to the viewport.
+   `contain: paint` reproduces both, at zero render cost. */
+.pane-fill {
+  background: rgb(var(--surface));
+  contain: paint;
 }
 
 .drag {
@@ -223,16 +227,16 @@ select {
 .app {
   /* Containing block for the .rs resize handles below. Safe for the
      position:fixed Settings/CommandPalette overlays — only transform, filter
-     and contain trap those, and .app carries none of them (the .glass
-     backdrop-filter is on the panes, not here). */
+     and contain trap those, and .app carries none of them (`.pane-fill`'s
+     `contain: paint` is on the panes, not here). */
   position: relative;
   display: grid;
   grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--side-w);
   height: 100%;
   gap: 1px;
   background: rgb(var(--border));
-  /* Matches the cornerRadius passed to the native glass view, so the web
-     contents don't paint square corners over its rounded ones. */
+  /* Matches the window's own rounded corners, so the web contents don't paint
+     square ones over them. */
   border-radius: 12px;
   overflow: hidden;
 }
@@ -258,7 +262,7 @@ select {
    The visible divider is still the grid's own 1px gap painted over the
    container background; these only widen the hit target across it, because 1px
    is not grabbable. Absolutely positioned so they stay out of flow — the
-   template stays three columns and the border-radius/overflow glass corners are
+   template stays three columns and the border-radius/overflow rounded corners are
    untouched.
 
    no-drag is load-bearing: they run the full height, so their top 44px lies
@@ -397,13 +401,13 @@ select {
 /* Project separators between groups of live sessions.
 
    Static, and that IS the design — do not restore position:sticky. A pinned
-   header must paint an opaque fill or rows scroll visibly through it, but this
-   header sits on top of the rail's own translucent glass, so any fill
-   double-composites: the old `rgb(var(--surface) / 0.92)` over a pane at
-   var(--surface-alpha) (0.82 by default, and user-tunable lower) resolved to
-   ~0.97 and read as a black band across the rail. Lowering the alpha does not
-   fix it, because the two layers multiply — the only background that matches
-   the panel is no background at all. Losing the pin is the price.
+   header must paint an opaque fill or rows scroll visibly through it, and the
+   fill it used to paint (`rgb(var(--surface) / 0.92)`) read as a band across the
+   rail because it double-composited over the pane's own translucent fill. The
+   pane is opaque now, so a flat `rgb(var(--surface))` would in principle match —
+   but the header is also the group's only breathing room, and pinning it costs a
+   sticky layer per project group on every rail scroll for a list that is
+   already short. Losing the pin stays the price.
 
    .diff-file-head keeps the fill on purpose and now carries its own note about
    why. Do not re-link the two with a shared comment: they made the same call
@@ -609,6 +613,30 @@ select {
   }
 }
 
+/* Language-server readiness, between the session list and the buttons.
+   Deliberately thin: the rows themselves are plain `.meter`s, so all this owns
+   is the seam, the failed colour, and the "busy with no number" case. */
+.lsp-strip {
+  flex: 0 0 auto;
+  padding: 0 9px 8px;
+  border-top: 1px solid rgb(var(--border));
+}
+.lsp-strip .rail-section {
+  padding-left: 0;
+  padding-right: 0;
+}
+/* Matches .activity[data-activity='error'] — one colour for "this is broken"
+   wherever it appears. The bar stays at zero, because none of the work the
+   user was waiting for got done. */
+.lsp-strip .meter[data-phase='failed'] {
+  color: rgb(var(--danger));
+}
+/* Nothing to fill the bar with, so the row itself has to say "still alive".
+   Reuses the rail's own pulse rather than inventing a second animation. */
+.lsp-strip .meter[data-busy] .meter-val {
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
 .rail-foot {
   flex: 0 0 auto;
   padding: 8px;
@@ -708,6 +736,39 @@ select {
 .convo > [data-item-id] {
   display: flex;
   flex-direction: column;
+}
+
+/* Offscreen rows skip style, layout and paint entirely — virtualization without
+   a windowing library, which the transcript could not use anyway because it is a
+   tree (see Conversation's byParent recursion), the case those libraries handle
+   worst.
+
+   `auto 120px` is a guess that the browser replaces with the real height once a
+   row has been rendered once; it only has to be close enough that the scrollbar
+   does not jump while scrolling past never-rendered rows.
+
+   Two things have to be true for this to be free, and only one of them is.
+
+   The plan and question scrims render as SIBLINGS of these wrappers, not inside
+   them, so `contain: layout style paint` — which content-visibility implies —
+   never traps their fixed positioning in a single transcript row. True.
+
+   The other is that nothing inside a row paints outside it, and .msg-actions
+   does exactly that: it hangs BELOW .msg-user (top:100%), which is the only
+   in-flow child, so the wrapper's box ends precisely where the branch/rewind
+   buttons begin. Paint containment is unconditional — it does not wait for the
+   row to go offscreen — so on a contained row those buttons are clipped away and
+   stop hit-testing, and since .branch-btn is opacity:0 until :hover the loss is
+   invisible until someone tries to fork or rewind.
+
+   Hence the exclusion rather than a padding-bottom on the wrapper: .convo is a
+   14px-gap flex column, so padding to swallow the overhang would widen every gap
+   in the transcript. User messages are a minority of a turn, so nearly all of the
+   benefit survives. Descendant :has() on purpose — a subagent transcript nested
+   in a ToolCard renders .msg-user through the same Item recursion. */
+.convo > [data-item-id]:not(:has(.msg-user)) {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 120px;
 }
 
 .msg-user {
@@ -1232,16 +1293,18 @@ select {
    `.pane { overflow: hidden }`. The rail is ~244px and a bubble is up to 240px,
    so a footer button lost nearly half its tip, and the Session tab's ran off the
    right of the chat pane. `position: fixed` does not escape either, because
-   .glass's backdrop-filter makes every pane the containing block for its fixed
-   descendants — so the pane's own overflow still clips them. .app level is the
-   only way out, and Settings and the command palette already prove it works.
+   `.pane-fill`'s `contain: paint` makes every pane the containing block for its
+   fixed descendants — so the pane's own overflow still clips them. .app level is
+   the only way out, and Settings and the command palette already prove it works.
+   (That was a backdrop-filter until the window went opaque; the containment is
+   now declared outright rather than inherited from an effect.)
 
    `data-tip` is untouched at every call site; only the reader moved. The old
    data-tip-below / -start / -end modifiers are gone: the bubble now flips and
    clamps against the window, which is what those three were approximating.
 
    Native `title` is still what this replaces — on macOS it waits about 1.5s and
-   then paints unstyled OS chrome over a glass window — and `aria-label` is still
+   then paints unstyled OS chrome over the window — and `aria-label` is still
    the accessible name everywhere, so this element is aria-hidden.
 
    Hotkeys live in the same string after two spaces ('Diff  ⌘1'), which is what
@@ -1420,15 +1483,18 @@ select {
 .diff-file {
   border-bottom: 1px solid rgb(var(--border));
 }
-/* Sticky WITH an opaque fill, deliberately not the transparent treatment
-   .rail-group-head takes. Same physics — 0.92 composited over the pane's own
-   var(--surface-alpha) resolves near 0.99 against 0.82, so this header is a
-   visible band — but the trade lands the other way here. A diff file runs for
-   hundreds of lines, so this header really is pinned most of the time and
-   "which file am I in" is worth a seam. The rail's groups fit on one screen, so
-   it was paying the band for a pin that never fired.
-   0.92 and not var(--surface-alpha): much under 0.9 and the diff lines read
-   straight through the pinned header. */
+/* Sticky WITH a fill, deliberately not the transparent treatment
+   .rail-group-head takes. A diff file runs for hundreds of lines, so this header
+   really is pinned most of the time and "which file am I in" is worth a seam;
+   the rail's groups fit on one screen, so it was paying for a pin that never
+   fired.
+
+   Flat `rgb(var(--surface))`, and it used to be 0.92 over a blur(12px). That was
+   a genuinely rendering nested backdrop-filter — one per changed file, re-run on
+   every frame of a diff-panel scroll — and the alpha only existed to survive
+   compositing over the pane's own translucent fill. Both are moot on an opaque
+   pane, and fully opaque is what a pinned header wanted anyway: much under 0.9
+   and the diff lines read straight through it. */
 .diff-file-head {
   display: flex;
   align-items: center;
@@ -1437,9 +1503,7 @@ select {
   width: 100%;
   position: sticky;
   top: 0;
-  background: rgb(var(--surface) / 0.92);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
+  background: rgb(var(--surface));
   z-index: 1;
 }
 /* ---------------------------------------------------------------- commit bar */
@@ -1543,12 +1607,23 @@ select {
   text-align: center;
   user-select: none;
 }
+/* `:not([data-hl])` is a WITHDRAWAL, not an escalation, and the direction
+   matters. These selectors are (0,3,0) against `.hljs-keyword`'s (0,1,0), so on
+   a highlighted line the flat green/red would beat every syntax token and the
+   whole thing would render as one colour — which is what it did before
+   DiffLines learned to tokenize. Rather than out-specify the tokens, the fill
+   stands down wherever there are tokens to show.
+
+   Legibility does not depend on it: add/del stay obvious from their BACKGROUND
+   (--add-bg / --del-bg above), which is exactly how GitHub and VS Code render a
+   highlighted diff. `.diff-sign` deliberately stays outside the `:not()` so the
+   +/− glyph keeps its colour on every line, highlighted or not. */
 .diff-line[data-t='add'] .diff-sign,
-.diff-line[data-t='add'] .diff-text {
+.diff-line[data-t='add'] .diff-text:not([data-hl]) {
   color: rgb(var(--add-fg));
 }
 .diff-line[data-t='del'] .diff-sign,
-.diff-line[data-t='del'] .diff-text {
+.diff-line[data-t='del'] .diff-text:not([data-hl]) {
   color: rgb(var(--del-fg));
 }
 .diff-text {
@@ -1616,13 +1691,16 @@ button.diff-more:hover {
   flex: 1;
   min-height: 0;
   padding: 8px 4px 4px 10px;
-  background: rgb(var(--bg) / var(--terminal-alpha));
+  background: rgb(var(--bg));
 }
 .term-host .xterm {
   height: 100%;
 }
+/* No `background: transparent !important` here any more. That existed to punch
+   xterm's own fill out so this host's translucent one showed through; xterm now
+   paints --bg itself (TerminalPane's termTheme) on its opaque fast path, which
+   is the same colour this host paints. overflow-y is the only thing left. */
 .term-host .xterm-viewport {
-  background: transparent !important;
   overflow-y: auto;
 }
 
@@ -1949,7 +2027,14 @@ button.diff-more:hover {
 }
 
 /* highlight.js token classes, mapped onto the theme tokens. Only the ones the
-   common-language set actually emits often enough to matter. */
+   common-language set actually emits often enough to matter.
+
+   Two renderers feed these: rehype-highlight, for fenced code blocks in the
+   transcript, which nests spans; and highlight.mts, for tool-card diffs, which
+   FLATTENS the ancestor chain onto one span. Compound selectors work under both
+   — hence `.hljs-class.hljs-title` beside the descendant form below. Any new
+   descendant selector added here needs its compound twin, or it will silently
+   apply to code blocks and not to diffs. */
 .hljs-keyword,
 .hljs-selector-tag,
 .hljs-literal,
@@ -1977,6 +2062,7 @@ button.diff-more:hover {
 }
 .hljs-type,
 .hljs-class .hljs-title,
+.hljs-class.hljs-title,
 .hljs-attr,
 .hljs-attribute,
 .hljs-variable,
@@ -3083,6 +3169,44 @@ button.diff-more:hover {
 .ask-opt[data-on] .ask-key {
   color: rgb(var(--accent));
 }
+
+/* The Other row: a wrapper holding the .ask-opt button AND its field, because
+   .ask-opt is a <button> and a <button> cannot contain an <input>. The button
+   keeps its own margin-bottom, so the wrapper adds none. */
+.ask-other {
+  display: flex;
+  flex-direction: column;
+}
+/* Deliberately .plan-feedback's look rather than a new field style — same
+   modal, same frame, same job. Only the margin differs: this one tucks under
+   the option it belongs to. */
+.ask-other-input {
+  resize: vertical;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 7px 9px;
+  margin: 0 0 6px;
+  color: rgb(var(--text));
+  background: rgb(var(--bg) / 0.6);
+  border: 1px solid rgb(var(--border-strong));
+  border-radius: var(--r-md);
+}
+.ask-other-input:focus {
+  outline: none;
+  border-color: rgb(var(--accent) / 0.7);
+}
+/* A labelled field rather than a fake option: a note is not a choice, and
+   giving it the .ask-opt frame would imply it could be picked. */
+.ask-note {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgb(var(--text-faint));
+}
 /* margin-right:auto puts the pager where .plan-path sits, so .plan-buttons stays
    right-aligned and .plan-actions needs no change. */
 .ask-dots {
@@ -3794,8 +3918,13 @@ button.diff-more:hover {
 /* Monaco's suggest, hover and find widgets, hoisted to <body> so .plan-modal's
    overflow:hidden cannot clip them. Between the scrims (50/60) and the tooltip
    (70), so a tip still paints over a suggest list and the list still paints over
-   its own modal. */
-.monaco-overflow {
+   its own modal.
+
+   The compound selector is required, not tidiness: the host also carries
+   `monaco-editor` (see models.ts) and Monaco's own `.monaco-editor { position:
+   relative }` has identical specificity but is injected later, from an async
+   chunk — so a lone `.monaco-overflow` would silently lose `position: fixed`. */
+.monaco-overflow.monaco-editor {
   position: fixed;
   top: 0;
   left: 0;

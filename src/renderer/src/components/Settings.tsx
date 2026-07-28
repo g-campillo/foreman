@@ -22,18 +22,6 @@ const BUDGET_CHOICES = [0, 5, 10, 25, 50, 100]
 const TURN_CHOICES = [0, 50, 100, 250, 500]
 
 /**
- * Blur levels, in order of increasing diffusion. `null` is the only setting that
- * leaves the Tahoe Liquid Glass material intact — any vibrancy material
- * overrides it, which is the trade-off for getting real blur.
- */
-const BLUR: { label: string; value: string | null }[] = [
-  { label: 'Off · Liquid Glass', value: null },
-  { label: 'Light', value: 'hud' },
-  { label: 'Medium', value: 'under-window' },
-  { label: 'Heavy', value: 'fullscreen-ui' },
-]
-
-/**
  * ⌘, — everything the app persists: appearance, plus what a new session starts
  * with.
  *
@@ -281,49 +269,10 @@ export default function Settings({ onClose }: { onClose: () => void }): React.JS
             </select>
           </label>
 
-          <label>
-            Surface opacity · {Math.round(a.surfaceAlpha * 100)}%
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={Math.round(a.surfaceAlpha * 100)}
-              onChange={(e) => set({ surfaceAlpha: Number(e.target.value) / 100 })}
-            />
-          </label>
-
-          <label>
-            Terminal opacity · {Math.round(a.terminalAlpha * 100)}%
-            <input
-              type="range"
-              min={0}
-              max={100}
-              value={Math.round(a.terminalAlpha * 100)}
-              onChange={(e) => set({ terminalAlpha: Number(e.target.value) / 100 })}
-            />
-          </label>
-
-          <label>
-            Blur
-            {/* '' stands in for null: an <option> value is always a string, and
-                null is the one setting that leaves the native Liquid Glass
-                material alone. No real vibrancy material is the empty string, so
-                it round-trips through the DOM unharmed. */}
-            <select
-              className="select"
-              value={a.vibrancy ?? ''}
-              onChange={(e) => set({ vibrancy: e.target.value || null })}
-            >
-              {BLUR.map((b) => (
-                <option key={b.label} value={b.value ?? ''}>
-                  {b.label}
-                </option>
-              ))}
-            </select>
-            <span className="settings-hint">
-              Any blur replaces the Liquid Glass material with a macOS vibrancy one.
-            </span>
-          </label>
+          {/* Theme is the whole section now. Surface opacity, Terminal opacity
+              and Blur went with the transparent window — see theme.css's header
+              for why those three were paying a per-frame cost to render nothing.
+              Window buttons stays: it is chrome, not glass. */}
 
           <label className="settings-toggle">
             <span className="settings-lbl">Window buttons</span>

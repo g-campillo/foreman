@@ -115,9 +115,19 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
 
   // Only autoscroll when the user is already at the bottom, so reading history
   // isn't yanked away mid-stream.
+  //
+  // Next frame, not in the effect body: reading scrollHeight and writing
+  // scrollTop forces a synchronous layout, and doing that inside React's commit
+  // makes every streaming update lay the whole transcript out twice. The rAF
+  // runs after the browser has laid out the new content anyway, so scrollHeight
+  // is the same number for free. Cancelled on re-run so a burst of updates
+  // scrolls once.
   useEffect(() => {
-    const el = scroller.current
-    if (el && pinned.current) el.scrollTop = el.scrollHeight
+    const frame = requestAnimationFrame(() => {
+      const el = scroller.current
+      if (el && pinned.current) el.scrollTop = el.scrollHeight
+    })
+    return () => cancelAnimationFrame(frame)
   }, [items, approvals, elicitations, rewindPreview])
 
   /**

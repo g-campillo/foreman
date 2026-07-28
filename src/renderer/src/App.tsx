@@ -86,7 +86,7 @@ export default function App(): React.JSX.Element {
    * than through React state: it is a value only CSS reads, and a re-render per
    * pointermove would rebuild the conversation, the diff panel and the terminal
    * for it. The store is written once, on pointerup — setAppearance hits
-   * localStorage (and re-pushes vibrancy) on every call.
+   * localStorage on every call.
    */
   const drag = useRef<{
     seam: Seam
@@ -146,8 +146,8 @@ export default function App(): React.JSX.Element {
     d.el.removeAttribute('data-active')
     d.app.removeAttribute('data-resizing')
     // Not just "did any move fire": a trackpad reports a pixel of jitter on an
-    // ordinary click, and setAppearance re-pushes vibrancy to main, which tears
-    // down and rebuilds the NSVisualEffectView. Commit only a real change.
+    // ordinary click, and setAppearance writes localStorage and pushes to main
+    // on every call. Commit only a real change.
     const w = Math.round(d.w)
     if (!d.w || w === Math.round(d.from)) return
     // Branching rather than a computed key: `{ [SEAMS[seam].key]: w }` widens to
@@ -218,7 +218,7 @@ export default function App(): React.JSX.Element {
     <div className="app" data-panel={panel ?? undefined}>
       <SessionRail />
 
-      <section className="pane glass">
+      <section className="pane pane-fill">
         <header className="pane-head drag">
           <span>
             {draft ? 'New conversation' : home ? 'Home' : session ? session.title : 'Foreman'}
@@ -323,7 +323,7 @@ export default function App(): React.JSX.Element {
           stays even though the toolbar left: the window is frameless, and the
           .pane-head.drag strips are the ONLY drag region — drop it and the
           top-right of the window becomes undraggable while a panel is open. */}
-      <section className="pane glass side">
+      <section className="pane pane-fill side">
         <header className="pane-head drag">
           <span>{panel ? PANEL_LABEL[panel] : ''}</span>
           <span className="spacer" />
@@ -395,7 +395,7 @@ export default function App(): React.JSX.Element {
       {/* All three are position:fixed, so they sit outside the panes — Settings
           in particular must not live in a section that can be display:none, and
           the tooltip is here for the stronger version of the same reason: a
-          pane's backdrop-filter would make it the containing block for a fixed
+          pane's `contain: paint` makes it the containing block for a fixed
           child, and the pane's overflow would then clip the bubble. Tooltip
           renders last so its z-index:70 and its DOM order agree about painting
           over both scrims. */}
@@ -408,7 +408,7 @@ export default function App(): React.JSX.Element {
           chat pane. A file needs the whole window, so it mounts as a sibling of
           Settings. Before Tooltip, so a tip still paints over a suggest list. */}
       {session && <FileModal session={session} />}
-      {/* Same reason as FileModal — a pane's backdrop-filter would make it the
+      {/* Same reason as FileModal — a pane's `contain: paint` makes it the
           containing block and the pane's overflow would clip it. Unlike the
           others it sits BELOW the palette in z (see .term-scrim): ⌘K has to
           stay reachable over a terminal you left open. */}

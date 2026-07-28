@@ -17,6 +17,7 @@ import {
 import type { PastSession, SessionMeta, TranscriptSearchHit } from '../../../shared/types'
 import { onHome, useStore } from '../store'
 import { activityOf, groupSessions, type Activity } from '../derive.mts'
+import LspStrip from './LspStrip'
 
 /** Debounce on search: each keystroke otherwise re-reads up to 40 transcripts. */
 const SEARCH_DELAY_MS = 250
@@ -156,7 +157,7 @@ export default function SessionRail(): React.JSX.Element {
   }
 
   return (
-    <aside className="pane rail glass">
+    <aside className="pane rail pane-fill">
       <header className="pane-head rail-head drag">Sessions</header>
 
       {notice && (
@@ -376,6 +377,17 @@ export default function SessionRail(): React.JSX.Element {
           }}
         />
       )}
+
+      {/* Bottom of the rail, above the buttons: the conventional place for
+          status, and the one spot where a server waking up cannot REORDER the
+          session list. It does still change its height — `.lsp-strip` is
+          `flex: 0 0 auto` in this flex column, so mounting it shortens the
+          scrollable `.rail-list` above. That is why phaseOf latches `ready`:
+          without it, the short work tokens jdtls opens on every save would
+          mount and unmount this strip under the user's cursor. Scoped to the
+          active session because the fleet is per-host, and a host serves one
+          session. */}
+      {activeId && <LspStrip sessionId={activeId} />}
 
       <footer className="rail-foot">
         <button

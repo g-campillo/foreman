@@ -11,6 +11,7 @@ import type {
   SessionMeta,
 } from '../../shared/types'
 import { newestSession, projectKey } from './derive.mts'
+import { hex, vars } from './tokens'
 
 interface State {
   sessions: SessionMeta[]
@@ -119,10 +120,7 @@ interface State {
 /** Keep in sync with the :root defaults in theme.css — bootstrap() applies these
  *  over the stylesheet on every launch, so a mismatch silently wins here. */
 export const DEFAULT_APPEARANCE: Appearance = {
-  surfaceAlpha: 0.82,
-  terminalAlpha: 0.45,
   theme: 'auto',
-  vibrancy: 'under-window',
   trafficLights: true,
   // The side pane used to be 0.85fr, which rendered ~620px on a 1600px window
   // and ~1000px on a 2560px one. A px default cannot track that; 520 is a sane
@@ -159,20 +157,6 @@ function resolveTheme(t: Appearance['theme']): 'dark' | 'light' {
 }
 
 /**
- * A light fill needs far more opacity than a dark one to stay legible over the
- * desktop. The window is transparent, so whatever alpha is set here is literally
- * how much wallpaper bleeds through: a dark surface visibly darkens a bright
- * photo even at 0.8, while a near-white surface barely changes it and the
- * dim/faint text greys wash out against it.
- *
- * Remapped across the whole range rather than clamped, so the slider stays live
- * end to end instead of growing a dead zone at the bottom.
- */
-function fillFor(alpha: number, theme: 'dark' | 'light'): number {
-  return theme === 'light' ? 0.72 + alpha * 0.28 : alpha
-}
-
-/**
  * The message a main-process throw was actually raised with.
  *
  * Electron re-wraps it on the way across the bridge as
@@ -197,10 +181,7 @@ function loadAppearance(): Appearance {
     // Take only keys we still know about, so retired ones (the old CSS-blur
     // setting) don't ride along forever in localStorage.
     return {
-      surfaceAlpha: saved.surfaceAlpha ?? DEFAULT_APPEARANCE.surfaceAlpha,
-      terminalAlpha: saved.terminalAlpha ?? DEFAULT_APPEARANCE.terminalAlpha,
       theme: saved.theme ?? DEFAULT_APPEARANCE.theme,
-      vibrancy: saved.vibrancy !== undefined ? saved.vibrancy : DEFAULT_APPEARANCE.vibrancy,
       // `??` is right even for a boolean: a persisted `false` survives, and only
       // a missing key falls back to the default.
       trafficLights: saved.trafficLights ?? DEFAULT_APPEARANCE.trafficLights,
@@ -299,8 +280,6 @@ const INITIAL_APPEARANCE = loadAppearance()
 export function applyAppearance(a: Appearance): void {
   const s = document.documentElement.style
   const theme = resolveTheme(a.theme)
-  s.setProperty('--surface-alpha', String(fillFor(a.surfaceAlpha, theme)))
-  s.setProperty('--terminal-alpha', String(fillFor(a.terminalAlpha, theme)))
   // The raw dragged widths. theme.css clamps these into --rail-w / --side-w, so
   // a window too narrow to honour them overrides without overwriting — see the
   // comment on Appearance.railWidth.
@@ -311,8 +290,10 @@ export function applyAppearance(a: Appearance): void {
   // it watches resolvedTheme instead, which is why that lives in the store.
   document.documentElement.dataset.theme = theme
   useStore.setState({ resolvedTheme: theme })
-  // Blur is a window-level vibrancy material, not CSS — see Appearance.vibrancy.
-  void window.foreman.setVibrancy(a.vibrancy)
+  // The window's own pre-paint colour, which Chromium shows in the gaps the
+  // renderer hasn't filled yet — a resize, a reload. Read AFTER data-theme is
+  // set, so the value is the theme just switched to rather than the one leaving.
+  void window.foreman.setBackground(hex(vars(), '--bg'))
   // Same shape: a window-level call, plus an attribute so .rail-head can drop
   // the 84px it reserves for buttons that may not be there. toggleAttribute
   // rather than dataset — assigning undefined writes the string "undefined",
@@ -344,6 +325,62 @@ function upsert(list: ChatItem[], item: ChatItem): ChatItem[] {
   const next = [...list]
   next[i] = merged
   return next
+}
+
+/**
+ * Streamed token deltas, buffered per session per item and applied once a frame.
+ *
+ * The naive handler did a findIndex over every item, a list copy, a new item, a
+ * new items record and a `prev.text + text` concat PER TOKEN, each one a full
+ * React commit — O(n) per token, so O(n²) over a message, at whatever rate the
+ * model streams. Buffering makes all of that once-per-frame instead of
+ * once-per-token, and the string concat once per frame per item.
+ *
+ * Note the buffer holds the deltas, not the joined text: the store stays the
+ * single source of truth for what an item says, so nothing here can go stale
+ * against a rewind or a replay.
+ */
+const pendingText = new Map<string, Map<string, string>>()
+let deltaFrame: number | null = null
+
+/**
+ * Apply every buffered delta in one set(), and cancel any pending frame.
+ *
+ * Safe to call at any time, and it has to be called before anything that reads
+ * or replaces an item's text — see onItem, which would otherwise overwrite an
+ * item whose tail is still sitting in this buffer.
+ */
+function flushDeltas(): void {
+  if (deltaFrame !== null) {
+    cancelAnimationFrame(deltaFrame)
+    deltaFrame = null
+  }
+  if (pendingText.size === 0) return
+  const batch = [...pendingText]
+  pendingText.clear()
+
+  useStore.setState((s) => {
+    const items = { ...s.items }
+    let touched = false
+    for (const [sessionId, byItem] of batch) {
+      const list = items[sessionId]
+      if (!list) continue
+      const next = [...list]
+      let touchedList = false
+      for (const [itemId, text] of byItem) {
+        const i = next.findIndex((x) => x.id === itemId)
+        if (i === -1) continue
+        const prev = next[i]
+        if (prev.kind !== 'assistant' && prev.kind !== 'thinking') continue
+        next[i] = { ...prev, text: prev.text + text }
+        touchedList = true
+      }
+      if (!touchedList) continue
+      items[sessionId] = next
+      touched = true
+    }
+    return touched ? { items } : s
+  })
 }
 
 export const useStore = create<State>((set, get) => ({
@@ -605,23 +642,34 @@ export const useStore = create<State>((set, get) => ({
     // Main starts with no policy; tell it before anything can quit.
     pushPolicy(get().prefs)
 
+    // A trailing partial would otherwise die with the window.
+    window.addEventListener('beforeunload', flushDeltas)
+
     window.foreman.onItem(({ sessionId, item }: { sessionId: string; item: ChatItem }) => {
+      // First, and not optional: an item event carries the WHOLE text for its
+      // id, so upserting it over an item whose tail is still buffered would drop
+      // that tail — and then the next flush would append it a second time on top
+      // of the complete text.
+      flushDeltas()
       set((s) => ({ items: { ...s.items, [sessionId]: upsert(s.items[sessionId] ?? [], item) } }))
     })
 
+    // Buffered, not applied — see flushDeltas. One React commit per frame rather
+    // than one per token.
     window.foreman.onDelta(
       ({ sessionId, itemId, text }: { sessionId: string; itemId: string; text: string }) => {
-        set((s) => {
-          const list = s.items[sessionId]
-          if (!list) return s
-          const i = list.findIndex((x) => x.id === itemId)
-          if (i === -1) return s
-          const prev = list[i]
-          if (prev.kind !== 'assistant' && prev.kind !== 'thinking') return s
-          const next = [...list]
-          next[i] = { ...prev, text: prev.text + text }
-          return { items: { ...s.items, [sessionId]: next } }
-        })
+        let byItem = pendingText.get(sessionId)
+        if (!byItem) {
+          byItem = new Map()
+          pendingText.set(sessionId, byItem)
+        }
+        byItem.set(itemId, (byItem.get(itemId) ?? '') + text)
+        if (deltaFrame === null) {
+          deltaFrame = requestAnimationFrame(() => {
+            deltaFrame = null
+            flushDeltas()
+          })
+        }
       },
     )
 
@@ -634,6 +682,10 @@ export const useStore = create<State>((set, get) => ({
     )
 
     window.foreman.onRemoved(({ sessionId }: { sessionId: string }) => {
+      // Land whatever is buffered before the session goes; after this its items
+      // are unreachable and the tail is simply lost.
+      flushDeltas()
+      pendingText.delete(sessionId)
       set((s) => {
         const sessions = s.sessions.filter((x) => x.id !== sessionId)
         // Repair the selection here, not only in close(): a session can also go

@@ -565,6 +565,61 @@ assert.equal(answeredQuestions({}, undefined), null, 'not a question set')
     answeredQuestions(tricky, `${ANSWER_PREFIX}\na → b? → x`)?.[0].answer,
     'x',
   )
+
+  // --- the richer wire format: Other, notes, and both at once ---
+  //
+  // EVERY ASSERT ABOVE IS THE BACKWARD-COMPATIBILITY PROOF and must stay
+  // untouched: the format below is a strict superset, so a transcript recorded
+  // by an older build still parses through the same code path. These add the
+  // new shapes.
+
+  /** A two-question payload whose second answer is always plain 'CSS'. */
+  const wire = (first: string): string => `${ANSWER_PREFIX}\nWhich titler? → ${first}\nTooltips? → CSS`
+
+  // Free text rides as a comma-joined item tagged `Other: `, so it lands inside
+  // the answer rather than needing a field of its own.
+  assert.equal(
+    answeredQuestions(input, wire('Other: something else'))?.[0].answer,
+    'Other: something else',
+  )
+
+  // A note appends to the RIGHT of the arrow, so the split is unaffected and the
+  // note simply reads as part of the answer.
+  assert.equal(
+    answeredQuestions(input, wire('Haiku — note: cheapest'))?.[0].answer,
+    'Haiku — note: cheapest',
+  )
+
+  // Picks, Other and a note together, multi-select.
+  const rich = 'Haiku, Sonnet, Other: whatever is cheapest — note: cost matters'
+  assert.equal(answeredQuestions(input, wire(rich))?.[0].answer, rich)
+
+  // A question that itself contains ' → ' AND carries a note. lastIndexOf finds
+  // the question's arrow, not the answer's, unless the note keeps its distance —
+  // which it does, being to the right of it.
+  assert.equal(
+    answeredQuestions(tricky, `${ANSWER_PREFIX}\na → b? → x — note: because`)?.[0].answer,
+    'x — note: because',
+  )
+
+  // A user who TYPES an arrow into a note. This is the case the sender's
+  // sanitize() exists for: it rewrites ' → ' to ' -> ' before it ever reaches
+  // the wire, so the last ' → ' on the line is still the real separator.
+  assert.equal(
+    answeredQuestions(tricky, `${ANSWER_PREFIX}\na → b? → x — note: a -> b is fine`)?.[0].answer,
+    'x — note: a -> b is fine',
+    'a sanitized arrow inside a note cannot steal the split',
+  )
+
+  // THE REGRESSION THAT MATTERS: matching is positional, so anything that could
+  // add a line — a note, a long Other — would shift every later answer by one.
+  // Q1 carries both here; Q2's answer must still be at index 1.
+  const both = 'Other: my own model — note: two lines worth of thought, collapsed to one'
+  assert.deepEqual(
+    answeredQuestions(input, wire(both))?.map((a) => a.answer),
+    [both, 'CSS'],
+    'a note on Q1 does not shift Q2',
+  )
 }
 
 // ----------------------------------------------------------------- workingVerb

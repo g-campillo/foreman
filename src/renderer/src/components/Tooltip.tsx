@@ -12,10 +12,10 @@ const EDGE = 8
  * `.pane { overflow: hidden }`. The rail is ~244px and a bubble is up to 240px,
  * so a footer button lost nearly half its tip, and the Session tab's ran off the
  * right of the chat pane. `position: fixed` cannot rescue a pseudo-element
- * either: .glass's backdrop-filter makes every pane the containing block for its
- * fixed descendants, so the pane's own overflow still clips them. Rendering at
- * .app level is the only escape, and it is the one Settings and the command
- * palette already take.
+ * either: `.pane-fill`'s `contain: paint` makes every pane the containing block
+ * for its fixed descendants, so the pane's own overflow still clips them.
+ * Rendering at .app level is the only escape, and it is the one Settings and the
+ * command palette already take.
  *
  * Imperative rather than React state, for the same reason App.tsx gives about
  * the seam drag: pointerover fires at pointermove frequency, and a re-render per
