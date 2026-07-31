@@ -5,7 +5,7 @@ import { toHunks } from '../../../shared/diff.mts'
 import { focusTarget, relPath } from '../derive.mts'
 import { hljsLang } from '../highlight.mts'
 import { useStore } from '../store'
-import { summarise } from './ToolCard'
+import { summarise } from './ToolLine'
 import DiffLines from './DiffLines'
 
 /**

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FolderTree, GitCompare, Gauge, SlidersHorizontal, SquareTerminal, X } from 'lucide-react'
-import { activeSession, DEFAULT_APPEARANCE, onHome, useStore } from './store'
+import { FolderTree, GitCompare, Gauge, Plus, SlidersHorizontal, SquareTerminal, X } from 'lucide-react'
+import { activeSession, DEFAULT_APPEARANCE, useStore } from './store'
 import SessionRail from './components/SessionRail'
 import Conversation from './components/Conversation'
 import Composer from './components/Composer'
@@ -11,17 +11,24 @@ import FileModal from './components/FileModal'
 import Settings from './components/Settings'
 import TodoStrip from './components/TodoStrip'
 import SessionPanel from './components/SessionPanel'
-import ProjectChooser from './components/ProjectChooser'
-import Home from './components/Home'
 import CommandPalette, { type PaletteActions } from './components/CommandPalette'
 import Tooltip from './components/Tooltip'
 
 export type Panel = 'diff' | 'session' | 'files'
 
+/** Order matters: this is the dock's tab order, left to right. */
 const PANEL_LABEL: Record<Panel, string> = {
-  diff: 'Diff',
-  session: 'Session',
+  diff: 'Changes',
   files: 'Files',
+  session: 'Session',
+}
+
+/** Elements rather than components, because they are only ever rendered at one
+ *  size in one place — see ICON below for why that size is fixed. */
+const PANEL_ICON: Record<Panel, React.ReactNode> = {
+  diff: <GitCompare size={14} />,
+  files: <FolderTree size={14} />,
+  session: <Gauge size={14} />,
 }
 
 /** ⌘1/⌘3/⌘4. `undefined` for every other key — that lookup IS the guard in onKey.
@@ -58,13 +65,6 @@ export default function App(): React.JSX.Element {
   const session = useStore(activeSession)
   const diffCount = useStore((s) => (s.activeId ? (s.diffCounts[s.activeId] ?? 0) : 0))
   const newSession = useStore((s) => s.newSession)
-  const startDraft = useStore((s) => s.startDraft)
-  // A conversation with no project yet. Takes over the pane, so the chooser is
-  // the conversation until a directory is picked.
-  const draft = useStore((s) => s.draft)
-  // Derived, so "no session at all" counts as Home without anyone setting a flag.
-  const home = useStore(onHome)
-  const showHome = useStore((s) => s.showHome)
   const setAppearance = useStore((s) => s.setAppearance)
   const [panel, setPanel] = useState<Panel | null>(null)
   const [showSettings, setShowSettings] = useState(false)
@@ -189,19 +189,14 @@ export default function App(): React.JSX.Element {
         // and Electron's default template has no Preferences role.
         e.preventDefault()
         setShowSettings((v) => !v)
-      } else if (e.key === 'n' || e.key === 'N') {
-        // ⌘N reuses the current project — the common case, and it stays one
-        // keystroke. ⇧⌘N is the "somewhere else" one and opens the chooser.
-        // Matching on both cases because Shift changes `key` to 'N'.
+      } else if (e.key === 'n') {
+        // ⌘N reuses the current project, and falls through to the directory
+        // picker when there is none. ⇧⌘N used to open the project chooser; both
+        // the key and the chooser are gone, so this no longer tests shiftKey —
+        // which also means ⇧⌘N is free rather than silently doing ⌘N's job.
+        if (e.shiftKey) return
         e.preventDefault()
-        if (e.shiftKey) startDraft()
-        else void newSession()
-      } else if (e.key === '0') {
-        // Not in PANEL_KEYS, which only claims 1/2/3. Electron's default menu
-        // binds ⌘0 to resetZoom — harmless here since the app never zooms, and
-        // preventDefault keeps it from firing.
-        e.preventDefault()
-        showHome()
+        void newSession()
       } else if (e.key === 'p' || e.key === 'k') {
         // ⌘K used to cycle sessions; the palette is that, done properly. Both
         // keys open it, since muscle memory splits between the two.
@@ -211,7 +206,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [newSession, startDraft, toggle, showHome])
+  }, [newSession, toggle])
 
   return (
     <div className="app" data-panel={panel ?? undefined}>
@@ -229,87 +224,89 @@ export default function App(): React.JSX.Element {
             leave the whole left half of the title bar undraggable. Transparent
             with nothing in it, it looks like the absence Cursor has, and still
             moves the window. */}
+        {/* The five-icon toolbar that lived here is gone. Cursor names the agent
+            on the left of this strip and keeps the panel's entry points as a
+            labelled list at the top RIGHT of the content area — see .dock-entries
+            below. Five unlabelled glyphs in a corner were the last piece of
+            toolbar idiom left in the app.
+
+            Settings keeps a button because it is the one thing here that belongs
+            to the app rather than to the session. */}
         <header className="pane-head drag">
-          {/* The toolbar lives here, not in the side pane: that pane's header is
-              gone whenever the panel is closed, which is the default. `no-drag`
-              on the wrapper covers all four — -webkit-app-region inherits. */}
-          <div className="tabs no-drag">
-            <button
-              className="tab"
-              data-active={panel === 'diff'}
-              aria-pressed={panel === 'diff'}
-              aria-label="Diff"
-              data-tip="Diff — files this agent has changed  ⌘1"
-              disabled={!session}
-              onClick={() => toggle('diff')}
-            >
+          <span className="pane-title">{session?.title ?? ''}</span>
+          <span className="spacer" />
+          <button
+            className="tab no-drag"
+            data-active={showSettings}
+            aria-pressed={showSettings}
+            aria-label="Settings"
+            data-tip="Settings  ⌘,"
+            onClick={() => setShowSettings((v) => !v)}
+          >
+            <SlidersHorizontal size={ICON} />
+          </button>
+        </header>
+
+        {/* Cursor's `On <repo>` list: the dock's entries, shown only while the
+            dock is closed, as labelled rows rather than icons. Absolutely
+            positioned inside the pane — `.pane-fill`'s `contain: paint` makes it
+            the containing block, which is exactly what is wanted here. */}
+        {!panel && session && (
+          <div className="dock-entries">
+            <div className="dock-entries-head">
+              On {(session.worktree?.repoRoot ?? session.cwd).split('/').filter(Boolean).pop()}
+            </div>
+            <button data-tip="Files this agent has changed  ⌘1" onClick={() => toggle('diff')}>
               <GitCompare size={ICON} />
-              {diffCount > 0 && <span className="badge">{diffCount}</span>}
+              Changes
+              {diffCount > 0 && <span className="dock-count">+{diffCount}</span>}
             </button>
             <button
-              className="tab"
-              data-active={panel === 'files'}
-              aria-pressed={panel === 'files'}
-              aria-label="Files"
-              data-tip="Files — this project's tree  ⌘4"
-              disabled={!session}
-              onClick={() => toggle('files')}
-            >
-              <FolderTree size={ICON} />
-            </button>
-            {/* Still ⌘2, no longer a panel — it opens the window-level modal. */}
-            <button
-              className="tab"
-              data-active={showTerminal}
-              aria-pressed={showTerminal}
-              aria-label="Terminal"
-              data-tip="Terminal — a shell in this session's directory  ⌘2"
-              disabled={!session}
-              onClick={() => setShowTerminal((v) => !v)}
+              data-tip="A shell in this session's directory  ⌘2"
+              onClick={() => setShowTerminal(true)}
             >
               <SquareTerminal size={ICON} />
+              Terminal
+            </button>
+            <button data-tip="This project's tree  ⌘4" onClick={() => toggle('files')}>
+              <FolderTree size={ICON} />
+              Files
             </button>
             <button
-              className="tab"
-              data-active={panel === 'session'}
-              aria-pressed={panel === 'session'}
-              aria-label="Session info"
-              data-tip="Session info — context window, cost, MCP servers, skills  ⌘3"
-              disabled={!session}
+              data-tip="Context window, cost, MCP servers, skills  ⌘3"
               onClick={() => toggle('session')}
             >
               <Gauge size={ICON} />
-            </button>
-            {/* SlidersHorizontal, not lucide's `Settings` — that name collides
-                with the component imported above. */}
-            <button
-              className="tab"
-              data-active={showSettings}
-              aria-pressed={showSettings}
-              aria-label="Settings"
-              data-tip="Settings  ⌘,"
-              onClick={() => setShowSettings((v) => !v)}
-            >
-              <SlidersHorizontal size={ICON} />
+              Session
             </button>
           </div>
-        </header>
+        )}
 
-        {/* Three states, in priority order. The chooser IS the conversation
-            until a project is picked, so a draft outranks Home; Home in turn
-            covers both the explicit ⌘0 and the old bare "no active session". */}
-        {draft ? (
-          <ProjectChooser />
-        ) : home ? (
-          <Home />
+        {/* Two states now. The Home dashboard and the project chooser both went:
+            Home listed what the rail already lists, and the chooser only existed
+            to ask which project a new conversation belonged to, which
+            newSession() answers by opening the directory picker.
+
+            So "no session" is no longer a route to anywhere — it is the absence
+            of a conversation, and it says so. */}
+        {session ? (
+          <>
+            <TodoStrip sessionId={session.id} />
+            <Conversation sessionId={session.id} />
+            <Composer session={session} />
+          </>
         ) : (
-          session && (
-            <>
-              <TodoStrip sessionId={session.id} />
-              <Conversation sessionId={session.id} />
-              <Composer session={session} />
-            </>
-          )
+          <div className="pane-empty">
+            <p>No conversation open.</p>
+            <button
+              className="btn"
+              data-variant="primary"
+              onClick={() => void newSession()}
+            >
+              <Plus size={14} />
+              New conversation
+            </button>
+          </div>
         )}
       </section>
 
@@ -318,8 +315,25 @@ export default function App(): React.JSX.Element {
           .pane-head.drag strips are the ONLY drag region — drop it and the
           top-right of the window becomes undraggable while a panel is open. */}
       <section className="pane pane-fill side">
+        {/* A tab bar, not a label. Cursor's dock switches between Changes,
+            Browser and a terminal from tabs in this strip — active is a filled
+            rounded rect, inactive is plain text, and there are no borders
+            anywhere. Terminal and the file view stay modals, so they are not
+            tabs here; they open from the entry list instead. */}
         <header className="pane-head drag">
-          <span>{panel ? PANEL_LABEL[panel] : ''}</span>
+          <div className="dock-tabs no-drag">
+            {(Object.keys(PANEL_LABEL) as Panel[]).map((p) => (
+              <button
+                key={p}
+                data-active={panel === p}
+                aria-pressed={panel === p}
+                onClick={() => setPanel(p)}
+              >
+                {PANEL_ICON[p]}
+                {PANEL_LABEL[p]}
+              </button>
+            ))}
+          </div>
           <span className="spacer" />
           <button
             className="plan-close no-drag"

@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem, SessionMeta } from '../../shared/types'
-import { activityOf, answeredQuestions, ANSWER_PREFIX, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolRender, transcriptRows, workingVerb, WORKING_VERBS, buildTree, focusTarget, authorEdits, resolveAnchors } from './derive.mts'
+import { activityOf, answeredQuestions, ANSWER_PREFIX, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, buildTree, focusTarget, authorEdits, resolveAnchors } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -480,6 +480,35 @@ assert.equal(toolLabel('mcp__server'), 'MCP server', 'no tool segment')
 assert.equal(toolLabel('mcp__'), 'mcp__', 'no server segment either')
 assert.equal(toolLabel('mcp__s__a__b'), 'MCP s A B', 'extra __ belongs to the tool')
 
+// ------------------------------------------------------------------- toolVerb
+
+// The transcript renders a call as a sentence, and the tense IS the running
+// indicator — Cursor ships no spinner on these rows, so a verb stuck in the
+// past tense is a call that looks finished while it is still going.
+assert.equal(toolVerb('Bash'), 'Ran')
+assert.equal(toolVerb('Bash', true), 'Running')
+assert.equal(toolVerb('Grep'), 'Searched files')
+assert.equal(toolVerb('Grep', true), 'Searching files')
+// Glob and Grep are one verb on purpose: "searched files" is what both did, and
+// the argument already says whether it was a pattern or a path.
+assert.equal(toolVerb('Glob'), toolVerb('Grep'))
+// Both names for the subagent tool have to land on the same verb, for the same
+// reason summarise() pairs them — older transcripts carry 'Task'.
+assert.equal(toolVerb('Agent'), toolVerb('Task'))
+assert.equal(toolVerb('Task'), 'Delegated')
+// Every edit tool reads as one verb; the argument carries which file.
+for (const name of ['Edit', 'MultiEdit', 'NotebookEdit'])
+  assert.equal(toolVerb(name), 'Edited', `edit verb: ${name}`)
+// Anything unmapped falls back to toolLabel rather than inventing a verb for a
+// tool we know nothing about — MCP especially, where the name is user config.
+assert.equal(toolVerb('mcp__jcodemunch__get_file_content'), 'MCP jcodemunch Get File Content')
+assert.equal(toolVerb('SomeFutureTool'), 'SomeFutureTool')
+assert.equal(toolVerb('SomeFutureTool', true), 'SomeFutureTool', 'no tense to offer')
+// The registry label still wins for record-rendered tools, which never reach a
+// tool row anyway — but must not start returning undefined if they ever do.
+assert.equal(toolVerb('ExitPlanMode'), 'Plan')
+assert.equal(toolVerb(''), '', 'degenerate name must not throw')
+
 // -------------------------------------------------------------- groupTranscript
 
 {
@@ -516,6 +545,88 @@ assert.equal(transcriptRows([tool('Read', {}), tool('Read', {})]).length, 2, 'to
   )
   assert.equal(latestTodos(plan)?.length, 1, '...but the checklist still folds them')
 }
+
+// -------------------------------------------------------------- groupTurns
+
+{
+  const ask = (id: string, text = 'q'): ChatItem => ({ id, kind: 'user', text })
+  const say = (id: string): ChatItem => ({ id, kind: 'assistant', text: 'x' })
+  const done = (id: string, durationMs: number): ChatItem => ({
+    id,
+    kind: 'result',
+    text: '',
+    costUsd: 0,
+    durationMs,
+    isError: false,
+  })
+
+  // The tool() helper's ids come off a file-global counter, so they are captured
+  // rather than written out — hardcoding 'i1' here couples this block to how
+  // many tools every block above it happened to build.
+  const read = tool('Read', {})
+  const bash = tool('Bash', {})
+  const turns = groupTurns(
+    transcriptRows([
+      ask('u1'),
+      say('a1'), // mid-turn commentary — work, not answer
+      read,
+      say('a2'), // trailing run...
+      say('a3'), // ...both belong to the answer
+      done('r1', 7000),
+      ask('u2'),
+      bash,
+    ]),
+  )
+
+  assert.equal(turns.length, 2, 'a user message opens a turn')
+  assert.deepEqual(turns.map((t) => t.lead?.item.id), ['u1', 'u2'])
+  // The split is the TRAILING run of assistant blocks. An assistant block with
+  // tool calls after it is commentary and folds away with them; streaming emits
+  // several blocks for one answer and all of them have to stay visible.
+  assert.deepEqual(turns[0].work.map((r) => r.item.id), ['a1', read.id])
+  assert.deepEqual(turns[0].tail.map((r) => r.item.id), ['a2', 'a3', 'r1'])
+  assert.equal(turns[0].durationMs, 7000, 'read off the result, not timed')
+  // Still running: no result yet, so no duration and nothing in the answer.
+  assert.equal(turns[1].durationMs, null)
+  assert.deepEqual(turns[1].work.map((r) => r.item.id), [bash.id])
+  assert.deepEqual(turns[1].tail, [])
+}
+
+// A transcript resumed from disk can begin mid-turn, with work and no user
+// message to hang it on. That must still produce a turn rather than dropping
+// every row before the first question.
+{
+  const turns = groupTurns(transcriptRows([tool('Read', {}), { id: 'a', kind: 'assistant', text: 'x' }]))
+  assert.equal(turns.length, 1)
+  assert.equal(turns[0].lead, null)
+  assert.equal(turns[0].work.length, 1)
+  assert.equal(turns[0].tail.length, 1)
+}
+
+// Two questions in a row — a queued message lands as a second user item before
+// the first turn has produced anything.
+{
+  const turns = groupTurns(transcriptRows([
+    { id: 'u1', kind: 'user', text: 'a' },
+    { id: 'u2', kind: 'user', text: 'b' },
+  ]))
+  assert.equal(turns.length, 2, 'each question opens its own turn')
+  assert.deepEqual(turns.map((t) => t.work.length), [0, 0])
+}
+
+// A failed turn keeps its result in the tail, so folding the turn can never
+// hide that it failed.
+{
+  const turns = groupTurns(transcriptRows([
+    { id: 'u1', kind: 'user', text: 'a' },
+    tool('Bash', {}),
+    { id: 'r1', kind: 'result', text: '', costUsd: 0, durationMs: 400, isError: true },
+  ]))
+  assert.deepEqual(turns[0].tail.map((r) => r.item.id), ['r1'])
+  assert.deepEqual(turns[0].work.map((r) => r.item.kind), ['tool'])
+}
+
+assert.deepEqual(groupTurns([]), [], 'empty transcript')
 
 // -------------------------------------------------------------- toolRender
 

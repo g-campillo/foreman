@@ -338,7 +338,7 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
             for the session — a note you cannot silence is an ad. */}
         {noServer && (
           <div className="lsp-note">
-            <TriangleAlert size={13} />
+            <TriangleAlert size={14} />
             <div className="lsp-note-body">
               <b>No {noServer.label} language server.</b> Syntax highlighting works; hover,
               go-to-definition and diagnostics need one.
@@ -363,7 +363,7 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
               {noServer.hint && <div className="lsp-note-hint">{noServer.hint}</div>}
             </div>
             <button className="plan-close" aria-label="Dismiss" onClick={() => dismiss(noServer.id)}>
-              <X size={13} />
+              <X size={14} />
             </button>
           </div>
         )}

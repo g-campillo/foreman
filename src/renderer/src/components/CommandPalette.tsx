@@ -44,7 +44,7 @@ export default function CommandPalette({
   const listRef = useRef<HTMLDivElement>(null)
 
   const entries = useMemo<Entry[]>(() => {
-    const { select, newSession, openProject, close, startDraft, showHome } = useStore.getState()
+    const { select, newSession, openProject, close } = useStore.getState()
     const out: Entry[] = []
 
     for (const s of sessions) {
@@ -66,25 +66,14 @@ export default function CommandPalette({
         group: 'Session',
         run: () => void newSession(),
       },
-      {
-        id: 'new-in',
-        label: 'New conversation in another project…',
-        hint: '⇧⌘N',
-        group: 'Session',
-        run: startDraft,
-      },
+      /* 'New conversation in another project…' and 'Home' lived here. Both
+         views are gone — 'Open project…' below covers the first, and the rail
+         covers what Home listed. */
       {
         id: 'open',
         label: 'Open project…',
         group: 'Session',
         run: () => void openProject(),
-      },
-      {
-        id: 'home',
-        label: 'Home',
-        hint: '⌘0 · sessions, projects, usage',
-        group: 'View',
-        run: showHome,
       },
       { id: 'settings', label: 'Settings', hint: '⌘,', group: 'View', run: actions.showSettings },
       { id: 'diff', label: 'Show diff', hint: '⌘1', group: 'View', run: () => actions.showPanel('diff') },

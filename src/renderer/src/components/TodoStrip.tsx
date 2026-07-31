@@ -53,7 +53,7 @@ export default function TodoStrip({ sessionId }: { sessionId: string }): React.J
             return (
               <li key={i} data-status={t.status}>
                 <span className="todos-mark">
-                  <Mark size={11} />
+                  <Mark size={12} />
                 </span>
                 {t.content}
               </li>

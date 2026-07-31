@@ -4,26 +4,23 @@ import {
   ChevronRight,
   ClipboardList,
   GitBranch,
-  HardHat,
   MessageCircleQuestion,
   RotateCcw,
-  ShieldCheck,
-  Sparkles,
   Undo2,
   X,
 } from 'lucide-react'
 import type { ChatItem, EffortLevel, SessionMeta } from '../../../shared/types'
 import { useStore } from '../store'
-import ToolCard from './ToolCard'
+import ToolLine from './ToolLine'
 import ApprovalCard from './ApprovalCard'
 import ElicitationCard from './ElicitationCard'
 import QuestionCard from './QuestionCard'
 import PlanCard from './PlanCard'
-import ClaudeMark from './ClaudeMark'
 import {
   answeredQuestions,
   askQuestions,
   fmt,
+  groupTurns,
   hms,
   planProposal,
   planTitle,
@@ -32,8 +29,9 @@ import {
   transcriptRows,
   workingVerb,
 } from '../derive.mts'
+import type { Turn as TurnShape } from '../derive.mts'
 import Markdown from './Markdown'
-import { EFFORTS, MODES, modelName } from './Composer'
+import { EFFORTS } from './Composer'
 
 /** How long each fun verb stays up. Slow enough to read, quick enough to notice. */
 const VERB_MS = 2500
@@ -52,7 +50,6 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
   // returns an existing object, not a new one, so its identity is stable.
   const session = useStore((s) => s.sessions.find((x) => x.id === sessionId))
   const status = session?.status
-  const branch = useStore((s) => s.branches[sessionId] ?? null)
   const allApprovals = useStore((s) => s.approvals)
   const approvals = useMemo(
     () => allApprovals.filter((a) => a.sessionId === sessionId),
@@ -81,34 +78,15 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
   // Drops the checklist events TodoStrip renders, and flags the assistant
   // message that opens a turn. No longer folds tool runs — see transcriptRows.
   const rows = useMemo(() => transcriptRows(roots), [roots])
+  /* Grouped into turns, so each one can head itself with `Worked for Ns ⌄` and
+     fold everything between the question and the answer behind it. */
+  const turns = useMemo(() => groupTurns(rows), [rows])
 
-  // cwd is the *worktree* path for worktree sessions — a userData directory with
-  // a disambiguating suffix — so repoRoot is what you actually want to name.
-  //
-  // Naming only. Do NOT reuse `root` for the cwd passed down to ToolCard: a
-  // worktree session's tool file_paths point INTO the worktree, so stripping
-  // repoRoot would never match and every path would silently stay absolute.
-  // That one is plain `session?.cwd`.
-  const root = session?.worktree?.repoRoot ?? session?.cwd ?? ''
-  const project = root.split('/').filter(Boolean).pop() ?? ''
-  // Chips, not a ` · `-joined string. Joined, this rendered as
-  // "foreman · icon-chrome-collapsible-panel · Ask" — a repo, a long branch slug
-  // and a bare mode word with nothing saying which was which.
-  const chips: { icon: React.ReactNode; text: string }[] = [
-    // The live branch, refreshed with the diff panel. worktree.branch is the
-    // fallback only: it's frozen at creation, so it lies after a checkout.
-    { icon: <GitBranch size={11} />, text: branch ?? session?.worktree?.branch ?? '' },
-    {
-      icon: <Sparkles size={11} />,
-      // null until the first turn lands. modelName reads the wire id directly,
-      // so this no longer needs the model list to resolve a display name.
-      text: modelName(session?.model),
-    },
-    {
-      icon: <ShieldCheck size={11} />,
-      text: MODES.find((m) => m.value === session?.permissionMode)?.label ?? '',
-    },
-  ].filter((c) => c.text)
+  /* `root`, `project` and the `chips` array lived here — the repo name and the
+     branch · model · mode chips the empty state used to render above the
+     composer. All three are live controls in the composer now (a project picker,
+     a branch picker, the model picker and the `+` menu), so the labels were
+     restating what sits four pixels below them. See the empty state below. */
 
   const scroller = useRef<HTMLDivElement>(null)
   const pinned = useRef(true)
@@ -162,34 +140,33 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
           which is what lets it fill the scroller. The 'starting' guard covers
           resume: the session appears and select()s before hydrate()'s async
           transcript read prepends, so items is [] for at least one frame. */}
-      {items.length === 0 && status !== 'starting' && (
-        <div className="empty">
-          <HardHat size={44} />
-          <h2>{project || 'Foreman'}</h2>
-          <div className="empty-chips">
-            {chips.map((c) => (
-              <span key={c.text} className="empty-chip">
-                {c.icon}
-                {c.text}
-              </span>
-            ))}
-          </div>
-        </div>
-      )}
-      {rows.map((r) => (
-        /* data-item-id is what the editor's gutter jumps to. A wrapper rather
-           than an attribute on Item, because Item returns a different root per
-           kind and threading the id through six branches would be six chances
-           to miss one. */
-        <div key={r.item.id} data-item-id={r.item.id}>
-          <Item
-            item={r.item}
-            sessionId={sessionId}
-            cwd={session?.cwd ?? ''}
-            byParent={byParent}
-            leadsTurn={r.leadsTurn}
-          />
-        </div>
+      {/* Deliberately empty. The hard-hat mark, the project name and the three
+          read-only chips (branch · model · mode) all lived here; Cursor's
+          new-agent screen has no hero at all, just the pickers, the composer and
+          the starter chips, centred. Every one of those chips is now a live
+          control in the composer instead of a label above it — the branch and
+          project are pickers, the model is the model picker, and the mode is in
+          the `+` menu — so the hero was restating the composer.
+
+          The element itself stays: `.pane-fill:has(> .convo > .empty)` is what
+          pulls the composer up to the middle of the pane, and it is the presence
+          of this node, not its contents, that triggers it. */}
+      {items.length === 0 && status !== 'starting' && <div className="empty" />}
+      {turns.map((t, i) => (
+        <Turn
+          key={t.id}
+          turn={t}
+          sessionId={sessionId}
+          cwd={session?.cwd ?? ''}
+          byParent={byParent}
+          // Only the newest turn stays open. Everything before it folds to its
+          // header plus what the agent finally said, which is what makes a long
+          // session readable when you scroll back through it.
+          latest={i === turns.length - 1}
+          // Live counter for the turn in flight. turnStartedAt comes from main,
+          // not a mount timestamp — see Working for why that distinction matters.
+          startedAt={i === turns.length - 1 && status === 'running' ? session?.turnStartedAt ?? null : null}
+        />
       ))}
       {approvals.map((a) => {
         // ExitPlanMode's approval prompt IS the plan approval, so it gets the
@@ -216,6 +193,118 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
 }
 
 const EMPTY: ChatItem[] = []
+
+/** Each row keeps its own `data-item-id` wrapper: that is what the editor's
+ *  gutter jumps to, and what `content-visibility` is applied to. A wrapper
+ *  rather than an attribute on Item, because Item returns a different root per
+ *  kind and threading the id through six branches would be six chances to miss
+ *  one. */
+function Rows({
+  rows,
+  sessionId,
+  cwd,
+  byParent,
+}: {
+  rows: TurnShape['work']
+  sessionId: string
+  cwd: string
+  byParent: Map<string, ChatItem[]>
+}): React.JSX.Element {
+  return (
+    <>
+      {rows.map((r) => (
+        <div key={r.item.id} data-item-id={r.item.id}>
+          <Item
+            item={r.item}
+            sessionId={sessionId}
+            cwd={cwd}
+            byParent={byParent}
+            leadsTurn={r.leadsTurn}
+          />
+        </div>
+      ))}
+    </>
+  )
+}
+
+/**
+ * One turn: the question, a `Worked for 13s ⌄` header, and the answer.
+ *
+ * The header is the fold. Cursor puts everything between the question and the
+ * answer behind it and leaves only the newest turn open, so scrolling back
+ * through a session shows what was asked and what came back rather than every
+ * file the agent read on the way. Clicking it opens that turn again.
+ *
+ * The counter is live while the turn is running and frozen at the SDK's own
+ * `durationMs` afterwards — the header a finished turn keeps is the same element
+ * that was ticking a moment earlier, which is why it is one component and not a
+ * status line that gets replaced by a summary.
+ */
+function Turn({
+  turn,
+  sessionId,
+  cwd,
+  byParent,
+  latest,
+  startedAt,
+}: {
+  turn: TurnShape
+  sessionId: string
+  cwd: string
+  byParent: Map<string, ChatItem[]>
+  latest: boolean
+  /** Epoch ms the running turn began, or null when it is not running. */
+  startedAt: number | null
+}): React.JSX.Element {
+  // Keyed off `latest` rather than set once: the newest turn is open, and it
+  // stops being the newest the moment the next question is sent, at which point
+  // it should fold on its own without the user being asked.
+  const [open, setOpen] = useState(latest)
+  useEffect(() => setOpen(latest), [latest])
+
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (startedAt === null) return
+    const id = setInterval(() => setNow(Date.now()), TICK_MS)
+    return () => clearInterval(id)
+  }, [startedAt])
+
+  const elapsed = startedAt !== null ? Math.max(0, now - startedAt) : turn.durationMs
+  // Nothing to fold means no header. A turn where the agent answered outright is
+  // a question and an answer, and a "Worked for 0s" line above it is furniture.
+  const header = turn.work.length > 0 && elapsed !== null
+
+  return (
+    <>
+      {turn.lead && (
+        <div data-item-id={turn.lead.item.id}>
+          <Item
+            item={turn.lead.item}
+            sessionId={sessionId}
+            cwd={cwd}
+            byParent={byParent}
+            leadsTurn={turn.lead.leadsTurn}
+          />
+        </div>
+      )}
+
+      {header && (
+        <button className="turn-head" aria-expanded={open} onClick={() => setOpen(!open)}>
+          {/* Present tense while it runs, past once it lands — the same tense
+              switch the tool rows use, and for the same reason: Cursor ships no
+              spinner on any of this. */}
+          {startedAt !== null ? 'Working for' : 'Worked for'} {hms(elapsed)}
+          <ChevronDown size={12} className="turn-chevron" />
+        </button>
+      )}
+
+      {(open || !header) && (
+        <Rows rows={turn.work} sessionId={sessionId} cwd={cwd} byParent={byParent} />
+      )}
+      <Rows rows={turn.tail} sessionId={sessionId} cwd={cwd} byParent={byParent} />
+    </>
+  )
+}
 
 /**
  * Confirmation for a rewind, showing what the dry run says would actually
@@ -402,7 +491,7 @@ function Item({
 }: {
   item: ChatItem
   sessionId: string
-  /** Session working directory, for shortening tool file paths. See ToolCard. */
+  /** Session working directory, for shortening tool file paths. See ToolLine. */
   cwd: string
   byParent: Map<string, ChatItem[]>
   /** First assistant block of a turn — the one that gets the avatar. */
@@ -411,16 +500,19 @@ function Item({
   switch (item.kind) {
     case 'user':
       return (
+        // Full column width now, not a right-aligned bubble. Cursor's user
+        // message is a hairline card that spans the conversation column with its
+        // controls tucked inside the right edge — the asymmetry that used to
+        // come from `align-self: flex-end` comes from the card itself instead.
         <div className="msg-user" data-queued={item.queued ? '' : undefined}>
-          {item.images?.map((src, i) => (
-            <img key={i} className="msg-image" src={src} alt="attachment" />
-          ))}
-          {/* Rendered as markdown, matching the composer that now renders it live
-              while you type. `thinking` and `error` stay literal. */}
-          <Markdown text={item.text} />
-          {/* Nothing between this and the actions below: .msg-actions is absolutely
-              positioned precisely so the invisible hover buttons stop reserving a
-              blank line at the bottom of every bubble. */}
+          <div className="msg-user-body">
+            {item.images?.map((src, i) => (
+              <img key={i} className="msg-image" src={src} alt="attachment" />
+            ))}
+            {/* Rendered as markdown, matching the composer that now renders it
+                live while you type. `thinking` and `error` stay literal. */}
+            <Markdown text={item.text} />
+          </div>
           {item.queued ? (
             <button
               className="queued-cancel"
@@ -432,24 +524,26 @@ function Item({
             </button>
           ) : (
             item.uuid && (
-              // Branches into a new session sliced at this message — the
-              // edit-and-retry shape, without disturbing this conversation.
+              // Inside the card, icon-only, and no longer absolutely positioned:
+              // they used to hang below it at opacity 0 so they would not reserve
+              // a blank line. In the right edge they cost nothing to leave
+              // visible, which is what Cursor does with its restore glyph.
               <span className="msg-actions">
                 <button
-                  className="branch-btn"
+                  className="msg-action"
+                  aria-label="Branch a new conversation from this point"
                   data-tip="Branch a new conversation from this point"
                   onClick={() => void useStore.getState().fork(item.uuid)}
                 >
                   <GitBranch size={12} />
-                  branch
                 </button>
                 <button
-                  className="branch-btn"
+                  className="msg-action"
+                  aria-label="Restore files to their state at this message"
                   data-tip="Restore files to their state at this message"
                   onClick={() => void useStore.getState().rewind(item.uuid!)}
                 >
                   <RotateCcw size={12} />
-                  rewind
                 </button>
               </span>
             )
@@ -457,18 +551,16 @@ function Item({
         </div>
       )
     case 'assistant':
-      // Thinking text stays literal on purpose: markdown headings inside the
-      // small italic block fight its styling.
+      // Bare prose. The 16px avatar gutter and the ClaudeMark that opened each
+      // turn are both gone: Cursor's assistant replies have no avatar, no bubble
+      // and no gutter at all, so the reply starts at the same left edge as the
+      // tool rows under it and the whole turn reads as one column of text.
       //
-      // The gutter is always present, even without the mark, so the text column
-      // stays aligned down the turn. Streaming emits several assistant items per
-      // turn, so only the first carries the avatar.
+      // `leadsTurn` is still computed — the turn header uses it — it just no
+      // longer decides whether to paint a mark.
       return (
         <div className="msg-assistant">
-          <span className="msg-avatar">{leadsTurn && <ClaudeMark size={14} />}</span>
-          <div className="msg-body">
-            <Markdown text={item.text} />
-          </div>
+          <Markdown text={item.text} />
         </div>
       )
     case 'thinking':
@@ -480,11 +572,11 @@ function Item({
       // A Task card owns its subagent's whole transcript, nested. Recursing on
       // Item means a subagent that spawns its own subagent nests again for free.
       return (
-        <ToolCard item={item} cwd={cwd}>
+        <ToolLine item={item} cwd={cwd}>
           {byParent.get(item.id)?.map((child) => (
             <Item key={child.id} item={child} sessionId={sessionId} cwd={cwd} byParent={byParent} />
           ))}
-        </ToolCard>
+        </ToolLine>
       )
     case 'error':
       return <div className="msg-error">{item.text}</div>

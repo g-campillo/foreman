@@ -3,22 +3,21 @@ import {
   Circle,
   Cog,
   Compass,
+  FolderOpen,
   FolderPlus,
   GitBranch,
   GitBranchPlus,
-  HardHat,
-  History,
   LoaderCircle,
   MessageCircleQuestion,
   Plus,
+  Search,
   TriangleAlert,
   X,
 } from 'lucide-react'
 import type { PastSession, SessionMeta, TranscriptSearchHit } from '../../../shared/types'
-import { onHome, useStore } from '../store'
+import { useStore } from '../store'
 import { activityOf, groupSessions, type Activity } from '../derive.mts'
 import LspStrip from './LspStrip'
-import ContextStrip from './ContextStrip'
 
 /** Debounce on search: each keystroke otherwise re-reads up to 40 transcripts. */
 const SEARCH_DELAY_MS = 250
@@ -31,14 +30,18 @@ const SEARCH_DELAY_MS = 250
  * on you and which was grinding. Components, not elements: lucide strokes with
  * currentColor, so the wrapper owns the colour.
  */
-const ACTIVITY_ICON: Record<Activity, typeof Circle> = {
+const ACTIVITY_ICON: Record<Activity, typeof Circle | null> = {
   working: LoaderCircle,
   planning: Compass,
   background: Cog,
   awaiting: MessageCircleQuestion,
   starting: LoaderCircle,
   error: TriangleAlert,
-  idle: Circle,
+  // Nothing at all. An idle session used to paint a hollow Circle, so a rail of
+  // twelve finished conversations was a column of twelve identical dots saying
+  // "not running" twelve times. Cursor leaves the slot empty and collapses it,
+  // which is what makes the one agent that IS working findable at a glance.
+  idle: null,
 }
 
 const ACTIVITY_TIP: Record<Activity, string> = {
@@ -51,9 +54,12 @@ const ACTIVITY_TIP: Record<Activity, string> = {
   idle: 'Idle',
 }
 
-export function ActivityIcon({ session }: { session: SessionMeta }): React.JSX.Element {
+export function ActivityIcon({ session }: { session: SessionMeta }): React.JSX.Element | null {
   const activity = activityOf(session)
   const Glyph = ACTIVITY_ICON[activity]
+  // The slot collapses rather than rendering empty: a reserved 12px gutter on
+  // every idle row would indent the titles for a glyph that is never coming.
+  if (!Glyph) return null
   return (
     <span className="activity" data-activity={activity} title={ACTIVITY_TIP[activity]}>
       <Glyph size={12} />
@@ -73,14 +79,10 @@ const when = (ms?: number): string => {
 export default function SessionRail(): React.JSX.Element {
   const sessions = useStore((s) => s.sessions)
   const activeId = useStore((s) => s.activeId)
-  const home = useStore(onHome)
-  const showHome = useStore((s) => s.showHome)
   const select = useStore((s) => s.select)
   const close = useStore((s) => s.close)
   const newSession = useStore((s) => s.newSession)
   const resume = useStore((s) => s.resume)
-  const draft = useStore((s) => s.draft)
-  const startDraft = useStore((s) => s.startDraft)
 
   // In a memo, never in the selector: groupSessions allocates fresh objects and
   // arrays on every call, and zustand reads a new identity as a changed store —
@@ -100,6 +102,7 @@ export default function SessionRail(): React.JSX.Element {
   const notice = useStore((s) => s.notice)
   const setNotice = useStore((s) => s.setNotice)
   const openPath = useStore((s) => s.openPath)
+  const openProject = useStore((s) => s.openProject)
 
   /**
    * Both browsing and search are scoped to the open project by default.
@@ -164,7 +167,11 @@ export default function SessionRail(): React.JSX.Element {
 
   return (
     <aside className="pane rail pane-fill">
-      <header className="pane-head rail-head drag">Sessions</header>
+      {/* No title. Cursor's sidebar strip holds the traffic lights and nothing
+          else, and "Sessions" was labelling a list that is self-evidently one.
+          It stays in the flow as an empty strip because this and the chat pane's
+          header are the ONLY window drag regions — see App.tsx. */}
+      <header className="pane-head rail-head drag" />
 
       {notice && (
         <button
@@ -176,37 +183,57 @@ export default function SessionRail(): React.JSX.Element {
         </button>
       )}
 
-      <div className="rail-list">
-        {/* Reuses `.session` so it matches the rows below with no new CSS. */}
+      {/* Cursor's nav block: the standing actions, above everything the list
+          holds. Each row reveals its keybinding on hover rather than carrying a
+          permanent shortcut column, which is what keeps three rows of chrome
+          from reading as a toolbar. */}
+      <nav className="rail-nav">
         <button
-          className="session"
-          data-active={home}
-          onClick={showHome}
-          data-tip="Home — sessions, projects, usage  ⌘0"
+          className="rail-nav-row"
+          onClick={() => void newSession()}
+          data-tip="New conversation in this project"
         >
-          <span className="activity" data-activity="idle">
-            <HardHat size={12} />
-          </span>
-          <span className="session-body">
-            <span className="session-title">Home</span>
-          </span>
+          <Plus size={14} />
+          <span className="rail-nav-label">New conversation</span>
+          <span className="rail-key">⌘N</span>
         </button>
+        <button
+          className="rail-nav-row"
+          data-active={showPast || undefined}
+          onClick={() => setShowPast((v) => !v)}
+          data-tip={showPast ? 'Hide past sessions' : 'Resume or search past sessions'}
+        >
+          <Search size={14} />
+          <span className="rail-nav-label">Search</span>
+        </button>
+        {/* A Home row lived here, third. The dashboard it opened listed live
+            sessions, recent projects and spend — all of which the rail itself
+            already shows, or the session panel does. */}
+      </nav>
 
-        {/* A conversation that exists but has no project yet. Rendered as a row
-            so the rail matches what the pane is showing — the chooser.
-
-            Above the groups, not below: it has no project, so it cannot sit
-            under any project header — and it is the newest thing in the rail
-            by definition. */}
-        {draft && (
-          <div className="session" data-active>
-            <span className="activity" data-activity="idle">
-              <Plus size={12} />
-            </span>
-            <span className="session-body">
-              <span className="session-title">New conversation</span>
-              <span className="session-sub">pick a project</span>
-            </span>
+      <div className="rail-list">
+        {/* One section title over all the projects, the way Cursor heads its
+            repository list — the per-project name is a row inside it, not a
+            heading of its own. */}
+        {groups.length > 0 && (
+          <div className="rail-section-title">
+            Projects
+            <button
+              className="rail-section-act"
+              onClick={() => void openProject()}
+              data-tip="Open another project"
+              aria-label="Open another project"
+            >
+              <FolderPlus size={14} />
+            </button>
+            <button
+              className="rail-section-act"
+              onClick={() => setBranching(true)}
+              data-tip="New agent in its own git worktree, on its own branch"
+              aria-label="New worktree session"
+            >
+              <GitBranchPlus size={14} />
+            </button>
           </div>
         )}
 
@@ -216,14 +243,23 @@ export default function SessionRail(): React.JSX.Element {
              its own PARENT scrolls past, so flat in .rail-list the last header
              would have stayed pinned over the history list below — but
              .rail-group-head is static now, so this is plain grouping. */
-          <div key={g.root}>
+          <div className="rail-group" key={g.root}>
+            {/* A row with a folder glyph, not a heading. Cursor lists each repo
+                this way and nests its agents underneath — the count went with
+                the heading, because the nested rows are right there to count. */}
             <div className="rail-group-head" title={g.root}>
-              {g.root.split('/').filter(Boolean).pop() ?? g.root}
-              {/* Only when the group has depth. Next to a single row it restates
-                  what you can already see. */}
-              {g.sessions.length > 1 && (
-                <span className="rail-group-n">{g.sessions.length}</span>
-              )}
+              <FolderOpen size={14} />
+              <span className="rail-group-name">
+                {g.root.split('/').filter(Boolean).pop() ?? g.root}
+              </span>
+              <button
+                className="rail-section-act"
+                onClick={() => void openPath(g.root)}
+                data-tip="New conversation in this project"
+                aria-label={`New conversation in ${g.root}`}
+              >
+                <Plus size={14} />
+              </button>
             </div>
             {g.sessions.map((s) =>
               renaming === s.id ? (
@@ -242,8 +278,9 @@ export default function SessionRail(): React.JSX.Element {
                 <div key={s.id} className="rail-row">
                   <button
                     className="session"
-                    // `&& !home` or two rows look selected at once.
-                    data-active={s.id === activeId && !home}
+                    // The `&& !home` guard is gone with the Home row: there is
+                    // no longer a second thing that can be selected.
+                    data-active={s.id === activeId}
                     onClick={() => select(s.id)}
                     onDoubleClick={() => setRenaming(s.id)}
                     onAuxClick={(e) => {
@@ -264,7 +301,7 @@ export default function SessionRail(): React.JSX.Element {
                           sessions on one repo are indistinguishable in the rail. */}
                       {s.worktree && (
                         <span className="session-branch">
-                          <GitBranch size={11} />
+                          <GitBranch size={12} />
                           {s.worktree.branch}
                         </span>
                       )}
@@ -290,7 +327,7 @@ export default function SessionRail(): React.JSX.Element {
           </div>
         ))}
 
-        {sessions.length === 0 && !draft && <p className="rail-note">No sessions yet.</p>}
+        {sessions.length === 0 && <p className="rail-note">No sessions yet.</p>}
 
         {showPast && (
           <>
@@ -395,67 +432,14 @@ export default function SessionRail(): React.JSX.Element {
           session. */}
       {activeId && <LspStrip sessionId={activeId} />}
 
-      {/* Model, context pressure and running cost. This lived under the composer
-          until the chat pane lost its status bar — Cursor keeps the equivalent
-          readout at the foot of the SIDEBAR, above the account row, and it
-          belongs there for a reason that outlives the restyle: none of it is
-          about the message you are typing, and down here it stops competing for
-          width with the composer's controls.
+      {/* ContextStrip and the rail footer lived here — model · context bar ·
+          cost, and a lone Archive button.
 
-          Keyed by session id for the same reason it always was: Conversation and
-          Composer render unkeyed, so without it this component's polled state
-          would survive a tab switch and print one session's numbers under
-          another's model name. */}
-      {active && <ContextStrip key={active.id} session={active} />}
-
-      <footer className="rail-foot">
-        <button
-          className="btn grow"
-          data-variant="primary"
-          data-tip="New conversation in this project  ⌘N"
-          onClick={() => void newSession()}
-        >
-          <Plus size={14} />
-          New
-        </button>
-        <button
-          className="btn"
-          data-active={draft}
-          onClick={startDraft}
-          data-tip="New conversation in another project  ⇧⌘N"
-          aria-label="New conversation in another project"
-        >
-          <FolderPlus size={14} />
-        </button>
-        <button
-          className="btn"
-          onClick={() => setBranching(true)}
-          data-tip="New agent in its own git worktree, on its own branch"
-          aria-label="New worktree session"
-        >
-          <GitBranchPlus size={14} />
-        </button>
-        <button
-          className="btn"
-          data-active={showPast}
-          onClick={() => setShowPast((v) => !v)}
-          data-tip={showPast ? 'Hide past sessions' : 'Resume or search past sessions'}
-          aria-label={showPast ? 'Hide past sessions' : 'Past sessions'}
-        >
-          <History size={14} />
-        </button>
-        {activeId && (
-          <button
-            className="btn"
-            data-variant="danger"
-            data-tip="Close this session"
-            aria-label="Close this session"
-            onClick={() => void close(activeId)}
-          >
-            <X size={14} />
-          </button>
-        )}
-      </footer>
+          The context readout moved under the composer as a ring (see
+          ContextRing), which is where Cursor keeps it and where it is next to
+          the thing consuming the window. Archive went with it: it is a
+          per-session action, and the session row's own hover × already does it
+          without a second control at the other end of the rail. */}
     </aside>
   )
 }

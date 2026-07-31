@@ -42,21 +42,14 @@ interface State {
    * is picked. This is the Claude-app flow — open a new conversation, then say
    * where it runs — without a half-built session in the manager.
    */
-  draft: boolean
-  startDraft(): void
-  cancelDraft(): void
+  /* `draft` / `startDraft` / `cancelDraft` and `home` / `showHome` /
+     `leaveHome` lived here, along with the `onHome` selector below them.
 
-  /**
-   * On the Home view — sessions across every project, recents, usage.
-   *
-   * In the store rather than App state because SessionRail takes no props and
-   * CommandPalette reaches actions through getState(); neither could navigate
-   * here otherwise. Read it through the `onHome` selector, not directly: the
-   * "no session at all" case counts as home too.
-   */
-  home: boolean
-  showHome(): void
-  leaveHome(): void
+     Both views are gone. The Home dashboard duplicated what the rail already
+     lists, and the draft chooser existed only to ask which project a new
+     conversation belonged to — which `newSession()` answers by opening the
+     directory picker when there is no project to inherit. What is left is the
+     conversation, which is the app. */
 
   /**
    * Projects the user removed from the recents list.
@@ -397,10 +390,8 @@ export const useStore = create<State>((set, get) => ({
   resolvedTheme: resolveTheme(INITIAL_APPEARANCE.theme),
   prefs: loadPrefs(),
   notice: null,
-  draft: false,
   // Starts false and is raised by bootstrap only when there is nothing live and
   // no project was asked for — so a reload lands back on its session.
-  home: false,
   hiddenProjects: loadHiddenProjects(),
   editor: null,
   focusItemId: null,
@@ -419,24 +410,6 @@ export const useStore = create<State>((set, get) => ({
 
   revealItem(focusItemId) {
     set({ focusItemId })
-  },
-
-  startDraft() {
-    set({ draft: true })
-  },
-
-  cancelDraft() {
-    set({ draft: false })
-  },
-
-  showHome() {
-    // The draft goes with it, deliberately: Home offers the same project list
-    // plus everything else, so the chooser has nothing left to contribute.
-    set({ home: true, draft: false })
-  },
-
-  leaveHome() {
-    set({ home: false })
   },
 
   hideProject(path) {
@@ -461,12 +434,7 @@ export const useStore = create<State>((set, get) => ({
   },
 
   select(id) {
-    // Clears the draft too: picking an existing conversation is a perfectly
-    // good way to abandon a new one, and without this the chooser would stay
-    // up over whichever session you just clicked. Same for `home` — and this is
-    // the ONLY place it is cleared, because every route into a conversation
-    // funnels through here (openPath, resume and newSession all call select).
-    set({ activeId: id, draft: false, home: false })
+    set({ activeId: id })
     void window.foreman.supportedModels(id).then((models: ModelInfo[]) => {
       if (!models?.length) return
       set({ models })
@@ -489,9 +457,8 @@ export const useStore = create<State>((set, get) => ({
       set({ notice: ipcMessage(err) })
       return
     }
-    // The draft resolves the moment a project is chosen — this is the one call
     // every entry point into "new conversation" funnels through.
-    set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id, notice: null, draft: false }))
+    set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id, notice: null }))
     get().select(meta.id)
   },
 
@@ -523,7 +490,7 @@ export const useStore = create<State>((set, get) => ({
       title,
       ...sessionPrefs(get().prefs),
     })
-    set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id, draft: false }))
+    set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id }))
     get().select(meta.id)
     // No hydrate() here: the host reads the stored transcript into its own
     // event log at startup and streams it as ordinary items, so it arrives on
@@ -803,11 +770,9 @@ export const useStore = create<State>((set, get) => ({
           await get().openPath(p)
           return
         }
-        // Nothing live and nothing asked for: Home is the launch destination.
-        // Set explicitly rather than leaning on onHome's `!activeId` arm, so the
-        // rail highlights the Home row. Guarded on activeId because two awaits
-        // have passed and the user may have opened something in the meantime.
-        set((s) => (s.activeId ? s : { home: true }))
+        // Nothing live and nothing asked for. There is no launch destination to
+        // fall back to any more — the chat pane renders its own empty state, and
+        // the rail's New conversation row opens the directory picker.
       })
       .catch(() => undefined)
 
@@ -855,15 +820,8 @@ window.matchMedia(DARK_QUERY).addEventListener('change', () => {
 export const activeSession = (s: State): SessionMeta | undefined =>
   s.sessions.find((x) => x.id === s.activeId)
 
-/**
- * Whether Home is what's on screen.
- *
- * Derived rather than stored, so the two ways of getting there stay in sync:
- * `home` is the explicit ask, and the `!session` arm folds in the old bare
- * "no active session" state. That second arm is why close() and onRemoved need
- * no repair of their own — closing the last session lands on Home for free.
- *
- * A draft outranks both: the chooser is a task you are in the middle of.
- */
-export const onHome = (s: State): boolean =>
-  !s.draft && (s.home || !s.sessions.some((x) => x.id === s.activeId))
+/* The `onHome` selector lived here. With Home gone, "no active session" is not
+   a route to anywhere — it is just the absence of a conversation, which the chat
+   pane renders directly. close() and onRemoved still need no repair of their
+   own: activeId pointing at a session that no longer exists makes
+   `activeSession` undefined, which is exactly the state that renders empty. */

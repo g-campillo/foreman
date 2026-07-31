@@ -107,6 +107,9 @@
   --r-md: 10px;
   --r-lg: 14px;
   --r-xl: 16px;
+  /* Cursor's --cursor-radius-3xl. Only the compact composer uses it: their
+     follow-up box is a single row that is nearly, but deliberately not, a pill. */
+  --r-2xl: 18px;
   --r-pill: 999px;
 
   /* 4px spacing scale, Cursor's --cursor-spacing-* */
@@ -162,7 +165,10 @@
   --side-w-user: 520px;
   --rail-w: clamp(180px, var(--rail-w-user), 30vw);
   --side-w: clamp(280px, var(--side-w-user), 44vw);
-  --titlebar-h: 44px;
+  /* Cursor's no-titlebar-layout strip. 44px carried a five-icon toolbar; with
+     the toolbar gone this only has to clear the traffic lights, and main's
+     trafficLightPosition.y is set to centre them in it — change both together. */
+  --titlebar-h: 35px;
 
   --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   --mono: 'SF Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -583,28 +589,133 @@ select {
 
    Still not a reuse of .rail-section, which heads the history list: same idea,
    different metrics. */
+/* A row with a folder glyph, sitting at the same metrics as the session rows
+   nested under it — Cursor lists each repository this way rather than as a
+   heading. The count chip went with the heading treatment: the nested rows are
+   directly beneath and countable.
+
+   Not a button. Clicking a project does not have an obvious meaning here (there
+   is no "project view" to open), and a row that highlights on hover but does
+   nothing on click is worse than a label. Its `+` is the interactive part. */
 .rail-group-head {
   display: flex;
-  align-items: baseline;
-  gap: 6px;
-  /* 9px, where the pinned version used 15px. That 15px paired with a
-     `margin: 0 -6px` cancelling .rail-list's padding to make the band
-     full-bleed; with no band the margin is gone, so the padding absorbs its
-     offset and the text still lands 15px from the rail edge — level with
-     .session's own 6px + 9px inset. Change one, change the other. */
-  padding: 16px 9px 5px;
-  /* Sentence case at body size, dimmed — Cursor's "Repositories". The old
-     10px uppercase treatment read as a system label; this reads as a quiet
-     heading, which is what it is. Capitalisation is applied here rather than in
-     the component so the group name stays the raw project basename. */
+  align-items: center;
+  gap: var(--sp-2);
+  padding: var(--sp-1-5) var(--sp-2);
   font-size: var(--fs-sm);
-  text-transform: capitalize;
+  color: rgb(var(--text-dim));
+}
+.rail-group-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Cursor's --ui-sidebar-group-gap. Groups need air between them once the
+   project name stopped being a heading with 16px of its own padding. */
+.rail-group + .rail-group {
+  margin-top: var(--sp-3);
+}
+/* Sessions indent under their project, so the nesting is legible without a rule
+   or a guide line. */
+.rail-group .rail-row,
+.rail-group .rename-input {
+  padding-left: var(--sp-3);
+}
+
+/* One title over the whole list, 11px tertiary and sentence case — Cursor's
+   "Repositories". Its actions appear on approach, which is the same move the
+   session rows make with archive. */
+.rail-section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  height: 24px;
+  padding: 0 var(--sp-1-5);
+  margin-top: var(--sp-2);
+  font-size: var(--fs-xs);
+  line-height: 14px;
   color: rgb(var(--text-faint));
 }
-.rail-group-n {
-  margin-left: auto;
-  font-variant-numeric: tabular-nums;
-  color: rgb(var(--text-faint) / 0.7);
+.rail-section-title > :first-child,
+.rail-group-name {
+  margin-right: auto;
+}
+.rail-section-act {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-sm);
+  color: rgb(var(--text-faint));
+  opacity: 0;
+  transition:
+    opacity 0.1s ease,
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.rail-section-title:hover .rail-section-act,
+.rail-group-head:hover .rail-section-act,
+.rail-section-act:focus-visible {
+  opacity: 1;
+}
+.rail-section-act:hover {
+  background: rgb(var(--fill-hover));
+  color: rgb(var(--text));
+}
+
+/* The nav block: standing actions above the list. 28px rows at
+   --ui-sidebar-menu-button-min-height, with the keybinding revealed on hover
+   rather than occupying a permanent column. */
+.rail-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--sp-1) var(--sp-2) 0;
+}
+.rail-nav-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  min-height: 28px;
+  padding: 0 var(--sp-1-5);
+  border-radius: var(--r-sm);
+  text-align: left;
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-dim));
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.rail-nav-row:hover {
+  background: rgb(var(--fill-hover));
+  color: rgb(var(--text));
+}
+.rail-nav-row[data-active] {
+  background: rgb(var(--fill-2));
+  color: rgb(var(--text));
+}
+.rail-nav-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rail-key {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: rgb(var(--text-faint));
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+.rail-nav-row:hover .rail-key,
+.rail-nav-row:focus-visible .rail-key {
+  opacity: 1;
 }
 
 /* Cursor's cell metrics: 6px gap, 8px radius, and the selected state carries a
@@ -821,21 +932,22 @@ select {
   animation: pulse 1.4s ease-in-out infinite;
 }
 
+/* One button now, not five — the rest moved up beside the things they act on.
+   That also retires the wrap: five controls needed ~251px against a 180px
+   minimum rail, and the two that overflowed were not merely clipped but
+   genuinely unclickable, sitting under the resize handle and the chat pane.
+   A single button cannot reach that state.
+
+   No top rule: .rail-list's mask already fades content out above this row, and
+   a line on top of a fade reads as two separate attempts to divide. */
 .rail-foot {
   flex: 0 0 auto;
-  padding: 8px;
-  /* No top rule. .rail-list's mask already fades content out above this row,
-     and a line on top of a fade reads as two separate attempts to divide. */
   display: flex;
-  /* Wrap, because this row does not fit at every rail width. Five controls need
-     ~251px and the rail's own minimum is 180px, so on a narrow rail the last two
-     used to overflow the pane and get cut off by `.pane { overflow: hidden }` —
-     not merely clipped-looking but genuinely unclickable, since the part sticking
-     out lands under the .rs resize handle and the chat pane. Now they drop to a
-     second line instead. `.btn.grow` still takes the slack on whichever line it
-     lands on. */
-  flex-wrap: wrap;
+  padding: 8px;
   gap: 6px;
+}
+.rail-foot:empty {
+  display: none;
 }
 
 /* Every button in the app is a pill. That is Cursor's most recognisable control
@@ -953,48 +1065,40 @@ select {
    row has been rendered once; it only has to be close enough that the scrollbar
    does not jump while scrolling past never-rendered rows.
 
-   Two things have to be true for this to be free, and only one of them is.
+   Two things have to be true for this to be free, and both now are.
 
    The plan and question scrims render as SIBLINGS of these wrappers, not inside
    them, so `contain: layout style paint` — which content-visibility implies —
-   never traps their fixed positioning in a single transcript row. True.
+   never traps their fixed positioning in a single transcript row.
 
-   The other is that nothing inside a row paints outside it, and .msg-actions
-   does exactly that: it hangs BELOW .msg-user (top:100%), which is the only
-   in-flow child, so the wrapper's box ends precisely where the branch/rewind
-   buttons begin. Paint containment is unconditional — it does not wait for the
-   row to go offscreen — so on a contained row those buttons are clipped away and
-   stop hit-testing, and since .branch-btn is opacity:0 until :hover the loss is
-   invisible until someone tries to fork or rewind.
+   The other is that nothing inside a row paints outside it. That used to be
+   false: `.msg-actions` hung BELOW `.msg-user` at `top: 100%`, so the wrapper's
+   box ended exactly where the branch/rewind buttons began and paint containment
+   clipped them away — invisibly, because they were opacity:0 until hover. Every
+   row containing a user message therefore had to be excluded here.
 
-   Hence the exclusion rather than a padding-bottom on the wrapper: .convo is a
-   14px-gap flex column, so padding to swallow the overhang would widen every gap
-   in the transcript. User messages are a minority of a turn, so nearly all of the
-   benefit survives. Descendant :has() on purpose — a subagent transcript nested
-   in a ToolCard renders .msg-user through the same Item recursion. */
-.convo > [data-item-id]:not(:has(.msg-user)) {
+   The exclusion is gone because the cause is: those buttons moved INSIDE the
+   card, into its right gutter, so nothing overhangs and every row can be
+   contained. See .msg-actions. */
+.convo > [data-item-id] {
   content-visibility: auto;
   contain-intrinsic-size: auto 120px;
 }
 
-/* A hairline card, not a filled bubble, and no tail.
+/* A hairline card spanning the full column.
    Cursor's .composer-human-message: 4%-foreground fill, 12%-foreground border,
-   one uniform 14px radius. The old treatment — a solid accent bubble with a
-   clipped bottom-right corner — was the single biggest departure from their
-   look, and it stopped being possible anyway once --accent went near-white: a
-   white bubble with dark text would have been the loudest thing on the screen,
-   for the message you already know you sent.
+   one uniform 14px radius.
 
-   `width: fit-content` with a 150px floor is what makes a short message hug the
-   right edge instead of stretching to a percentage of the column. The left
-   inset lives on the wrapper below, because THIS element is the flex item that
-   `align-self` acts on and it must stay sized to its own text. */
+   It is no longer right-aligned. `align-self: flex-end` with `width:
+   fit-content` made a short message hug the right edge, which was the right
+   read of their CSS but not of their app: in a live conversation the card runs
+   the width of the column and its controls sit inside the right edge. That is
+   where the asymmetry comes from now — a card with a gutter, not a bubble with
+   a position. --convo-inset-human is unused as a result. */
 .msg-user {
-  align-self: flex-end;
-  /* Anchors .msg-actions, which hangs below the card rather than inside it. */
-  position: relative;
-  width: fit-content;
-  min-width: 150px;
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-2);
   max-width: 100%;
   background: rgb(var(--fill-4));
   border: 1px solid rgb(var(--stroke-2));
@@ -1005,47 +1109,21 @@ select {
      source newlines on top of real block elements double-spaces every paragraph. */
   overflow-wrap: anywhere;
 }
-
-/* The opposed inset — Cursor's --conversation-opposed-inset-human. As the
-   column widens the user card is pushed further off the left margin, so the
-   asymmetry that used to come from a saturated fill now comes from position
-   alone. Floored at 32px so a narrow pane does not squeeze it to nothing.
-
-   Applied to the [data-item-id] wrapper rather than .msg-user because that
-   wrapper IS the flex item (see the rule above this section, which makes it a
-   column) — insetting the card itself would fight its own align-self. */
-.convo > [data-item-id]:has(> .msg-user) {
-  margin-left: var(--convo-inset-human);
+.msg-user-body {
+  flex: 1;
+  min-width: 0;
 }
 
 /* No `white-space: pre-wrap` here, unlike the user and thinking bubbles: the
    markdown renderer emits real block elements, and preserving the source
    newlines on top of them double-spaces every paragraph. */
-/* Full width now, not 92%. The column cap moved up to .convo's padding, so a
-   second cap here would only inset the assistant text from a margin that is
-   already there — and Cursor runs their assistant prose to the full column. */
+/* Bare prose, full column, no gutter. The 16px avatar column and the coral
+   ClaudeMark that opened each turn are gone: Cursor's assistant replies carry
+   no avatar at all, and dropping the gutter is what puts the reply on the same
+   left edge as the tool rows beneath it, so a turn reads as one column. */
 .msg-assistant {
-  display: flex;
-  gap: 9px;
   overflow-wrap: anywhere;
   line-height: var(--convo-lh);
-}
-/* Reserved on every assistant block, filled only on the one that opens a turn,
-   so the text column stays on one left edge all the way down. */
-.msg-avatar {
-  flex: 0 0 16px;
-  display: flex;
-  justify-content: center;
-  padding-top: 4px;
-  /* ClaudeMark strokes currentColor, so this is what makes it Anthropic's coral
-     rather than the UI accent. Set here rather than via the component's `brand`
-     prop, which hardcodes the hex — this file's contract is that no component
-     writes a literal colour. */
-  color: rgb(var(--brand));
-}
-.msg-body {
-  min-width: 0;
-  flex: 1;
 }
 
 /* Markdown inside a bubble must not add outer margins — the bubble's padding is
@@ -1205,87 +1283,145 @@ select {
   text-overflow: ellipsis;
 }
 
-.tool {
-  border: 1px solid rgb(var(--stroke-3));
-  border-radius: var(--r-md);
-  overflow: hidden;
-  background: rgb(var(--fill-4));
-}
-/* Cursor's .composer-tool-call-simple-layout-header, to the pixel: a 28px row,
-   8px gap, and asymmetric padding — tighter on the icon side than the text
-   side, so the glyph sits closer to the card edge than the label does. Vertical
-   padding is zero because min-height is what sets the row height; adding both
-   made the row grow past 28px the moment a label wrapped. */
-.tool-head {
-  display: flex;
+/* The turn header, and the fold. `Worked for 13s ⌄` — a quiet line that sits at
+   the same colour as a tool row's argument, because it is furniture rather than
+   content: the eye should land on the question above it and the answer below.
+
+   align-self keeps it hugging its own text. .convo stretches its children, and a
+   full-width hover fill on a six-word label reads as a selected row. */
+.turn-head {
+  align-self: flex-start;
+  display: inline-flex;
   align-items: center;
-  gap: var(--sp-2);
-  min-height: 28px;
-  padding: 0 var(--sp-2-5) 0 var(--sp-2);
-  width: 100%;
+  gap: var(--sp-1);
+  margin-left: calc(var(--sp-1) * -1);
+  padding: 1px var(--sp-1);
+  border-radius: var(--r-sm);
   font-size: var(--fs-base);
+  line-height: var(--convo-lh);
+  color: rgb(var(--text-faint));
+  font-variant-numeric: tabular-nums;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
-/* Most cards no longer expand — there is nothing behind them since the raw JSON
-   went away — so they render as a div and must not look clickable. */
-.tool-head[data-static] {
-  cursor: default;
+.turn-head:hover {
+  background: rgb(var(--fill-hover));
+  color: rgb(var(--text-dim));
+}
+.turn-chevron {
+  opacity: 0.7;
+  transition: transform 0.12s ease;
+}
+.turn-head[aria-expanded='true'] .turn-chevron {
+  transform: rotate(180deg);
 }
 
-/* The icon is the tool type (see TOOL_ICON); the colour is the outcome. Same
-   data-status idiom as .dot, and for the same reason — no component writes a
-   literal colour, which is what the old inline-style ternary here was doing. */
-.tool-icon {
-  display: inline-flex;
+/* A tool call is a line of prose now, not a card.
+
+   The border, radius and fill are gone; so are the icon, the mono font and the
+   status colour. Cursor renders `Ran ls -la /Users/…` — verb in secondary text,
+   argument in quaternary — and thirty of those read as a paragraph of what the
+   agent did where thirty cards read as a wall. The wrapper survives only to hold
+   the expanded body under the line. */
+.tool {
+  display: flex;
+  flex-direction: column;
+}
+
+/* Line height matches the prose around it, so a tool row and an assistant
+   sentence sit on the same rhythm. That is the whole trick: at rest these are
+   not meant to look like controls. */
+.tool-line {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-1-5);
+  width: 100%;
+  padding: 1px 0;
+  text-align: left;
+  font-size: var(--fs-base);
+  line-height: var(--convo-lh);
+  border-radius: var(--r-sm);
+}
+/* Nothing behind this one, so it must not look clickable. */
+.tool-line[data-static] {
+  cursor: default;
+}
+/* The affordance appears on approach rather than sitting on every row — a
+   chevron and a hover fill on thirty rows would rebuild the grid the card
+   chrome was removed to get rid of. */
+button.tool-line:hover {
+  background: rgb(var(--fill-hover));
+}
+
+.tool-verb {
   flex: 0 0 auto;
-  color: rgb(var(--text-faint));
-}
-/* 'pending' IS the running state — the ChatItem type has no separate one, since
-   a card is emitted pending the instant the tool_use block lands. The pulse is
-   the only motion saying a call is still in flight, and it is the same one the
-   session rail uses for a working agent. */
-.tool-head[data-status='pending'] .tool-icon {
-  color: rgb(var(--warn));
-  animation: pulse 1.4s ease-in-out infinite;
-}
-.tool-head[data-status='done'] .tool-icon {
-  color: rgb(var(--ok));
-}
-.tool-head[data-status='error'] .tool-icon {
-  color: rgb(var(--danger));
-}
-/* Regular weight, at the tertiary text step. Cursor's whole tool-call header
-   sits at one colour and one weight — the icon says which tool and its colour
-   says how the call went, so bolding the name too was a third signal for
-   information already carried twice. */
-.tool-name {
   color: rgb(var(--text-dim));
-  font-family: var(--mono);
-  font-size: var(--fs-sm);
-  white-space: nowrap;
 }
 .tool-arg {
+  flex: 0 1 auto;
+  min-width: 0;
   color: rgb(var(--text-faint));
-  font-family: var(--mono);
-  font-size: var(--fs-sm);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1;
-  text-align: left;
 }
-/* A Task card holding a subagent transcript. Accented left edge so the nesting
-   depth reads at a glance when a subagent spawns its own subagent. */
-.tool[data-nested] {
-  border-color: rgb(var(--accent) / 0.35);
+/* Failure is the one outcome still worth seeing without a click. It tints the
+   argument rather than the row: `data-status` used to paint a whole surface,
+   and there is no surface left to paint. 'pending' needs nothing at all — the
+   verb is already in the present tense, which is Cursor's entire running
+   indicator on these rows. */
+.tool-line[data-failed] .tool-arg {
+  color: rgb(var(--danger));
 }
-.tool-nest {
-  border-top: 1px solid rgb(var(--border));
-  border-left: 2px solid rgb(var(--accent) / 0.35);
-  margin-left: 11px;
-  padding: 11px;
+
+.tool-chevron {
+  flex: 0 0 auto;
+  align-self: center;
+  color: rgb(var(--text-faint));
+  opacity: 0;
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease;
+}
+.tool-line:hover .tool-chevron,
+.tool-line:focus-visible .tool-chevron {
+  opacity: 1;
+}
+.tool[data-open] .tool-chevron {
+  opacity: 1;
+  transform: rotate(180deg);
+}
+
+/* A subagent's live status, on its own line under the delegation. Indented to
+   the width of the verb column so it reads as belonging to the row above rather
+   than as another tool call. Quaternary — it is a progress report, and it is
+   replaced every few seconds. */
+.tool-status {
+  padding-left: var(--sp-3);
+  font-size: var(--fs-sm);
+  line-height: var(--convo-lh);
+  color: rgb(var(--text-faint));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* What the card used to be, now behind the click. Inset under the verb so it
+   reads as belonging to the line above it. */
+.tool-body {
   display: flex;
   flex-direction: column;
-  gap: 11px;
+  gap: var(--sp-1-5);
+  margin: var(--sp-1) 0 var(--sp-2);
+  padding-left: var(--sp-2-5);
+  border-left: 1px solid rgb(var(--stroke-3));
+}
+
+.tool-nest {
+  display: flex;
+  flex-direction: column;
+  gap: var(--convo-gap);
 }
 /* Same reason as .convo > *: these must keep their natural height rather than
    being squashed by the column flex.
@@ -1309,9 +1445,9 @@ select {
   min-width: 0;
 }
 
+/* No border-top any more: .tool-body already draws the rule that separates the
+   expanded content from the line, and the card this used to close is gone. */
 .tool-plan {
-  border-top: 1px solid rgb(var(--border));
-  padding: 4px 13px 11px;
   max-height: 420px;
   overflow-y: auto;
 }
@@ -1368,16 +1504,65 @@ select {
   gap: var(--sp-2);
 }
 
-/* The card: one surface holding the text and its controls. Radius is Cursor's
-   --cursor-radius-2xl rather than the --r-md the bare input used — a taller box
-   needs a bigger corner to keep the same optical roundness. */
+/* The card: one surface holding the text and its controls, in two shapes.
+   Radius is Cursor's --conversation-surface-border-radius (14px in glass mode).
+
+   Both shapes come out of ONE flex container rather than two DOM trees, because
+   the only difference is whether it wraps:
+
+     expanded — flex-wrap: wrap, and .composer-input takes `flex: 1 0 100%`, so
+                the text claims a full line and the controls fall to a second.
+     compact  — nothing wraps, the input takes the slack, and .composer-add gets
+                `order: -1` so the `+` leads the row.
+
+   A nested `.composer-row` wrapper could not produce the compact form at all:
+   the `+` has to sit BEFORE the input there, and a child of a later sibling
+   cannot reorder across it. That is why the controls are direct children. */
 .composer-card {
   display: flex;
-  flex-direction: column;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--sp-1-5);
+  /* Cursor's --prompt-input-toolbar-padding, 8px 10px 10px. The input carries
+     its own top and side padding, so only the bottom band belongs to the card. */
+  padding: 0 var(--sp-2-5) var(--sp-2-5);
+  /* The editor's content inset, read by BOTH .cm-content and the .ghost overlay
+     that sits on top of it. It used to be hardcoded in each — 10px/12px on the
+     content and 10px/13px on the ghost — which was already a pixel out and went
+     badly wrong once the compact shape gave the editor a different padding: the
+     suggestion floated a line below the placeholder it was supposed to replace. */
+  --editor-pad: 10px 12px;
   background: rgb(var(--fill-4));
   border: 1px solid rgb(var(--stroke-2));
-  border-radius: var(--r-xl);
+  border-radius: var(--r-lg);
   transition: border-color 0.12s ease;
+}
+.composer-card > .composer-input {
+  flex: 1 0 100%;
+  min-width: 0;
+}
+
+/* The follow-up shape: one row, `+` first, model and send trailing. Cursor
+   shrinks the editor to a single line here — it is a reply box, and a 60px
+   minimum would make it look like the conversation had not started. */
+.composer-card[data-compact] {
+  flex-wrap: nowrap;
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-2);
+  border-radius: var(--r-2xl);
+}
+.composer-card[data-compact] > .composer-input {
+  flex: 1 1 auto;
+}
+.composer-card[data-compact] .composer-add {
+  order: -1;
+}
+.composer-card[data-compact] .composer-editor .cm-scroller {
+  min-height: 24px;
+  max-height: 140px;
+}
+.composer-card[data-compact] {
+  --editor-pad: 4px 2px;
 }
 /* A hairline lift, not a ring. --accent is near-white now, so the old
    `--accent / 0.7` border read as a hard white outline around the whole card. */
@@ -1416,7 +1601,7 @@ select {
   overflow-y: auto;
 }
 .composer-editor .cm-content {
-  padding: 10px 12px;
+  padding: var(--editor-pad);
   caret-color: rgb(var(--accent));
 }
 .composer-editor .cm-line {
@@ -1467,23 +1652,38 @@ select {
   font-weight: 650;
 }
 
-/* Inside the card now, so it carries its own padding instead of relying on
-   .composer's. No top border: the controls belong to the same surface as the
-   text above them, and a rule would split the card back into two boxes. */
-.composer-row {
-  display: flex;
+/* `.composer-row` lived here — the wrapper the controls used to sit in. It is
+   gone: the controls are direct children of the card now, so one flex container
+   can produce both the expanded and compact shapes. See .composer-card above. */
+
+/* Cursor's `+`: a filled circle at the head of the toolbar, one step lighter
+   than the card it sits on. Not a `.btn` — it is the only control here that is
+   neither an action nor a picker, and it reads as part of the field. */
+.composer-add {
+  flex: none;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
   align-items: center;
-  gap: var(--sp-1-5);
-  row-gap: var(--sp-1-5);
-  flex-wrap: wrap;
-  padding: 0 var(--sp-2) var(--sp-2);
+  justify-content: center;
+  border-radius: var(--r-pill);
+  background: rgb(var(--fill-3));
+  color: rgb(var(--text-dim));
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.composer-add:hover,
+.composer-add[data-open] {
+  background: rgb(var(--fill-1));
+  color: rgb(var(--text));
 }
 
-/* Every button in this row is icon-only, so they are circles rather than
+/* Every button in the card is icon-only, so they are circles rather than
    pills — Cursor's send is a filled white ⬤ with a dark glyph, and the two
    in-flight controls beside it are the same circle without the fill. Squaring
    width and height is what keeps --r-pill a circle instead of a stadium. */
-.composer-row .btn {
+.composer-card .btn {
   width: 26px;
   height: 26px;
   padding: 0;
@@ -1492,135 +1692,252 @@ select {
   justify-content: center;
   border-color: transparent;
 }
-.composer-row .btn:hover {
+.composer-card .btn:hover {
   background: rgb(var(--fill-hover));
   border-color: transparent;
 }
-.composer-row .btn[data-variant='primary'] {
+.composer-card .btn[data-variant='primary'] {
   background: rgb(var(--accent));
   color: rgb(var(--accent-fg));
 }
-.composer-row .btn[data-variant='primary']:hover {
+.composer-card .btn[data-variant='primary']:hover {
   background: rgb(var(--accent) / 0.86);
 }
-.composer-row .btn[data-variant='danger']:hover {
+.composer-card .btn[data-variant='danger']:hover {
   background: rgb(var(--danger) / 0.14);
 }
+/* The pickers give first when the pane is narrow — they ellipsis, and each still
+   shows enough of its label to identify it. Everything else in the row is a
+   fixed-size circle with nothing to give. */
+.composer-card .picker {
+  flex: 0 1 auto;
+}
 
-/* Worktree opt-in, live only on an untouched tab, and its read-only counterpart
-   once the session actually is in one. */
-/* A pill, matching the outline buttons beside it, rather than a bare native
-   checkbox — that control was the last piece of system chrome left in the row
-   and it read as a form field dropped into a chat composer. */
-.wt-toggle {
+/* The context row: project and branch, as bare text. Above the card on a fresh
+   session and below it once a conversation exists — Cursor moves them, and the
+   move is most of what distinguishes the two states.
+
+   Inset by a picker's own left padding so the labels line up with the card's
+   text rather than with its border. */
+.composer-context {
   display: flex;
   align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding: 0 var(--sp-1-5);
+}
+
+/* Starter pills, under the empty composer. Cursor's filter-pill treatment: every
+   one is bordered, and the active one merely adds a fill. With no saturated
+   accent anywhere, that fill is the whole of the selected state. */
+.composer-chips {
+  display: flex;
+  flex-wrap: wrap;
   gap: var(--sp-1-5);
-  flex: 0 0 auto;
-  padding: 4px var(--sp-2-5);
+  padding: 0 var(--sp-1-5);
+}
+.composer-chip {
+  flex: none;
+  padding: 3px var(--sp-2-5);
   border: 1px solid rgb(var(--stroke-3));
   border-radius: var(--r-pill);
   font-size: var(--fs-sm);
-  color: rgb(var(--text-faint));
-  cursor: pointer;
-  user-select: none;
+  color: rgb(var(--text-dim));
   transition:
     background 0.12s ease,
+    border-color 0.12s ease,
     color 0.12s ease;
 }
-.wt-toggle:not([data-off]):hover {
+.composer-chip:hover:not(:disabled) {
   background: rgb(var(--fill-hover));
-  color: rgb(var(--text-dim));
+  color: rgb(var(--text));
 }
-.wt-toggle input {
-  accent-color: rgb(var(--accent));
-  margin: 0;
+.composer-chip[data-active] {
+  background: rgb(var(--fill-2));
+  border-color: rgb(var(--stroke-2));
+  color: rgb(var(--text));
 }
-.wt-toggle[data-off] {
+.composer-chip:disabled {
   opacity: 0.4;
-  cursor: not-allowed;
 }
-.wt-chip {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 0 1 auto;
-  min-width: 0;
-  font-size: 11.5px;
-  color: rgb(var(--accent));
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-/* Three selects plus Background/Stop/Send overflow a half-width pane, and the
-   wrap dropped the buttons onto their own line. Letting the selects shrink
-   keeps the row intact; each still shows enough of its label to identify it.
-   The flex item is `.ctl`, not the select — the select is inside it now, and
-   the floor accounts for the 24px the glyph takes out of the left padding. */
-.composer-row .ctl {
-  flex: 0 1 auto;
-  min-width: 88px;
-}
-/* The `.composer-row .cost` shrink rule lived here. The cost readout moved to
-   .ctx-strip below the composer, so the row no longer has anything to drop
-   first — the selects above are now the only things that give. */
 
 /* Borderless. Cursor's pickers are plain text plus a chevron with no box at all
    — "Composer 2.5 Fast ⌄" sitting directly on the composer surface. Three
    bordered boxes in a row was the loudest thing left in the app once the blue
    went, and they are settings you glance at, not buttons you aim for. The box
-   comes back on hover, so the target is still discoverable. */
-.select {
-  background: transparent;
+   comes back on hover, so the target is still discoverable.
+
+   This replaces `.select` + `.ctl`, which existed only to work around a native
+   <select>: it cannot hold an icon, so the glyph had to be an absolutely
+   positioned sibling and the select padded to clear it, and it cannot draw its
+   own chevron, so there were two — the real one and ours. Picker.tsx owns both
+   now, and the menu is Menu.tsx rather than OS chrome. */
+.picker {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  max-width: 220px;
+  padding: 3px var(--sp-1-5);
   border: 1px solid transparent;
   border-radius: var(--r-sm);
-  padding: 4px 6px;
+  background: transparent;
   font-size: var(--fs-sm);
   color: rgb(var(--text-faint));
   transition:
     background 0.12s ease,
     color 0.12s ease;
-  outline: none;
-  max-width: 190px;
 }
-.select:hover {
+.picker:hover,
+.picker[data-open] {
   background: rgb(var(--fill-hover));
   color: rgb(var(--text-dim));
 }
-/* The native menu itself still paints on the OS surface, so its rows need a
-   readable fill of their own — they do not inherit the transparent trigger. */
-.select option {
-  background: rgb(var(--surface-2));
-  color: rgb(var(--text));
-}
-
-/* A labelled control: a glyph that says what the dropdown is for, overlaid on
-   the select's left padding. A native <select> can't contain an icon, so the
-   glyph is a sibling and the select is padded to clear it. Pointer events off
-   so clicking the glyph still opens the menu. */
-.ctl {
-  position: relative;
-  display: flex;
-  align-items: center;
-  flex: 0 1 auto;
-  min-width: 0;
-}
-.ctl > svg {
-  position: absolute;
-  left: 7px;
+.picker:disabled {
+  opacity: 0.5;
   pointer-events: none;
-  color: rgb(var(--text-faint));
 }
-.ctl > .select {
-  padding-left: 24px;
-  width: 100%;
+.picker-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
-.ctl:hover > svg {
-  color: rgb(var(--text-dim));
+/* Cursor runs the chevron at 70% against the label, so the label reads first and
+   the affordance is still legible. */
+.picker-chevron {
+  opacity: 0.7;
 }
 
 .spacer {
   flex: 1;
+}
+
+/* ------------------------------------------------------------------- menus
+   Cursor's .ui-menu. Portalled to .app by Menu.tsx — see the comment there for
+   why a menu rendered in place gets clipped by its own pane.
+
+   z-index sits ABOVE the modal scrims (60) and below the tooltip (70), because
+   Settings and the plan modals both contain pickers. At the .ac's 30 a menu
+   opened inside Settings would paint behind it. */
+.menu {
+  position: fixed;
+  z-index: 65;
+  display: flex;
+  flex-direction: column;
+  min-width: 168px;
+  max-width: 320px;
+  overflow: hidden;
+  background: rgb(var(--surface-2) / 0.98);
+  border: 1px solid rgb(var(--border-strong));
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-lg);
+  outline: none;
+}
+
+.menu-search {
+  flex: 0 0 auto;
+  padding: var(--sp-2) var(--sp-2) var(--sp-1-5);
+}
+.menu-search input {
+  width: 100%;
+  padding: 0;
+  border: none;
+  background: transparent;
+  font-size: var(--fs-base);
+  color: rgb(var(--text));
+  outline: none;
+}
+.menu-search input::placeholder {
+  color: rgb(var(--text-faint));
+}
+
+.menu-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: var(--sp-1);
+}
+
+.menu-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-1) var(--sp-2);
+  border-radius: var(--r-sm);
+  text-align: left;
+  font-size: var(--fs-base);
+  line-height: 16px;
+  color: rgb(var(--text));
+}
+/* One highlight for both keyboard and pointer. Menu.tsx moves the cursor on
+   pointermove so the two can never disagree — a row that is hovered but not
+   selected would otherwise light up twice as brightly as either alone.
+
+   A subtle fill, NOT the near-white .ac-row[data-sel] treatment: an inverted row
+   is right for a completion you are aiming at, and far too loud for a settings
+   menu you are reading. */
+.menu-row[data-sel],
+.menu-row[data-open] {
+  background: rgb(var(--fill-2));
+}
+.menu-row:disabled {
+  opacity: 0.5;
+}
+
+/* Always reserved, even in a menu where nothing has a glyph — Cursor lines every
+   label up on the same left edge whether or not its row has an icon. */
+.menu-icon {
+  flex: none;
+  width: 14px;
+  height: 16px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgb(var(--text-dim));
+}
+.menu-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.menu-hint,
+.menu-more,
+.menu-check {
+  flex: none;
+  color: rgb(var(--text-faint));
+}
+.menu-hint {
+  font-size: var(--fs-xs);
+}
+
+/* Sentence case at 11px, not uppercase. Cursor's section titles are quiet labels
+   rather than rules — "Run on", "Mode", "Effort". */
+.menu-section {
+  padding: var(--sp-1-5) var(--sp-2) var(--sp-1);
+  font-size: var(--fs-xs);
+  line-height: 14px;
+  color: rgb(var(--text-faint));
+}
+
+/* Bleeds past the list's own padding, so the rule spans the menu rather than
+   floating inside it with a gap at each end. */
+.menu-rule {
+  height: 1px;
+  margin: var(--sp-0-5) -3px;
+  background: rgb(var(--stroke-3));
+}
+
+.menu-empty {
+  padding: var(--sp-1-5) var(--sp-2);
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-faint));
 }
 
 /* ----------------------------------------------------------------- tooltips
@@ -1722,53 +2039,284 @@ select {
   pointer-events: none;
 }
 
-.cost {
-  font-size: 11px;
-  color: rgb(var(--text-faint));
-  font-variant-numeric: tabular-nums;
-}
+/* `.cost` lived here. Its last two users were .ctx-strip's token and dollar
+   readouts, which went with the strip — the same figures are in the context
+   ring's tooltip now, and SessionPanel styles its own. */
 
 /* Below the composer rather than in it: how big the window is and what is left
    of it are session facts, not controls, and .composer-row had no width left. */
 /* Lives at the foot of the RAIL now, not under the composer, so it re-flows for
    a 244px column instead of a full-width strip: it wraps, and the meter drops
    to its own line under the numbers rather than being squeezed between them. */
-.ctx-strip {
-  display: flex;
-  flex-wrap: wrap;
+/* The .ctx-strip rules lived here — model name, a full-width bar, a token count
+   and the running cost, wrapped across two lines at the foot of the rail. It is
+   a ring under the composer now: Cursor keeps this readout beside the thing
+   consuming the window rather than at the far end of the sidebar, and as a gauge
+   you glance at it needs a shape, not four labelled figures. The numbers are all
+   still there, in the tooltip. */
+.ctx-ring {
+  flex: none;
+  display: inline-flex;
   align-items: center;
-  gap: var(--sp-1) var(--sp-2);
-  padding: var(--sp-2) var(--sp-2) 0;
-  font-size: var(--fs-xs);
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-pill);
+  color: rgb(var(--text-faint));
+  transition: background 0.12s ease;
 }
-.ctx-strip-model {
-  flex: 0 0 auto;
-  font-size: var(--fs-xs);
+.ctx-ring:hover,
+.ctx-ring[data-open] {
+  background: rgb(var(--fill-hover));
+}
+/* Brighter while its card is open, so the two read as one control. */
+.ctx-ring[data-open] .ctx-ring-val {
+  stroke: rgb(var(--text));
+}
+/* Beats the bare `svg { stroke-width: 1.5 }` at the end of the file on
+   specificity — a 1.5px ring at r=7 reads as a hairline circle rather than a
+   gauge. Both circles are stroke-only; no fill, or the track would be a disc. */
+.ctx-ring circle {
+  fill: none;
+  stroke-width: 2;
+}
+.ctx-ring-track {
+  stroke: rgb(var(--stroke-1));
+}
+.ctx-ring-val {
+  stroke: rgb(var(--text-dim));
+  transition: stroke-dasharray 0.3s ease;
+}
+/* Past ~75% of the window the number stops being trivia, and past 90% it is the
+   reason the next turn will fail. Same thresholds the bar used. */
+.ctx-ring[data-level='warn'] .ctx-ring-val {
+  stroke: rgb(var(--warn));
+}
+.ctx-ring[data-level='danger'] .ctx-ring-val {
+  stroke: rgb(var(--danger));
+}
+
+/* The breakdown, opened from the ring. Cursor floats it in the composer's tray
+   slot at the composer's own width rather than anchoring it as a menu — it is
+   wide, it is read top to bottom, and a 272px popover would wrap every category
+   name. Same reason .bg-tray sits there. */
+.ctx-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1-5);
+  padding: var(--sp-2-5) var(--sp-3) var(--sp-3);
+  background: rgb(var(--fill-4));
+  border: 1px solid rgb(var(--stroke-2));
+  border-radius: var(--r-lg);
+}
+.ctx-card-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-sm);
   color: rgb(var(--text-dim));
 }
-/* At rail width there is nothing to push apart — the row wraps instead, so the
-   spacer would only ever force a pointless empty line. */
-.ctx-strip > .spacer {
-  display: none;
+.ctx-card-cost,
+.ctx-card-tokens {
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-faint));
+  font-variant-numeric: tabular-nums;
 }
-/* Reuses the session panel's bar container, but with a single fill instead of
-   its seven category segments — at this width those are unreadable slivers.
-   `order` puts it last on its own full-width line, so it reads as a meter under
-   the figures rather than a sliver wedged between them. */
-.ctx-strip .ctx-bar {
-  flex: 1 0 100%;
-  order: 1;
+.ctx-card-close {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  margin-right: -4px;
+  border-radius: var(--r-sm);
+  color: rgb(var(--text-faint));
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.ctx-card-close:hover {
+  background: rgb(var(--fill-hover));
+  color: rgb(var(--text));
+}
+.ctx-card-stats {
+  display: flex;
+  align-items: baseline;
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-dim));
+  font-variant-numeric: tabular-nums;
+}
+
+/* One track with the categories laid contiguously along it; whatever is left is
+   the track showing through, which is the free window. The 1px gap between
+   segments is what makes seven bands readable at 4px tall. */
+.ctx-card-bar {
+  display: flex;
+  gap: 1px;
   height: 4px;
+  border-radius: var(--r-pill);
+  overflow: hidden;
+  background: rgb(var(--stroke-2));
 }
-.ctx-strip .cost {
-  flex: 0 1 auto;
+.ctx-card-bar > span {
+  min-width: 2px;
+  border-radius: var(--r-pill);
+}
+
+.ctx-card-list {
+  display: flex;
+  flex-direction: column;
+  margin-top: var(--sp-1);
+}
+.ctx-card-list li {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-height: 24px;
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-dim));
+}
+/* A rounded square, not a dot — Cursor's swatches are squares, and at 9px a
+   square reads as a legend key where a circle reads as a status light. */
+.ctx-card-list i {
+  flex: none;
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+}
+.ctx-card-name {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.ctx-card-n {
+  flex: none;
+  color: rgb(var(--text-faint));
+  font-variant-numeric: tabular-nums;
+}
+
+/* No conversation open. Deliberately not a dashboard — the Home view that used
+   to fill this space listed live sessions, recent projects and spend, all of
+   which the rail already shows. */
+.pane-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-4);
+  color: rgb(var(--text-faint));
+  font-size: var(--fs-sm);
+}
+
+/* Announced, not shown. The ring is the only control in the app whose whole
+   content is a shape, so it is the only one that needs this. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
 
 /* -------------------------------------------------------------------- side */
+
+/* The agent's name, in the chat pane's own strip. Cursor puts it here, left
+   aligned at body size — the rail already says which session is selected, so
+   this is orientation rather than a heading. */
+.pane-title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-dim));
+}
+
+/* The dock's entry points, shown only while the dock is closed. Cursor lists
+   them at the top right of the content area under an `On <repo>` heading —
+   labelled rows, no borders, no fills, sitting directly on the surface.
+
+   Absolutely positioned inside .pane-fill, whose `contain: paint` makes it the
+   containing block. Right-aligned text so the list reads as a column against
+   the window edge rather than a floating menu. */
+.dock-entries {
+  position: absolute;
+  top: calc(var(--titlebar-h) + var(--sp-2));
+  right: var(--sp-5);
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 1px;
+  min-width: 128px;
+}
+.dock-entries-head {
+  padding: 0 var(--sp-1-5) var(--sp-1);
+  font-size: var(--fs-xs);
+  line-height: 14px;
+  color: rgb(var(--text-faint));
+}
+.dock-entries button {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  padding: 3px var(--sp-1-5);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-faint));
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.dock-entries button:hover {
+  background: rgb(var(--fill-hover));
+  color: rgb(var(--text));
+}
+/* The only colour in the list, and the same green Cursor puts on its own
+   `Changes +1`. */
+.dock-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--add-fg));
+}
+
+/* The dock's tab bar. Borderless: active takes a fill, inactive is plain text.
+   That is Cursor's tab treatment, and it is deliberately NOT the bordered-pill
+   treatment their filter chips use — see .composer-chip, which is the other
+   one. Two different jobs, two different shapes. */
+.dock-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.dock-tabs button {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1-5);
+  padding: 3px var(--sp-2);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-faint));
+  white-space: nowrap;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.dock-tabs button:hover {
+  color: rgb(var(--text-dim));
+}
+.dock-tabs button[data-active='true'] {
+  background: rgb(var(--fill-2));
+  color: rgb(var(--text));
+}
 
 .tabs {
   display: flex;
@@ -2097,38 +2645,13 @@ button.diff-more:hover {
 .pane-fill:has(> .convo > .empty) > .composer {
   margin-bottom: auto;
 }
-/* Labelled chips rather than a ` · `-joined line — a repo name, a branch slug
-   and a permission mode read as one broken string when run together. */
-.empty-chips {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: center;
-  gap: 6px;
-}
-.empty-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  max-width: 240px;
-  padding: 3px var(--sp-2-5);
-  border: 1px solid rgb(var(--stroke-3));
-  border-radius: var(--r-pill);
-  background: transparent;
-  font-size: var(--fs-sm);
-  color: rgb(var(--text-faint));
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.empty-chip svg {
-  flex: 0 0 auto;
-  color: rgb(var(--text-faint));
-}
-.empty h2 {
-  font-size: var(--fs-lg);
-  font-weight: 500;
-  color: rgb(var(--text-dim));
-}
+/* `.empty-chips`, `.empty-chip` and `.empty h2` lived here — the branch · model
+   · mode chips and the project name the empty state used to render above the
+   composer. All of them are live controls in the composer now.
+
+   `.empty` itself stays, and stays empty: the `:has(> .convo > .empty)` rule
+   above keys the composer's rise off the presence of that node, not its
+   contents. */
 
 /* --------------------------------------------------------------- settings */
 
@@ -3004,24 +3527,26 @@ button.diff-more:hover {
   margin: 2px 0;
 }
 
-.branch-btn {
-  display: block;
-  margin-top: 4px;
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: rgb(var(--accent-fg) / 0.55);
-  opacity: 0;
-  transition: opacity 0.12s ease;
+/* `.branch-btn` lived here — a block-level uppercase word under the message,
+   revealed on hover. It is `.msg-action` now: icon-only, inside the card's right
+   edge, and permanently visible, which is what Cursor does with its restore
+   glyph. Uppercase micro-labels were the last of that idiom in the app. */
+.msg-action {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: var(--r-sm);
+  color: rgb(var(--text-faint));
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
 }
-/* Revealed on hover so it doesn't clutter every message, but focus-visible
-   keeps it reachable without a mouse. */
-.msg-user:hover .branch-btn,
-.branch-btn:focus-visible {
-  opacity: 1;
-}
-.branch-btn:hover {
-  color: rgb(var(--accent-fg));
+.msg-action:hover {
+  background: rgb(var(--fill-hover));
+  color: rgb(var(--text));
 }
 
 /* Names the directory the Past list and search are scoped to, so an empty
@@ -3053,331 +3578,28 @@ button.diff-more:hover {
   cursor: default;
 }
 
-/* -------------------------------------------------------- project chooser */
-
-/* `.empty` is already flex-column-centred; this adds the list and its width. */
-.chooser {
-  gap: 10px;
-}
-.chooser-search {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  max-width: 420px;
-  padding: 6px 10px;
-  border: 1px solid rgb(var(--border-strong));
-  border-radius: var(--r-sm);
-  background: rgb(var(--surface-2) / 0.6);
-  color: rgb(var(--text-faint));
-}
-.chooser-search input {
-  flex: 1;
-  min-width: 0;
-  background: none;
-  border: none;
-  outline: none;
-  color: rgb(var(--text));
-  font-size: 12px;
-}
-.chooser-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  width: 100%;
-  max-width: 420px;
-  max-height: 40vh;
-  overflow-y: auto;
-}
-.chooser-row {
-  display: flex;
-  align-items: baseline;
-  gap: 7px;
-  width: 100%;
-  padding: 6px 9px;
-  border-radius: var(--r-sm);
-  text-align: left;
-  color: rgb(var(--text-dim));
-}
-.chooser-row:hover {
-  background: rgb(var(--surface-3) / 0.6);
-  color: rgb(var(--text));
-}
-.chooser-row > svg {
-  flex: 0 0 auto;
-  align-self: center;
-  color: rgb(var(--text-faint));
-}
-.chooser-name {
-  flex: 0 0 auto;
-  font-weight: 600;
-  font-size: 12px;
-}
-/* RTL keeps the tail of a long path visible — that is the part that tells two
-   checkouts of the same repo apart. */
-.chooser-path {
-  flex: 1 1 auto;
-  min-width: 0;
-  direction: rtl;
-  text-align: left;
-  font-family: var(--mono);
-  font-size: 10px;
-  color: rgb(var(--text-faint));
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* ──────────────────────────────────────────────────────────────────── home */
-
-/* min-height:0 is load-bearing: .pane is overflow:hidden, so without it this
-   grows the pane instead of scrolling inside it and the bottom silently clips. */
-.home {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  display: flex;
-  flex-direction: column;
-  gap: 22px;
-  padding: 18px 24px 32px;
-}
-
-.home-hero {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 12px 0 4px;
-  color: rgb(var(--text-faint));
-}
-.home-hero h1 {
-  font-size: 19px;
-  font-weight: 600;
-  color: rgb(var(--text));
-}
-.home-hero p {
-  font-size: 12px;
-}
-.home-cta {
-  display: flex;
-  gap: 8px;
-  margin-top: 8px;
-  flex-wrap: wrap;
-  justify-content: center;
-}
-
-.home-section {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-/* .pane-head's type treatment without its fixed height or border. */
-.home-section-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 2px 4px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: rgb(var(--text-faint));
-}
-.home-search {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 3px 8px;
-  border: 1px solid rgb(var(--border));
-  border-radius: var(--r-sm);
-  background: rgb(var(--surface-2) / 0.5);
-}
-.home-search input {
-  width: 110px;
-  background: none;
-  border: none;
-  outline: none;
-  color: rgb(var(--text));
-  font-size: 11px;
-  text-transform: none;
-  letter-spacing: 0;
-}
-
-.home-group {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: 8px;
-}
-.home-group-head {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 2px;
-  color: rgb(var(--text-faint));
-}
-.home-group-name {
-  font-size: 12px;
-  font-weight: 600;
-  color: rgb(var(--text-dim));
-}
-/* Not `direction: rtl` like .chooser-path: this sits beside the basename, so the
-   head of the path is the part that disambiguates here. */
-.home-group-path {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-family: var(--mono);
-  font-size: 10px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.home-card {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 9px;
-  border: 1px solid rgb(var(--border));
-  border-radius: var(--r-sm);
-  background: rgb(var(--surface-2) / 0.4);
-  text-align: left;
-}
-.home-card:hover {
-  background: rgb(var(--surface-3) / 0.6);
-  border-color: rgb(var(--border-strong));
-}
-.home-card[data-active] {
-  border-color: rgb(var(--accent) / 0.6);
-}
-.home-card-body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-  flex: 1;
-}
-.home-card-title {
-  font-size: 12.5px;
-  font-weight: 600;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.home-card-meta {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  font-size: 11px;
-  color: rgb(var(--text-faint));
-}
-.home-card-meta > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-}
-
-.home-recent {
-  display: flex;
-  align-items: center;
-}
-.home-recent .chooser-row {
-  flex: 1;
-  min-width: 0;
-}
-/* Revealed on focus-visible as well as hover, or it is keyboard-invisible. */
-.home-remove {
-  flex: 0 0 auto;
-  padding: 4px 6px;
-  border-radius: var(--r-sm);
-  color: rgb(var(--text-faint));
-  opacity: 0;
-  transition: opacity 0.12s;
-}
-.home-recent:hover .home-remove,
-.home-remove:focus-visible {
-  opacity: 1;
-}
-.home-remove:hover {
-  color: rgb(var(--danger));
-  background: rgb(var(--danger) / 0.12);
-}
-.home-link {
-  color: rgb(var(--link));
-  text-decoration: underline;
-  font-size: inherit;
-}
-
-.home-stats {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
-  gap: 8px;
-  margin-bottom: 10px;
-}
-.home-stat {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 9px 11px;
-  border: 1px solid rgb(var(--border));
-  border-radius: var(--r-sm);
-  background: rgb(var(--surface-2) / 0.4);
-}
-.home-stat-n {
-  font-size: 17px;
-  font-weight: 600;
-  font-variant-numeric: tabular-nums;
-}
-.home-stat-k {
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: rgb(var(--text-faint));
-}
-
-.home-spend {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 3px 2px;
-  font-size: 11.5px;
-}
-.home-spend-name {
-  flex: 0 0 130px;
-  color: rgb(var(--text-dim));
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.home-bar {
-  flex: 1;
-  height: 6px;
-  border-radius: 99px;
-  overflow: hidden;
-  background: rgb(var(--surface-3) / 0.7);
-}
-.home-bar > i {
-  display: block;
-  height: 100%;
-}
-.home-spend-n {
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-  color: rgb(var(--text-faint));
-}
+/* The project-chooser and home sections lived here, ~240 lines of them:
+   `.chooser*` for the "pick a project" view behind ⇧⌘N, and `.home*` for the ⌘0
+   dashboard — hero, CTA row, running-session cards, a filterable recents list
+   and spend bars. Both views are gone. Home listed live sessions, projects and
+   usage, all of which the rail or the session panel already show, and the
+   chooser only existed to ask which project a new conversation belonged to,
+   which newSession() answers by opening the directory picker. */
 
 /* ────────────────────────────────────────── time travel + actions */
 
 /* Ghost text sits over the empty textarea, so it must not eat the click that
    focuses it — except on itself, where clicking accepts the suggestion. */
+/* Sits exactly on the first line of the editor, at the same inset as the real
+   text — see --editor-pad on .composer-card. Height stays auto so it covers one
+   line and nothing more: clicking it accepts the suggestion, and covering the
+   whole box would swallow clicks meant for the editor. */
 .ghost {
   position: absolute;
-  top: 10px;
-  left: 13px;
-  right: 13px;
+  top: 0;
+  left: 0;
+  right: 0;
+  padding: var(--editor-pad);
   text-align: left;
   font-size: 13px;
   color: rgb(var(--text-faint));
@@ -3431,18 +3653,16 @@ button.diff-more:hover {
   color: rgb(var(--text-faint));
 }
 
-/* Absolutely positioned, NOT just faded: .branch-btn is display:block with
-   opacity:0, so in flow it still reserved a line of height under every single
-   user bubble — which read as a stray newline on every message you sent. Taking
-   it out of flow is the fix; a max-height transition instead would make the
-   bubble jump on hover. */
+/* In flow again, inside the card. This used to be `position: absolute; top:
+   100%` because the old `.branch-btn` was a display:block word at opacity 0 and
+   still reserved a line of height under every message you sent. Icon buttons in
+   the card's right gutter reserve their own width and nothing else, so the
+   escape hatch is no longer needed — and taking it out of flow is what forced
+   the `content-visibility` carve-out on user rows. */
 .msg-actions {
-  position: absolute;
-  top: 100%;
-  right: 2px;
+  flex: none;
   display: flex;
-  gap: 10px;
-  margin-top: 1px;
+  gap: 2px;
 }
 
 .mcp-acts {
@@ -4277,19 +4497,20 @@ button.diff-more:hover {
   white-space: nowrap;
 }
 
-/* Opens the file a tool card touched. Only appears on hover: every Read and
-   Edit card would otherwise carry a permanent button nobody asked for. */
+/* Opens the file a tool row touched. Only appears on hover: every Read and Edit
+   row would otherwise carry a permanent button nobody asked for. */
 .tool-open {
   flex: none;
   display: inline-flex;
   align-items: center;
+  align-self: center;
   margin-left: 4px;
   padding: 2px;
   border-radius: var(--r-sm);
   color: rgb(var(--text-faint));
   opacity: 0;
 }
-.tool-head:hover .tool-open {
+.tool-line:hover .tool-open {
   opacity: 1;
 }
 .tool-open:hover {
@@ -4315,16 +4536,24 @@ button.diff-more:hover {
 
 /* ─────────────────────────────────────────────────────────────────── icons */
 
-/* Must stay LAST in the file: these beat .branch-btn and .queued-cancel, both
-   of which set `display: block` earlier, at equal specificity.
+/* Must stay LAST in the file: these beat .queued-cancel, which sets
+   `display: block` earlier, at equal specificity.
 
    One stroke weight app-wide. lucide writes stroke-width as a presentation
    attribute (specificity 0), so this single rule outranks all ~45 of them and
    no call site has to repeat `strokeWidth`. Colour needs nothing at all:
    lucide defaults to stroke="currentColor", so every glyph already inherits
-   its button's colour and its :hover. Unscoped — the app renders no other SVG. */
+   its button's colour and its :hover. Unscoped — the app renders no other SVG.
+
+   1.5, down from 1.75. Cursor's icons come from a variable-weight font running
+   at weight 400, which is lighter than lucide's own 2 and lighter still than the
+   1.75 this used to sit at. At 12px the difference is most of what made the old
+   glyphs read as heavier than the text beside them.
+
+   Sizes are on Cursor's ladder — 10 / 12 / 14 / 16 / 20 — rather than the
+   11/12/13/14 spread they used to be. 12 is an in-row glyph, 14 is chrome. */
 svg {
-  stroke-width: 1.75;
+  stroke-width: 1.5;
   flex: none;
 }
 
@@ -4344,7 +4573,6 @@ button.code-btn,
   gap: 6px;
 }
 .chip button,
-.branch-btn,
 .todos-mark {
   display: inline-flex;
   align-items: center;

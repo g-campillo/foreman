@@ -1,29 +1,5 @@
 import { Children, useMemo, useState } from 'react'
-import {
-  Bot,
-  ChevronDown,
-  ChevronRight,
-  Circle,
-  FilePen,
-  FilePenLine,
-  FilePlus,
-  FileSearch,
-  FileText,
-  Globe,
-  Link,
-  ListTodo,
-  NotebookPen,
-  Plug,
-  Search,
-  Sparkles,
-  Square,
-  SquareSlash,
-  SquareTerminal,
-  Terminal,
-  Wrench,
-  FileCode2,
-} from 'lucide-react'
-import type { LucideIcon } from 'lucide-react'
+import { ChevronDown, FileCode2 } from 'lucide-react'
 import type { ChatItem, DiffHunk } from '../../../shared/types'
 import { toHunks } from '../../../shared/diff.mts'
 import {
@@ -32,7 +8,7 @@ import {
   planProposal,
   planTitle,
   relPath,
-  toolLabel,
+  toolVerb,
   focusTarget,
 } from '../derive.mts'
 import { hljsLang } from '../highlight.mts'
@@ -145,61 +121,35 @@ function editHunks(name: string, input: unknown): DiffHunk[] | null {
   return null
 }
 
-/**
- * The icon says what kind of work this is; the colour says how it went.
- *
- * Those used to be the same channel — one checkmark that was grey, then green
- * or red — so a transcript of thirty calls looked identical whether it had been
- * reading files or shelling out. Status moved to `.tool-head[data-status]` in
- * theme.css, which frees the glyph to carry the tool's identity instead.
- *
- * Components, not elements: lucide strokes with currentColor, so `.tool-icon`
- * owns the colour. Same arrangement as ACTIVITY_ICON in SessionRail.
- */
-const TOOL_ICON: Record<string, LucideIcon> = {
-  // files
-  Read: FileText,
-  Write: FilePlus,
-  Edit: FilePen,
-  MultiEdit: FilePenLine,
-  NotebookEdit: NotebookPen,
-  // shell
-  Bash: Terminal,
-  BashOutput: SquareTerminal,
-  KillShell: Square,
-  // search
-  Glob: FileSearch,
-  Grep: Search,
-  ToolSearch: Wrench,
-  // web
-  WebFetch: Link,
-  WebSearch: Globe,
-  // orchestration. 'Agent' is the wire name; 'Task' is what older transcripts
-  // carry, and both have to land on the same glyph — see summarise().
-  Agent: Bot,
-  Task: Bot,
-  TodoWrite: ListTodo,
-  // user-facing
-  SlashCommand: SquareSlash,
-  Skill: Sparkles,
-  // Deliberately absent: TaskCreate/TaskUpdate (render 'hidden' — TodoStrip
-  // folds them) and ExitPlanMode/AskUserQuestion (render 'record' — RecordRow
-  // returns before a ToolCard is built, and carries its own glyph). None of
-  // them can reach this map; see TOOL_DISPLAY in derive.mts.
-}
+/* TOOL_ICON and toolIcon lived here — a per-tool lucide glyph, with the status
+   carried as a colour on `.tool-head[data-status]` beside it.
+
+   Both are gone with the card. Cursor's rows have no icon at all: the verb says
+   what kind of work it was ("Searched files", "Ran", "Edited") far better than
+   a 12px glyph did, and once thirty rows are plain text an icon column is the
+   only thing left drawing a grid down the transcript. The status colour went
+   the same way — see `data-failed` on the row for the one state still worth
+   showing without a click. TOOL_VERB in derive.mts is the replacement. */
 
 /**
- * The glyph for a tool call.
+ * One tool call, as a line of prose.
  *
- * Exact name first, then the `mcp__<server>__<tool>` prefix — see toolLabel for
- * the wire format. That order is what lets a specific MCP tool be given its own
- * glyph later without special-casing the prefix check.
+ * This was a bordered card with an icon, a name, a status colour and a chevron.
+ * Cursor renders the same information as `Ran ls -la /Users/…` — verb in
+ * secondary text, argument in quaternary, nothing else. Thirty of those read as
+ * a paragraph of what the agent did; thirty cards read as a wall.
+ *
+ * What did NOT go away is the depth. Cursor's rows are inert, but Foreman's
+ * carry things Cursor has nowhere to put: an edit's diff, a subagent's whole
+ * transcript, an approved plan. So the row stays clickable and expands in place.
+ * At rest it is Cursor's line; one click and it is what the card used to be.
+ *
+ * The old `data-status` colour is gone with the card. Failure is the one state
+ * that still needs to be visible without a click, and it says so in words —
+ * `data-failed` puts the argument in the danger hue rather than tinting a whole
+ * surface.
  */
-export function toolIcon(name: string): LucideIcon {
-  return TOOL_ICON[name] ?? (name.startsWith('mcp__') ? Plug : Circle)
-}
-
-export default function ToolCard({
+export default function ToolLine({
   item,
   cwd,
   children,
@@ -213,7 +163,7 @@ export default function ToolCard({
    * re-running `.find` over `sessions` on every streaming delta.
    */
   cwd?: string
-  /** A subagent's nested transcript, when this card is a Task that spawned one. */
+  /** A subagent's nested transcript, when this call is a Task that spawned one. */
   children?: React.ReactNode
 }): React.JSX.Element {
   const nested = Children.count(children) > 0
@@ -221,64 +171,67 @@ export default function ToolCard({
   const plan = planProposal(item.name, item.input)
   const hunks = useMemo(() => editHunks(item.name, item.input), [item.name, item.input])
   const openFile = useStore((s) => s.openFile)
-  // Same function the tree and the editor follow with, so a card that is
-  // clickable is exactly a call the agent could be followed into.
+  // Same function the tree and the editor follow with, so a row that offers the
+  // editor is exactly a call the agent could be followed into.
   const target = useMemo(() => focusTarget(item.name, item.input), [item.name, item.input])
 
-  // Only a card carrying a whole document expands: a subagent's transcript, or
-  // an approved plan whose modal is gone and which lives nowhere else. Ordinary
-  // calls are one line and nothing more — the raw input used to be dumped here
-  // as JSON, and a Task card auto-expanded purely because it had children.
-  const expandable = nested || Boolean(plan)
+  // An answered question comes back flagged is_error, because the answer had to
+  // travel as a permission deny — see ANSWER_PREFIX. It succeeded; don't paint
+  // it as a failure. A skipped one has no answer text and stays an error.
+  const status =
+    item.status === 'error' && item.result?.startsWith(ANSWER_PREFIX) ? 'done' : item.status
+
+  /** Now three things rather than two: a subagent transcript, an approved plan,
+   *  or a diff. The diff used to render unconditionally under the card; behind
+   *  the click it keeps the line a line, which is the whole point of this shape. */
+  const expandable = nested || Boolean(plan) || Boolean(hunks?.length)
   const [open, setOpen] = useState(false)
 
   // One-way: once the ceiling is raised there is no "more" row left to click,
   // and a separate collapse control buys little at a 200-line cap.
   const [allLines, setAllLines] = useState(false)
 
-  // An answered question comes back flagged is_error, because the answer had to
-  // travel as a permission deny — see ANSWER_PREFIX. It succeeded; don't paint
-  // it as a failure. A skipped one has no answer text and stays an error.
-  const status = item.status === 'error' && item.result?.startsWith(ANSWER_PREFIX)
-    ? 'done'
-    : item.status
-  const Glyph = toolIcon(item.name)
+  const added = hunks?.reduce((n, h) => n + h.lines.filter((l) => l.type === 'add').length, 0) ?? 0
+  const removed = hunks?.reduce((n, h) => n + h.lines.filter((l) => l.type === 'del').length, 0) ?? 0
 
-  const head = (
+  /* A subagent gets Cursor's two-line form: what it was asked on the first line,
+     what it is doing right now on the second. Every other tool keeps one line
+     and lets the rolling summary replace its argument, because for those the
+     progress IS the argument — a Bash call reporting "installing packages" has
+     nothing to say on a second line that the command did not already say. */
+  const subagent = item.name === 'Agent' || item.name === 'Task'
+  const status2 = subagent ? item.progress : null
+
+  const line = (
     <>
-      <span className="tool-icon">
-        <Glyph size={12} />
-      </span>
-      <span className="tool-name">{toolLabel(item.name)}</span>
-      {/* The rolling summary is the more useful line once there is one, and it
-          replaces the gist rather than crowding it. */}
-      <span className="tool-arg">{item.progress || gist}</span>
-      {hunks && hunks.length > 0 && (
+      <span className="tool-verb">{toolVerb(item.name, status === 'pending')}</span>
+      {/* The rolling summary is the more useful argument once there is one, and
+          it replaces the gist rather than crowding it. */}
+      <span className="tool-arg">{subagent ? gist : item.progress || gist}</span>
+      {/* The only colour on the row, and the only one Cursor uses too. */}
+      {(added > 0 || removed > 0) && (
         <span className="diff-stat">
-          <span className="a">+{hunks.reduce((n, h) => n + h.lines.filter((l) => l.type === 'add').length, 0)}</span>{' '}
-          <span className="d">−{hunks.reduce((n, h) => n + h.lines.filter((l) => l.type === 'del').length, 0)}</span>
+          {added > 0 && <span className="a">+{added}</span>}
+          {removed > 0 && <span className="d">−{removed}</span>}
         </span>
       )}
-      {expandable && (
-        <span style={{ color: 'rgb(var(--text-faint))' }}>
-          {open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
-        </span>
-      )}
+      {expandable && <ChevronDown size={12} className="tool-chevron" />}
     </>
   )
 
   return (
-    <div className="tool" data-nested={nested ? '' : undefined}>
-      {/* data-status sits on the HEAD, never on .tool: a Task card nests whole
-          .tool elements inside itself, so `.tool[data-status] .tool-icon` would
-          repaint every child's icon with the parent's status. A .tool-head is
-          never inside another .tool-head. */}
+    <div className="tool" data-nested={nested ? '' : undefined} data-open={open ? '' : undefined}>
       {expandable ? (
-        <button className="tool-head" data-status={status} onClick={() => setOpen(!open)}>
-          {head}
-          {/* A third arm on a switch that already existed, rather than a new
-              interaction model. Only shown when focusTarget resolves AND the
-              card is expandable — an expandable head's click is already taken. */}
+        <button
+          className="tool-line"
+          data-failed={status === 'error' ? '' : undefined}
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          {line}
+          {/* Only offered when focusTarget resolves AND the row already owns its
+              click — otherwise the whole row opens the editor and this would be
+              a second control competing for the same gesture. */}
           {target && (
             <span
               className="tool-open"
@@ -296,45 +249,49 @@ export default function ToolCard({
         </button>
       ) : target ? (
         <button
-          className="tool-head"
-          data-status={status}
+          className="tool-line"
+          data-failed={status === 'error' ? '' : undefined}
           title="Open in the editor"
           onClick={() => openFile(target.path, target.line ?? undefined)}
         >
-          {head}
+          {line}
         </button>
       ) : (
-        <div className="tool-head" data-status={status} data-static="">
-          {head}
+        <div
+          className="tool-line"
+          data-failed={status === 'error' ? '' : undefined}
+          data-static=""
+        >
+          {line}
         </div>
       )}
 
-      {/* Not behind the chevron: an edit's diff IS its summary, the way Claude
-          Code shows it, and hiding it behind a click defeats the point. */}
-      {hunks && hunks.length > 0 && (
-        <DiffLines
-          hunks={hunks}
-          numbers={false}
-          // The edited file's grammar, so the diff reads as code rather than as
-          // a wall of green. Null for a language hljs has no grammar for, which
-          // degrades to exactly what this rendered before.
-          lang={hljsLang(target?.path ?? '')}
-          maxLines={allLines ? MAX_EXPANDED_DIFF_LINES : MAX_INLINE_DIFF_LINES}
-          // Dropped once expanded, so past the second ceiling the row degrades
-          // to a static count rather than offering a click that does nothing.
-          onMore={allLines ? undefined : () => setAllLines(true)}
-        />
-      )}
+      {/* Outside the click target, so hovering the live status does not light up
+          the row as if it were expandable on its own. */}
+      {status2 && <div className="tool-status">{status2}</div>}
 
       {open && (
-        <>
+        <div className="tool-body">
+          {hunks && hunks.length > 0 && (
+            <DiffLines
+              hunks={hunks}
+              numbers={false}
+              // The edited file's grammar, so the diff reads as code rather than
+              // as a wall of green. Null for a language hljs has no grammar for.
+              lang={hljsLang(target?.path ?? '')}
+              maxLines={allLines ? MAX_EXPANDED_DIFF_LINES : MAX_INLINE_DIFF_LINES}
+              // Dropped once expanded, so past the second ceiling the row
+              // degrades to a static count rather than offering a dead click.
+              onMore={allLines ? undefined : () => setAllLines(true)}
+            />
+          )}
           {nested && <div className="tool-nest">{children}</div>}
           {plan && (
             <div className="tool-plan">
               <Markdown text={plan.markdown} />
             </div>
           )}
-        </>
+        </div>
       )}
     </div>
   )

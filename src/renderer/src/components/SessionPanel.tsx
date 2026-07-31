@@ -12,14 +12,22 @@ import type {
 import { contextBreakdown, fmt } from '../derive.mts'
 
 /** Our own palette, because the SDK's `color` is a CLI theme key, not CSS.
- *  All theme tokens, so the breakdown flips with light/dark like everything else. */
+ *  All theme tokens, so the breakdown flips with light/dark like everything else.
+ *
+ *  ORDER IS THE POINT. Categories are assigned by index, so neighbours in this
+ *  list are neighbours in the legend and in the bar — and --warn next to
+ *  --syn-num next to --syn-fn put three oranges in a row, which at a 9px swatch
+ *  and a 4px bar segment is one colour. Interleaved so consecutive entries
+ *  always jump hue, the way Cursor's grey/purple/green/amber/mauve/blue/salmon
+ *  does. This is the only categorical palette in the app; everywhere else is one
+ *  hue at varying alpha. */
 const SWATCHES = [
   'rgb(var(--accent))',
+  'rgb(var(--syn-key))',
   'rgb(var(--ok))',
   'rgb(var(--warn))',
-  'rgb(var(--syn-num))',
+  'rgb(var(--syn-str))',
   'rgb(var(--syn-type))',
-  'rgb(var(--syn-fn))',
   'rgb(var(--danger))',
 ]
 export const swatch = (i: number): string => SWATCHES[i % SWATCHES.length]

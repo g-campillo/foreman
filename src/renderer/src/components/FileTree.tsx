@@ -126,10 +126,10 @@ export default function FileTree({ session, visible }: Props): React.JSX.Element
         {isDir ? (
           <>
             <ChevronRight size={12} className="ft-caret" data-open={expanded || undefined} />
-            {expanded ? <FolderOpen size={13} /> : <Folder size={13} />}
+            {expanded ? <FolderOpen size={12} /> : <Folder size={12} />}
           </>
         ) : (
-          <File size={13} className="ft-file-icon" />
+          <File size={12} className="ft-file-icon" />
         )}
         <span className="ft-name">{node.name}</span>
         {status && <span className="ft-dot" />}
@@ -146,7 +146,7 @@ export default function FileTree({ session, visible }: Props): React.JSX.Element
   return (
     <div className="ft">
       <div className="ft-search">
-        <Search size={13} />
+        <Search size={12} />
         <input
           value={query}
           placeholder="Filter files"
@@ -178,7 +178,7 @@ export default function FileTree({ session, visible }: Props): React.JSX.Element
                   title={p}
                   onClick={() => openFile(abs)}
                 >
-                  <File size={13} className="ft-file-icon" />
+                  <File size={12} className="ft-file-icon" />
                   {/* The whole path, because a bare filename is ambiguous the
                       moment a repo has two index.ts — and it usually does. */}
                   <span className="ft-name ft-path">{p}</span>

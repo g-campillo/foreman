@@ -52,7 +52,7 @@ function createWindow(): void {
     vibrancy: 'under-window',
     frame: false,
     titleBarStyle: 'hiddenInset',
-    trafficLightPosition: { x: 16, y: 18 },
+    trafficLightPosition: { x: 16, y: 11 },
     // Fully transparent, NOT a theme colour. Chromium paints this in the gaps
     // before the renderer's first frame; any opaque value here lands in front of
     // the vibrancy material and cancels it. See the app:background handler,

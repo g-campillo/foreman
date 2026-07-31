@@ -574,6 +574,52 @@ export function toolLabel(name: string): string {
   return ['MCP', server, tool && titleCase(tool)].filter(Boolean).join(' ')
 }
 
+/**
+ * Verbs, past and present.
+ *
+ * Cursor writes a tool call as a sentence — `Read README.md L1-50`, `Ran ls -la`,
+ * `Searched files README* in etk-cli` — with the verb in secondary text and the
+ * argument in quaternary. There is no icon, no card and no status colour, so the
+ * verb is doing all the work the chrome used to do, and a bare CamelCase tool
+ * name cannot do it: "Glob src/**" is not a sentence.
+ *
+ * The tense is the running indicator. Cursor ships no spinner on these rows at
+ * all — a call in flight reads `Exploring 8 files`, and the same row becomes
+ * `Explored 30 files` when it lands. That is the entire animation.
+ *
+ * Names absent from this map fall through to toolLabel, which is what MCP tools
+ * and anything unrecognised want: an invented verb for a tool we know nothing
+ * about would misdescribe it, and the existing label is at least honest.
+ */
+const TOOL_VERB: Record<string, readonly [past: string, present: string]> = {
+  Read: ['Read', 'Reading'],
+  Glob: ['Searched files', 'Searching files'],
+  Grep: ['Searched files', 'Searching files'],
+  Bash: ['Ran', 'Running'],
+  BashOutput: ['Read output', 'Reading output'],
+  KillShell: ['Stopped shell', 'Stopping shell'],
+  Edit: ['Edited', 'Editing'],
+  MultiEdit: ['Edited', 'Editing'],
+  Write: ['Wrote', 'Writing'],
+  NotebookEdit: ['Edited', 'Editing'],
+  WebFetch: ['Fetched', 'Fetching'],
+  WebSearch: ['Searched the web', 'Searching the web'],
+  // The subagent tool. 'Agent' is the wire name, 'Task' is what older
+  // transcripts carry — see summarise() for the same pairing.
+  Agent: ['Delegated', 'Delegating'],
+  Task: ['Delegated', 'Delegating'],
+  TodoWrite: ['Updated the plan', 'Updating the plan'],
+  SlashCommand: ['Ran', 'Running'],
+  Skill: ['Used', 'Using'],
+  ToolSearch: ['Loaded tools', 'Loading tools'],
+}
+
+/** The verb for a tool call, in the tense its status calls for. */
+export function toolVerb(name: string, pending = false): string {
+  const pair = TOOL_VERB[name]
+  return pair ? pair[pending ? 1 : 0] : toolLabel(name)
+}
+
 // ------------------------------------------------------------ transcript shape
 
 export interface Row {
@@ -612,6 +658,75 @@ export function transcriptRows(roots: readonly ChatItem[]): Row[] {
     prevKind = item.kind
   }
   return out
+}
+
+export interface Turn {
+  /** Stable React key: the id of the first item in the turn. */
+  id: string
+  /** The user message that opened it. Null for a turn resumed mid-transcript. */
+  lead: Row | null
+  /** Thinking, tool calls and mid-turn commentary — what the header folds away. */
+  work: Row[]
+  /** The trailing run of assistant blocks: the answer. Never folded. */
+  tail: Row[]
+  /** Wall time from the turn's result item; null while it is still running. */
+  durationMs: number | null
+}
+
+/**
+ * The transcript as turns.
+ *
+ * Cursor heads each turn with `Worked for 13s ⌄` and folds everything between
+ * the question and the answer behind it, leaving the previous turn as its
+ * summary line plus what the agent finally said. Only the newest turn stays
+ * open. Scrolled back through a long session that is the difference between
+ * reading a conversation and reading a log.
+ *
+ * A turn is bounded by user messages rather than by result items, because a
+ * transcript resumed from disk can begin mid-turn with no result to anchor on,
+ * and because queued messages produce two user items before either turn ends.
+ *
+ * The split between `work` and `tail` is the trailing run of assistant blocks —
+ * streaming emits several per turn, and all of them belong to the answer. Result
+ * and error items ride along in `tail` so a failed turn still says so when the
+ * turn is folded; that is the one thing you must not be able to hide.
+ */
+export function groupTurns(rows: readonly Row[]): Turn[] {
+  const turns: Turn[] = []
+  let body: Row[] = []
+
+  /** Trailing assistant/result/error rows are the answer; the rest is work. */
+  const close = (): void => {
+    const turn = turns[turns.length - 1]
+    if (!turn) return
+    let i = body.length
+    while (i > 0) {
+      const kind = body[i - 1].item.kind
+      if (kind !== 'assistant' && kind !== 'result' && kind !== 'error') break
+      i -= 1
+    }
+    turn.work = body.slice(0, i)
+    turn.tail = body.slice(i)
+    body = []
+  }
+
+  for (const row of rows) {
+    if (row.item.kind === 'user') {
+      close()
+      turns.push({ id: row.item.id, lead: row, work: [], tail: [], durationMs: null })
+      continue
+    }
+    // A transcript that begins mid-turn — resumed from disk, or forked at an
+    // assistant message — has work before any user message to hang it on.
+    if (!turns.length) turns.push({ id: row.item.id, lead: null, work: [], tail: [], durationMs: null })
+    // Read off the item rather than timing the render: this is the SDK's own
+    // measure of the turn, and it survives a reload where a mount timestamp
+    // would restart every turn at zero.
+    if (row.item.kind === 'result') turns[turns.length - 1].durationMs = row.item.durationMs
+    body.push(row)
+  }
+  close()
+  return turns
 }
 
 // ------------------------------------------------------------ working verbs

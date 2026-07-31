@@ -61,7 +61,7 @@ export default function LspServers(): React.JSX.Element {
           go-to-definition, references and diagnostics — for you and for the agent.
         </span>
         <button className="btn" disabled={busy} onClick={() => void recheck()}>
-          <RefreshCw size={13} />
+          <RefreshCw size={12} />
           {busy ? 'Checking…' : 'Recheck'}
         </button>
       </div>
@@ -70,13 +70,13 @@ export default function LspServers(): React.JSX.Element {
         <div key={r.id} className="lsp-row" data-state={r.state}>
           <span className="lsp-icon">
             {r.state === 'ready' ? (
-              <Check size={13} />
+              <Check size={12} />
             ) : r.state === 'unconfigured' ? (
-              <TriangleAlert size={13} />
+              <TriangleAlert size={12} />
             ) : r.state === 'highlight-only' ? (
-              <Palette size={13} />
+              <Palette size={12} />
             ) : (
-              <X size={13} />
+              <X size={12} />
             )}
           </span>
           <div className="lsp-row-body">

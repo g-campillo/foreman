@@ -1,15 +1,22 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
+  ArrowUp,
   Cog,
-  Gauge,
+  FolderOpen,
+  FolderPlus,
   GitBranch,
+  GitBranchPlus,
+  Image as ImageIcon,
+  ListChecks,
   ListPlus,
-  SendHorizontal,
+  Pencil,
+  Plus,
   SendToBack,
   ShieldCheck,
-  Sparkles,
+  ShieldOff,
   Square,
   X,
+  Zap,
 } from 'lucide-react'
 import type {
   EffortLevel,
@@ -22,12 +29,16 @@ import type {
 } from '../../../shared/types'
 import type { EditorView } from '@codemirror/view'
 import { useStore } from '../store'
-import { filterEntries, triggerAt } from '../derive.mts'
+import { filterEntries, recentProjects, triggerAt } from '../derive.mts'
 import Autocomplete, { type Suggestion } from './Autocomplete'
 import MarkdownInput from './MarkdownInput'
+import Menu, { type MenuItem } from './Menu'
+import Picker, { useMenu } from './Picker'
+import { ContextCard, ContextRing, useContextUsage } from './ContextRing'
 
-/** Sentinel for "whatever the session is already running" when no alias matches. */
-const CURRENT = '__current__'
+/* The CURRENT sentinel lived here — a fake <option> for "whatever the session is
+   already running" when no alias matched, because a native select cannot show a
+   value that is not one of its options. The menu just renders the label. */
 
 /** Mirrors ImageMediaType; anything else is silently not attachable. */
 const ACCEPTED: readonly ImageMediaType[] = ['image/png', 'image/jpeg', 'image/gif', 'image/webp']
@@ -144,6 +155,23 @@ export const MODES: { value: PermissionMode; label: string }[] = [
   { value: 'dontAsk', label: "Don't ask" },
 ]
 
+/** Separate from MODES rather than a field on it, because the palette and
+ *  Settings render these as text rows and would import lucide for nothing. */
+const MODE_ICON: Record<PermissionMode, React.ReactNode> = {
+  default: <ShieldCheck size={14} />,
+  acceptEdits: <Pencil size={14} />,
+  plan: <ListChecks size={14} />,
+  bypassPermissions: <Zap size={14} />,
+  dontAsk: <ShieldOff size={14} />,
+}
+
+/** Chips under the empty composer. Cursor's are mode shortcuts too — "Plan New
+ *  Idea", "Multitask" — so these are the same idea with Foreman's modes. */
+const STARTERS: { label: string; mode: PermissionMode }[] = [
+  { label: 'Plan first', mode: 'plan' },
+  { label: 'Accept edits', mode: 'acceptEdits' },
+]
+
 /** Only the four types the API accepts get this far — see ACCEPTED below. */
 interface Attachment {
   id: string
@@ -161,11 +189,29 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
   const modelRows = useMemo(() => modelLabels(models), [models])
   const close = useStore((s) => s.close)
   const openPath = useStore((s) => s.openPath)
+  const openProject = useStore((s) => s.openProject)
   // Only for the picker's pre-first-turn fallback: the session was created with
   // this model, but meta.model stays null until an assistant message reports one.
   const prefs = useStore((s) => s.prefs)
   /** Nothing said yet, so the session can still be recreated somewhere else. */
   const fresh = useStore((s) => (s.items[session.id]?.length ?? 0) === 0)
+  // For the project picker. Seeded from live sessions only — Home and
+  // ProjectChooser also fold in past sessions, but those need an IPC fetch and
+  // the composer is not a place to pay for one on every session switch.
+  const sessions = useStore((s) => s.sessions)
+  const hiddenProjects = useStore((s) => s.hiddenProjects)
+  /** Live branch, kept fresh by the diff panel. worktree.branch is frozen at
+   *  creation and lies after a checkout, so it is only the fallback. */
+  const branch = useStore((s) => s.branches[session.id] ?? null)
+  /** The `+` menu. useMenu rather than MenuButton so the file input below can
+   *  be triggered from one of its rows. */
+  const add = useMenu()
+  /* Fetched here rather than inside the ring, because the ring and the card it
+     opens are siblings — the ring sits under the composer, the card floats above
+     it, so neither can own the poll for the other. */
+  const usage = useContextUsage(session)
+  const [showContext, setShowContext] = useState(false)
+  const picker = useRef<HTMLInputElement>(null)
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
   const [caret, setCaret] = useState(0)
@@ -346,6 +392,164 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     box.current?.focus()
   }
 
+  // ------------------------------------------------------------------ menus
+
+  /** Cursor's composer has two shapes, and which one you get is whether a
+   *  conversation exists yet: a tall card with the context pickers above it and
+   *  starter chips below, or a single-row pill with the pickers underneath. */
+  const compact = !fresh
+
+  const root = session.worktree?.repoRoot ?? session.cwd
+  const projectName = root.split('/').filter(Boolean).pop() ?? 'project'
+  const stemPath = (p: string): string => (p.endsWith('/') ? p.slice(0, -1) : p)
+
+  const recents = useMemo(
+    () => recentProjects(sessions, [], hiddenProjects).slice(0, 8),
+    [sessions, hiddenProjects],
+  )
+
+  const projectItems: MenuItem[] = [
+    ...recents.map((p) => ({
+      id: p.hint,
+      label: p.label,
+      hint: p.hint,
+      icon: <FolderOpen size={14} />,
+      checked: stemPath(p.hint) === stemPath(root),
+      onSelect: () => void openPath(p.hint),
+    })),
+    { kind: 'divider' as const },
+    {
+      id: 'browse',
+      label: 'Browse…',
+      icon: <FolderPlus size={14} />,
+      onSelect: () => void openProject(),
+    },
+  ]
+
+  const branchLabel = branch ?? session.worktree?.branch ?? 'no branch'
+  const branchItems: MenuItem[] = [
+    { kind: 'section' as const, label: 'Branch' },
+    { id: 'current', label: branchLabel, icon: <GitBranch size={14} />, checked: true },
+    { kind: 'divider' as const },
+    {
+      id: 'worktree',
+      label: 'Run in a new worktree',
+      icon: <GitBranchPlus size={14} />,
+      // A session's cwd is fixed at creation, so this is only ever offered on an
+      // untouched tab — the hint says why it is greyed rather than leaving you
+      // to guess.
+      hint: fresh ? undefined : 'before the first message',
+      disabled: !fresh || !!session.worktree,
+      onSelect: () => void goWorktree(),
+    },
+  ]
+
+  const current =
+    models.find((m) => m.resolvedModel === session.model) ??
+    (session.model
+      ? models.find((m) => bareModel(m.resolvedModel) === bareModel(session.model))
+      : models.find((m) => m.id === (prefs.model || 'default')))
+  const effortLabel = EFFORTS.find((e) => e.value === (session.effort ?? ''))?.label ?? 'Auto'
+  // modelName reads the wire id, which is null until the first turn reports one —
+  // so the row label for the session's configured default is the fallback.
+  const modelText =
+    modelName(session.model) ||
+    (current ? modelRows[models.indexOf(current)] : (session.model ?? 'Loading…'))
+  /** Effort rides on the model label rather than taking a second control, which
+   *  is how Cursor folds thinking level into the model name. 'Auto' is the
+   *  default and says nothing, so it stays off the trigger. */
+  const modelLabel = session.effort ? `${modelText} · ${effortLabel}` : modelText
+
+  const modelItems: MenuItem[] = [
+    ...models.map((m, i) => ({
+      id: m.id,
+      label: modelRows[i],
+      checked: m.id === current?.id,
+      onSelect: () => void window.foreman.setModel(session.id, m.id),
+    })),
+    { kind: 'divider' as const },
+    { kind: 'section' as const, label: 'Effort' },
+    ...EFFORTS.map((e) => ({
+      id: `effort-${e.value || 'auto'}`,
+      label: e.label,
+      checked: (session.effort ?? '') === e.value,
+      onSelect: () => void window.foreman.setEffort(session.id, e.value || null),
+    })),
+  ]
+
+  /** Cursor keeps its modes in here rather than on the toolbar, and so do we.
+   *  Skills and MCP servers are deliberately absent: the SDK has no read-only
+   *  skills listing (only a reload, which is a side effect no menu should have)
+   *  and Foreman has no per-request MCP toggle for those rows to drive. */
+  const addItems: MenuItem[] = [
+    ...MODES.map((m) => ({
+      id: m.value,
+      label: m.label,
+      icon: MODE_ICON[m.value],
+      checked: session.permissionMode === m.value,
+      onSelect: () => void window.foreman.setPermissionMode(session.id, m.value),
+    })),
+    { kind: 'divider' as const },
+    {
+      id: 'image',
+      label: 'Image',
+      icon: <ImageIcon size={14} />,
+      onSelect: () => picker.current?.click(),
+    },
+  ]
+
+  const projectPicker = (
+    <Picker
+      icon={<FolderOpen size={12} />}
+      label={projectName}
+      items={projectItems}
+      ariaLabel="Project"
+      tip="Project — pick another to start a session there"
+      align={compact ? 'right' : 'left'}
+      search={recents.length > 6}
+      searchPlaceholder="Find a project…"
+    />
+  )
+  const branchPicker = (
+    <Picker
+      icon={<GitBranch size={12} />}
+      label={branchLabel}
+      items={branchItems}
+      ariaLabel="Branch"
+      tip="Branch this session is working on"
+    />
+  )
+
+  /* Outside the card, above it. Cursor's tray is its `__header`, absolutely
+     positioned clear of the input — in the card it would break the compact
+     single row, and it is status rather than part of the field. */
+  const bgTray = session.backgroundTasks.length > 0 && (
+    <div className="bg-tray">
+      {session.backgroundTasks.map((t) => (
+        <span
+          key={t.taskId}
+          className="chip bg-task"
+          title={t.description}
+          data-tip={
+            [t.progress, t.lastTool && `last: ${t.lastTool}`].filter(Boolean).join('\n') ||
+            'Running — no progress reported yet'
+          }
+        >
+          <Cog size={12} className="bg-spin" />
+          <span className="bg-desc">{t.description || t.taskType}</span>
+          {t.progress && <span className="bg-progress">{t.progress}</span>}
+          {t.tokens ? <span className="bg-tok">{Math.round(t.tokens / 1000)}k</span> : null}
+          <button
+            aria-label="Stop this background task"
+            onClick={() => void window.foreman.stopTask(session.id, t.taskId)}
+          >
+            <X size={12} />
+          </button>
+        </span>
+      ))}
+    </div>
+  )
+
   return (
     <div className="composer">
       {attachments.length > 0 && (
@@ -366,6 +570,26 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         </div>
       )}
 
+      {bgTray}
+
+      {compact && showContext && usage && (
+        <ContextCard
+          usage={usage}
+          costUsd={session.costUsd}
+          onClose={() => setShowContext(false)}
+        />
+      )}
+
+      {/* Above on a fresh session, below once a conversation exists. Cursor
+          moves them, and the move is what makes the compact form read as a reply
+          box rather than a shrunken copy of the first one. */}
+      {!compact && (
+        <div className="composer-context">
+          {projectPicker}
+          {branchPicker}
+        </div>
+      )}
+
       {/* One card, controls inside it. The row of pickers and buttons used to
           sit BELOW the input box as a separate strip; Cursor puts the same
           controls inside the same rounded surface as the text, which is what
@@ -373,8 +597,14 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
           toolbar bolted underneath.
 
           The border, radius and fill moved here from .composer-editor, which is
-          now transparent — otherwise there would be a box drawn inside a box. */}
-      <div className="composer-card">
+          now transparent — otherwise there would be a box drawn inside a box.
+
+          The controls are direct children rather than living in a `.composer-row`
+          wrapper, because the two shapes are one flex container with and without
+          wrapping: expanded, `.composer-input` takes `flex: 1 0 100%` and pushes
+          the rest onto a second line; compact, nothing wraps and `+` takes
+          `order: -1` to lead the row. A nested row could not produce both. */}
+      <div className="composer-card" data-compact={compact ? '' : undefined}>
         <div className="composer-input">
           {/* Ghost text for the predicted next prompt. Only while the box is
               empty and idle — overlaying a suggestion on real typing is noise. */}
@@ -457,198 +687,167 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
           />
         </div>
 
-        {/* Not just "three boxes are here": each chip carries the rolling AI
-            progress summary the SDK emits on task_progress, so backgrounded work
-            is watchable instead of opaque. The full summary is in the tooltip,
-            since a chip only has room for one line of it. */}
-        {session.backgroundTasks.length > 0 && (
-          <div className="bg-tray">
-            {session.backgroundTasks.map((t) => (
-              <span
-                key={t.taskId}
-                className="chip bg-task"
-                title={t.description}
-                data-tip={
-                  [t.progress, t.lastTool && `last: ${t.lastTool}`].filter(Boolean).join('\n') ||
-                  'Running — no progress reported yet'
-                }
-              >
-                <Cog size={12} className="bg-spin" />
-                <span className="bg-desc">{t.description || t.taskType}</span>
-                {t.progress && <span className="bg-progress">{t.progress}</span>}
-                {t.tokens ? <span className="bg-tok">{Math.round(t.tokens / 1000)}k</span> : null}
-                <button
-                  aria-label="Stop this background task"
-                  onClick={() => void window.foreman.stopTask(session.id, t.taskId)}
-                >
-                  <X size={12} />
-                </button>
-              </span>
-            ))}
-          </div>
-        )}
+        {/* The background-task tray used to sit here, between the input and the
+            controls. It moved out of the card entirely — see `bgTray` above. */}
 
-        <div className="composer-row">
-          {/* Each select gets a glyph, because three unlabelled dropdowns say
-              nothing about what they control. A native <select> can't hold an
-              icon, so the glyph is a sibling and the select is padded to clear
-              it — see `.ctl` in theme.css. */}
-          <label className="ctl" data-tip="Permission mode — how much the agent may do without asking">
-            <ShieldCheck size={12} />
-            <select
-              className="select"
-              aria-label="Permission mode"
-              value={session.permissionMode}
-              onChange={(e) =>
-                void window.foreman.setPermissionMode(session.id, e.target.value as PermissionMode)
-              }
-            >
-              {MODES.map((m) => (
-                <option key={m.value} value={m.value}>
-                  {m.label}
-                </option>
-              ))}
-            </select>
-          </label>
+        {/* Cursor's `+`. The three visible dropdowns that used to stand here are
+            gone: the five permission modes moved inside this menu, effort folded
+            into the model label, and the worktree checkbox became a row in the
+            branch picker. What is left is one label and one button, which is the
+            whole point — their composer shows the model and nothing else. */}
+        <button
+          className="composer-add"
+          ref={add.ref}
+          type="button"
+          aria-label="Mode and context"
+          aria-haspopup="menu"
+          aria-expanded={!!add.anchor}
+          data-open={add.anchor ? '' : undefined}
+          data-tip="Mode, and attach an image"
+          onClick={add.toggle}
+        >
+          <Plus size={14} />
+        </button>
 
-          <label className="ctl" data-tip="Model">
-            <Sparkles size={12} />
-            <select
-              className="select"
-              aria-label="Model"
-              // Aliases ('opus', '') don't equal the running wire id, so match on
-              // resolvedModel. Before the first turn there is no wire id at all,
-              // so fall back to the row for the user's configured default — which
-              // is what this session was actually created with.
-              value={
-                (models.find((m) => m.resolvedModel === session.model) ??
-                  (session.model
-                    ? models.find((m) => bareModel(m.resolvedModel) === bareModel(session.model))
-                    : models.find((m) => m.id === (prefs.model || 'default'))))?.id ?? CURRENT
-              }
-              onChange={(e) => {
-                if (e.target.value !== CURRENT)
-                  void window.foreman.setModel(session.id, e.target.value)
-              }}
-            >
-              {!models.some(
-                (m) => bareModel(m.resolvedModel) === bareModel(session.model),
-              ) && <option value={CURRENT}>{session.model ?? 'Loading…'}</option>}
-              {models.map((m, i) => (
-                <option key={m.displayName} value={m.id}>
-                  {modelRows[i]}
-                </option>
-              ))}
-            </select>
-          </label>
+        <span className="spacer" />
 
-          <label className="ctl" data-tip="Reasoning effort — how long the model thinks before answering">
-            <Gauge size={12} />
-            <select
-              className="select"
-              aria-label="Reasoning effort"
-              value={session.effort ?? ''}
-              onChange={(e) => void window.foreman.setEffort(session.id, e.target.value || null)}
-            >
-              {EFFORTS.map((x) => (
-                <option key={x.value} value={x.value}>
-                  {x.label}
-                </option>
-              ))}
-            </select>
-          </label>
+        {/* Right, next to send, not out on the left beside `+`. The model is the
+            last thing you check before pressing the button, and Cursor's compact
+            composer puts it in exactly this spot — this keeps the two shapes
+            agreeing about where it lives. */}
+        <Picker
+          label={modelLabel}
+          items={modelItems}
+          ariaLabel="Model and reasoning effort"
+          tip="Model, and how long it thinks before answering"
+          align="right"
+          search={models.length > 6}
+          searchPlaceholder="Find a model…"
+        />
 
-          {/* A session's cwd is fixed when it's created, so this is only a live
-              choice on an untouched tab — after that it's a read-only chip saying
-              where you ended up. Ticking it recreates the session in a worktree,
-              through the same openPath the rail's branch button already uses. */}
-          {session.worktree ? (
-            <span className="wt-chip" title={`Isolated in ${session.worktree.repoRoot}`}>
-              <GitBranch size={12} />
-              {session.worktree.branch}
-            </span>
-          ) : (
-            <label
-              className="wt-toggle"
-              data-off={fresh ? undefined : ''}
-              title={
-                fresh
-                  ? 'Run this session in its own git worktree, on its own branch'
-                  : 'Only available before the first message — a session cannot change directory'
-              }
-            >
-              <input
-                type="checkbox"
-                checked={false}
-                disabled={!fresh}
-                onChange={() => void goWorktree()}
-              />
-              worktree
-            </label>
-          )}
+        {/* The running cost used to sit here. It moved to ContextStrip below:
+            it is a readout rather than a control, and this row had no width left
+            for it. Two decimals there — cents are the unit anyone reads, and a
+            sub-cent turn showing $0.00 is the accepted trade. */}
 
-          <span className="spacer" />
-
-          {/* The running cost used to sit here. It moved to ContextStrip below:
-              it is a readout rather than a control, and this row had no width left
-              for it. Two decimals there — cents are the unit anyone reads, and a
-              sub-cent turn showing $0.00 is the accepted trade. */}
-
-          {/* Send stays available while running: the queue holds the message and
-              the transcript shows it as cancellable until the agent picks it up. */}
-          {busy && (
-            <>
-              {/* Moves in-flight Bash/subagent work to the background so the turn
-                  continues instead of blocking on a long command. */}
-              <button
-                className="btn"
-                data-tip="Run in-flight work in the background, so the turn continues"
-                aria-label="Run in-flight work in the background"
-                onClick={() => void window.foreman.backgroundTasks(session.id)}
-              >
-                <SendToBack size={14} />
-              </button>
-              {/* A red square is the most universally-read control glyph there is,
-                  and it only exists while running, so its context is unambiguous. */}
-              <button
-                className="btn"
-                data-variant="danger"
-                data-tip="Stop the agent  Esc"
-                aria-label="Stop the agent"
-                onClick={() => void window.foreman.interrupt(session.id)}
-              >
-                <Square size={14} />
-              </button>
-            </>
-          )}
-          {/* Icon-only: this is the core loop, bound to ⏎ and pressed hundreds of
-              times a session — the two glyphs read the state better than the two
-              words did, and the word was pure chrome. */}
-          {/* data-tip rides on the wrapper, not the button: the button is disabled
-              while `empty`, and a disabled control fires no pointer events, so the
-              one tip that explains the disabled state would never appear. */}
-          <span
-            className="tw"
-            data-tip={
-              empty
-                ? 'Type a message first'
-                : busy
-                  ? 'Queue this message — the agent picks it up when the turn ends  ⏎'
-                  : 'Send  ⏎'
-            }
-          >
+        {/* Send stays available while running: the queue holds the message and
+            the transcript shows it as cancellable until the agent picks it up. */}
+        {busy && (
+          <>
+            {/* Moves in-flight Bash/subagent work to the background so the turn
+                continues instead of blocking on a long command. */}
             <button
               className="btn"
-              data-variant="primary"
-              onClick={submit}
-              disabled={empty}
-              aria-label={busy ? 'Queue this message' : 'Send'}
+              data-tip="Run in-flight work in the background, so the turn continues"
+              aria-label="Run in-flight work in the background"
+              onClick={() => void window.foreman.backgroundTasks(session.id)}
             >
-              {busy ? <ListPlus size={14} /> : <SendHorizontal size={14} />}
+              <SendToBack size={14} />
             </button>
-          </span>
-        </div>
+            {/* A square is the most universally-read control glyph there is, and
+                it only exists while running, so its context is unambiguous.
+                Cursor puts theirs in the send position rather than beside it —
+                here the send button still has to hold a queued message, so both
+                stay. */}
+            <button
+              className="btn"
+              data-variant="danger"
+              data-tip="Stop the agent  Esc"
+              aria-label="Stop the agent"
+              onClick={() => void window.foreman.interrupt(session.id)}
+            >
+              <Square size={14} />
+            </button>
+          </>
+        )}
+        {/* Icon-only: this is the core loop, bound to ⏎ and pressed hundreds of
+            times a session — the two glyphs read the state better than the two
+            words did, and the word was pure chrome. ArrowUp rather than a paper
+            plane, which is what Cursor's white circle holds. */}
+        {/* data-tip rides on the wrapper, not the button: the button is disabled
+            while `empty`, and a disabled control fires no pointer events, so the
+            one tip that explains the disabled state would never appear. */}
+        <span
+          className="tw"
+          data-tip={
+            empty
+              ? 'Type a message first'
+              : busy
+                ? 'Queue this message — the agent picks it up when the turn ends  ⏎'
+                : 'Send  ⏎'
+          }
+        >
+          <button
+            className="btn"
+            data-variant="primary"
+            onClick={submit}
+            disabled={empty}
+            aria-label={busy ? 'Queue this message' : 'Send'}
+          >
+            {busy ? <ListPlus size={14} /> : <ArrowUp size={14} />}
+          </button>
+        </span>
       </div>
+
+      {/* Branch left, context pressure right — Cursor's chat status bar. The
+          project picker used to sit on the right; it is gone, because ⌘N already
+          starts a conversation in this project and its menu offers any other. A
+          picker whose only job was to restate the session's own directory was
+          spending the one spot Cursor gives to the context ring. */}
+      {compact && (
+        <div className="composer-context">
+          {branchPicker}
+          <span className="spacer" />
+          {usage && (
+            <ContextRing
+              usage={usage}
+              open={showContext}
+              onToggle={() => setShowContext((v) => !v)}
+            />
+          )}
+        </div>
+      )}
+
+      {/* Cursor's starter pills. Only on a fresh session — once there is a
+          conversation the mode is already set and these would be re-asking. */}
+      {!compact && (
+        <div className="composer-chips">
+          {STARTERS.map((s) => (
+            <button
+              key={s.mode}
+              className="composer-chip"
+              data-active={session.permissionMode === s.mode ? '' : undefined}
+              onClick={() => void window.foreman.setPermissionMode(session.id, s.mode)}
+            >
+              {s.label}
+            </button>
+          ))}
+          <button
+            className="composer-chip"
+            disabled={!fresh || !!session.worktree}
+            onClick={() => void goWorktree()}
+          >
+            New worktree
+          </button>
+        </div>
+      )}
+
+      {/* Images could only ever arrive by paste or drop before. The `+` menu's
+          Image row needs something to click, and a hidden input is the only way
+          to open the file picker without a visible control of its own. */}
+      <input
+        ref={picker}
+        type="file"
+        accept={ACCEPTED.join(',')}
+        multiple
+        hidden
+        onChange={(e) => {
+          if (e.target.files) addFiles(e.target.files)
+          // Or picking the same file twice in a row fires no change event.
+          e.target.value = ''
+        }}
+      />
+      <Menu anchor={add.anchor} items={addItems} onClose={add.close} />
     </div>
   )
 }
