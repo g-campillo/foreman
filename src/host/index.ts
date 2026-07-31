@@ -18,7 +18,7 @@
 import { createServer, type Socket } from 'node:net'
 import { appendFileSync, mkdirSync, writeFileSync, createReadStream, existsSync, unlinkSync } from 'node:fs'
 import { createInterface } from 'node:readline'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { execFile } from 'node:child_process'
 import { setSink, send } from '../shared/sink'
 import {
@@ -31,7 +31,14 @@ import {
 } from '../lsp/registry.mts'
 import { handleFromRenderer, lspRequest } from '../lsp/proxy.mts'
 import { IPC, type LspStatus } from '../shared/types'
-import { HOST_FILES, makeLineReader, type HostCall, type HostFrame, type HostMeta } from '../shared/hostwire'
+import {
+  HOST_FILES,
+  makeLineReader,
+  sockPathProblem,
+  type HostCall,
+  type HostFrame,
+  type HostMeta,
+} from '../shared/hostwire'
 import { Session } from '../main/agent/session'
 import { hydrateInto } from './hydrate'
 import { pendingPermissions, respondPermission } from '../main/agent/permissions'
@@ -60,7 +67,20 @@ if (!dir) {
 mkdirSync(dir, { recursive: true })
 const eventsPath = join(dir, HOST_FILES.events)
 const metaPath = join(dir, HOST_FILES.meta)
-const sockPath = join(dir, HOST_FILES.sock)
+
+/**
+ * Passed in rather than derived: it lives outside `dir` to stay under the
+ * sun_path limit, and the app is the one that decides where. The fallback is
+ * only for a host launched by an older build's client.
+ */
+const sockPath = process.argv[4] || join(dir, HOST_FILES.sock)
+const sockProblem = sockPathProblem(sockPath)
+if (sockProblem) {
+  // Without this the only symptom is `listen EINVAL` several lines into a log
+  // file, which names neither the cause nor the limit.
+  console.error(`[host] refusing to start: ${sockProblem}`)
+  process.exit(2)
+}
 
 const clients = new Set<Socket>()
 let logBytes = 0
@@ -97,6 +117,9 @@ function writeMeta(session: Session): void {
     // Same, for the language servers. writeMeta runs on a timer, so this stays
     // current as servers start lazily rather than only reflecting session start.
     lspPids: serverPids(),
+    // So a future launch can find this socket without re-deriving where the
+    // running build happened to put it.
+    sock: sockPath,
     cwd: session.meta.cwd,
     title: session.meta.title,
     sdkSessionId: session.meta.sdkSessionId,
@@ -356,6 +379,7 @@ async function main(): Promise<void> {
 
   // A stale socket file from a host that died uncleanly would make bind fail.
   try {
+    mkdirSync(dirname(sockPath), { recursive: true })
     if (existsSync(sockPath)) unlinkSync(sockPath)
   } catch {
     /* best effort */

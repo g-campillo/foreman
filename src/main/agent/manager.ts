@@ -190,7 +190,7 @@ export async function adoptHosts(): Promise<SessionMeta[]> {
       continue
     }
     try {
-      const host = await HostClient.adopt(f.dir)
+      const host = await HostClient.adopt(f)
       sessions.set(host.meta.id, host)
       adopted.push(host.meta)
     } catch (err) {

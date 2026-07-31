@@ -1,12 +1,14 @@
 import { app, shell } from 'electron'
 import { spawn } from 'node:child_process'
-import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, unlinkSync } from 'node:fs'
 import { connect, type Socket } from 'node:net'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { IPC, type SessionMeta } from '../../shared/types'
 import {
   HOST_FILES,
   makeLineReader,
+  sockPathFor,
+  sockPathProblem,
   type HostCall,
   type HostFrame,
   type HostMeta,
@@ -44,6 +46,24 @@ function hostDir(sessionId: string): string {
   return join(hostsRoot(), sessionId)
 }
 
+/**
+ * This session's socket. Short by construction — see `sockPathFor`, which
+ * explains why it cannot live inside the host directory.
+ */
+function hostSock(sessionId: string): string {
+  return sockPathFor(app.getPath('userData'), sessionId)
+}
+
+/**
+ * The socket of a host that is already running.
+ *
+ * Recorded in its meta since the move; hosts started by an older build have no
+ * `sock` field and still have theirs in the old place.
+ */
+function sockOf(dir: string, meta: HostMeta): string {
+  return meta.sock ?? join(dir, HOST_FILES.sock)
+}
+
 export class HostClient {
   meta: SessionMeta
   private sock: Socket | null = null
@@ -69,12 +89,21 @@ export class HostClient {
     const dir = hostDir(sessionId)
     mkdirSync(dir, { recursive: true })
 
+    // The socket sits outside `dir` to stay under the sun_path limit, so its
+    // own parent has to exist before the host tries to bind.
+    const sock = hostSock(sessionId)
+    mkdirSync(dirname(sock), { recursive: true })
+    // Nothing downstream can recover from this, and an unchecked overrun shows
+    // up as an unexplained EINVAL in a log file nobody thinks to open.
+    const problem = sockPathProblem(sock)
+    if (problem) throw new Error(`cannot start host: ${problem}`)
+
     // Electron's own binary in Node mode: no second runtime to ship, and it
     // resolves identically in dev and inside the signed .app. `detached` plus
     // `unref` is what actually lets it outlive us — without both, quitting
     // Electron takes the host with it and none of this works.
     const script = join(__dirname, 'host.js')
-    const child = spawn(process.execPath, [script, dir, JSON.stringify({ ...init, sessionId })], {
+    const child = spawn(process.execPath, [script, dir, JSON.stringify({ ...init, sessionId }), sock], {
       env: {
         ...process.env,
         ELECTRON_RUN_AS_NODE: '1',
@@ -98,14 +127,14 @@ export class HostClient {
     child.unref()
 
     const client = new HostClient({} as SessionMeta)
-    await client.attach(dir)
+    await client.attach(sock)
     return client
   }
 
   /** Re-attach to a host that is already running — the post-crash path. */
-  static async adopt(dir: string): Promise<HostClient> {
+  static async adopt(found: FoundHost): Promise<HostClient> {
     const client = new HostClient({} as SessionMeta)
-    await client.attach(dir)
+    await client.attach(sockOf(found.dir, found.meta))
     return client
   }
 
@@ -116,8 +145,7 @@ export class HostClient {
    * by the time this returns, `meta` is real and the caller can put a row in
    * the rail.
    */
-  private attach(dir: string): Promise<void> {
-    const sockPath = join(dir, HOST_FILES.sock)
+  private attach(sockPath: string): Promise<void> {
     this.connected = new Promise<void>((resolve, reject) => {
       let tries = 0
       const tryOnce = (): void => {
@@ -226,6 +254,9 @@ export class HostClient {
     this.sock = null
     try {
       rmSync(hostDir(this.meta.id), { recursive: true, force: true })
+      // The socket is no longer inside that directory, so removing it is now a
+      // separate step — miss it and `run/` accretes a dead file per session.
+      unlinkSync(hostSock(this.meta.id))
     } catch {
       /* best effort — a leftover directory is reaped at next launch */
     }
@@ -299,6 +330,13 @@ export function reapDeadHost(found: FoundHost): void {
     rmSync(found.dir, { recursive: true, force: true })
   } catch {
     /* best effort */
+  }
+  // Outside found.dir since the socket moved, so the rmSync above does not
+  // cover it. Stale sockets are harmless to connect to but never disappear.
+  try {
+    unlinkSync(sockOf(found.dir, found.meta))
+  } catch {
+    /* already gone */
   }
 }
 

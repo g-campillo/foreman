@@ -15,11 +15,23 @@ import type { SessionMeta } from './types'
 export const HOST_FILES = {
   meta: 'meta.json',
   events: 'events.ndjson',
+  /**
+   * Legacy socket location, kept ONLY so a host started by an older build is
+   * still adoptable after an update. Nothing creates this any more —
+   * `sockPathFor` is where new sockets go, and why is worth reading.
+   */
   sock: 'sock',
   /** The host's stdout+stderr. A detached process has no terminal to inherit,
    *  so without this its console output goes nowhere at all. */
   log: 'host.log',
 } as const
+
+/**
+ * Socket paths live in `sockpath.mts` — `.mts` so they can be self-checked
+ * under bare node, which this module cannot be. Re-exported so both sides of
+ * the wire still have one import for the protocol.
+ */
+export { HOST_SOCK_DIR, SUN_PATH_MAX, sockPathFor, sockPathProblem } from './sockpath.mts'
 
 /**
  * Written by the host at startup, read by the app at launch to find it again.
@@ -42,6 +54,12 @@ export interface HostMeta {
    * handshake covers the well-behaved ones; this covers the rest.
    */
   lspPids?: number[]
+  /**
+   * This host's socket, recorded because it no longer lives at a path the app
+   * can derive from the host directory alone. Absent on hosts started by a
+   * build older than the move; callers fall back to `HOST_FILES.sock`.
+   */
+  sock?: string
   cwd: string
   title: string
   sdkSessionId: string | null

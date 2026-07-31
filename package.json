@@ -18,9 +18,10 @@
     "check:highlight": "node src/renderer/src/highlight.check.mts",
     "check:transcript": "node src/main/agent/transcript.check.mts",
     "check:lspwire": "node src/shared/lspwire.check.mts",
+    "check:hostsock": "node src/shared/hostsock.check.mts",
     "check:lsp": "node src/shared/languages.check.mts",
     "check:lspstatus": "node src/lsp/status.check.mts",
-    "check": "npm run check:derive && npm run check:diff && npm run check:highlight && npm run check:lsp && npm run check:lspstatus && npm run check:lspwire && npm run check:policy && npm run check:porcelain && npm run check:transcript",
+    "check": "npm run check:derive && npm run check:diff && npm run check:highlight && npm run check:hostsock && npm run check:lsp && npm run check:lspstatus && npm run check:lspwire && npm run check:policy && npm run check:porcelain && npm run check:transcript",
     "notarize:dmg": "bash scripts/notarize-dmg.sh",
     "check:diff": "node src/shared/diff.check.mts"
   },
