@@ -32,19 +32,32 @@ function createWindow(): void {
     minWidth: 900,
     minHeight: 600,
     show: false,
-    // Opaque, deliberately. A transparent window makes WindowServer alpha-blend
-    // the whole thing against the desktop every frame, and the CSS glass it
-    // existed for was rendering nothing anyway — backdrop-filter has no in-page
-    // backdrop to sample over a transparent window. `frame: false`,
-    // titleBarStyle and trafficLightPosition stay: that chrome is not the glass.
-    transparent: false,
+    // Transparent, with a native vibrancy material behind the web contents.
+    //
+    // This reverses an earlier removal that threw out one thing too many. The
+    // part it got right: `backdrop-filter` over a transparent window samples
+    // nothing — the page has no in-page backdrop, and the material sits behind
+    // the web contents at the OS compositing level, out of Chromium's reach. So
+    // three full-height blur passes ran every frame and painted zero pixels.
+    // That is still gone from theme.css and must not come back.
+    //
+    // The part it got wrong: the transparency went with it. `setVibrancy` is
+    // what actually blurs, and it was never the broken half. Translucency now
+    // comes from the surface fills' own alpha (--surface-a / --rail-a), which
+    // is how Cursor does it too.
+    //
+    // 'under-window' is the material that reads as a diffuse wash of whatever
+    // is behind the window rather than a mirror of it.
+    transparent: true,
+    vibrancy: 'under-window',
     frame: false,
     titleBarStyle: 'hiddenInset',
     trafficLightPosition: { x: 16, y: 18 },
-    // What Chromium paints before the renderer's first frame, so launch does not
-    // flash. Dark is the default theme; the renderer pushes the resolved theme's
-    // real --bg through app:background on boot and on every theme flip.
-    backgroundColor: '#000000',
+    // Fully transparent, NOT a theme colour. Chromium paints this in the gaps
+    // before the renderer's first frame; any opaque value here lands in front of
+    // the vibrancy material and cancels it. See the app:background handler,
+    // which pins the runtime value to the same thing for the same reason.
+    backgroundColor: '#00000000',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -129,13 +142,9 @@ app.whenReady().then(async () => {
   process.env.FOREMAN_USER_DATA = app.getPath('userData')
 
   ipcMain.handle('app:initialProject', () => initialProject())
-  // The colour Chromium paints before the renderer's first frame of a resize or
-  // a reload. Pushed by applyAppearance so a theme flip does not leave the old
-  // theme's fill showing through in those gaps.
-  ipcMain.handle('app:background', (_e, { hex }: { hex: string }) => {
-    mainWindow?.setBackgroundColor(hex)
-    return true
-  })
+  // There is no app:background channel. The window's pre-paint colour is pinned
+  // to #00000000 at creation and never changes: it sits in front of the vibrancy
+  // material, so any opaque theme colour pushed here would cancel the blur.
   ipcMain.handle('app:trafficLights', (_e, { on }: { on: boolean }) => {
     // macOS-only API. Elsewhere there are no window buttons to hide.
     if (process.platform !== 'darwin') return false

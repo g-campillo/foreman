@@ -11,7 +11,6 @@ import type {
   SessionMeta,
 } from '../../shared/types'
 import { newestSession, projectKey } from './derive.mts'
-import { hex, vars } from './tokens'
 
 interface State {
   sessions: SessionMeta[]
@@ -290,11 +289,12 @@ export function applyAppearance(a: Appearance): void {
   // it watches resolvedTheme instead, which is why that lives in the store.
   document.documentElement.dataset.theme = theme
   useStore.setState({ resolvedTheme: theme })
-  // The window's own pre-paint colour, which Chromium shows in the gaps the
-  // renderer hasn't filled yet — a resize, a reload. Read AFTER data-theme is
-  // set, so the value is the theme just switched to rather than the one leaving.
-  void window.foreman.setBackground(hex(vars(), '--bg'))
-  // Same shape: a window-level call, plus an attribute so .rail-head can drop
+  // There is deliberately no window-background push here any more. The window is
+  // transparent with a native vibrancy material behind it, so its pre-paint
+  // colour is pinned to #00000000 at creation — pushing a theme's opaque --bg
+  // would land in front of the material and cancel the blur on every flip.
+  //
+  // A window-level call, plus an attribute so .rail-head can drop
   // the 84px it reserves for buttons that may not be there. toggleAttribute
   // rather than dataset — assigning undefined writes the string "undefined",
   // which an attribute selector reads as present.

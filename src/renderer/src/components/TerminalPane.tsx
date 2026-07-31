@@ -3,18 +3,27 @@ import { Terminal, type ITheme } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import type { SessionMeta } from '../../../shared/types'
 import { useStore } from '../store'
-import { token, vars } from '../tokens'
+import { raw, token, vars } from '../tokens'
 
 function termTheme(): ITheme {
   const css = vars()
   return {
-    // The same fill .term-host paints, rather than transparent. Transparency
-    // here bought a look at the glass behind the window, and the window is
-    // opaque now — see allowTransparency below.
-    background: token(css, '--bg'),
+    // Fully transparent, so .term-host's own translucent fill is what you see
+    // and the terminal sits on the same glass as everything else. The window is
+    // transparent again — this is the condition that justified transparency
+    // here in the first place, and painting an opaque --bg over a translucent
+    // host would put a solid black rectangle in the middle of the app.
+    //
+    // Note these are legacy comma-form rgb() strings, not CSS Color 4. That is
+    // `token()`'s doing and it is load-bearing: xterm parses colours itself and
+    // does not understand the space-separated `rgb(240 240 240 / .35)` syntax
+    // the rest of this codebase stores tokens in.
+    background: 'rgba(0,0,0,0)',
     foreground: token(css, '--text'),
     cursor: token(css, '--accent'),
-    selectionBackground: token(css, '--accent', 0.35),
+    // Neutral, not accent. --accent is near-white now, so an accent selection
+    // at 35% washed the selected text out instead of marking it.
+    selectionBackground: token(css, '--text', 0.22),
   }
 }
 
@@ -40,11 +49,15 @@ function slotFor(session: SessionMeta): Slot {
   if (existing) return existing
 
   const term = new Terminal({
-    // false is the fast path: allowTransparency forces xterm to composite every
-    // cell against what is behind it instead of blitting an opaque background.
-    // It only ever existed to see the glass through the terminal.
-    allowTransparency: false,
-    fontFamily: "'SF Mono', ui-monospace, SFMono-Regular, Menlo, monospace",
+    // Back on, with eyes open. It genuinely costs something — xterm composites
+    // every cell against what is behind it instead of blitting an opaque
+    // background — but it is the only way the glass reaches the terminal, and
+    // the glass is the point now.
+    allowTransparency: true,
+    // Read from the token rather than repeated as a literal. The duplicate that
+    // used to live here was a second copy of --mono with no link to the first,
+    // so changing the token silently left the terminal on the old stack.
+    fontFamily: raw(vars(), '--mono'),
     fontSize: 12,
     lineHeight: 1.25,
     cursorBlink: true,

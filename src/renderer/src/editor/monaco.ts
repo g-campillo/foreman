@@ -185,7 +185,9 @@ export function applyTheme(monaco: Monaco): void {
       'editor.lineHighlightBorder': '#00000000',
       'editor.foreground': hex(css, '--text'),
       'editorCursor.foreground': hex(css, '--accent'),
-      'editor.selectionBackground': hex(css, '--accent', 0.3),
+      // Neutral, not accent — --accent is near-white now, and a near-white
+      // selection at 30% washes the selected code out instead of marking it.
+      'editor.selectionBackground': hex(css, '--text', 0.22),
       'editor.lineHighlightBackground': hex(css, '--surface-3', 0.35),
       'editorLineNumber.foreground': hex(css, '--text-faint'),
       'editorLineNumber.activeForeground': hex(css, '--text-dim'),

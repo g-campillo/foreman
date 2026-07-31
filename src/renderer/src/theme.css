@@ -2,55 +2,152 @@
  * Semantic tokens only. No component writes a literal colour, so light mode is
  * a matter of filling in the [data-theme='light'] block below.
  *
- * The window is OPAQUE, and there is no backdrop-filter left in this file. It
- * used to be transparent, for a native Liquid Glass material — but on a
- * transparent window backdrop-filter has no in-page backdrop to sample, so
- * three full-window-height blur(20px) saturate(160%) passes ran on every frame
- * and showed nothing, while the transparency itself made WindowServer
- * alpha-blend the whole window against the desktop. Both are gone.
+ * The palette is Cursor 3's, read off disk rather than eyeballed — see
+ * /Applications/Cursor.app/Contents/Resources/app/extensions/theme-cursor/
+ * themes/cursor-dark-color-theme.json and out/vs/workbench/workbench.glass.main.css.
+ * Its whole system is ONE foreground colour at varying alpha over two greys:
+ * #F0F0F0 on #181818 (chat, editor) and #141414 (rail). There is no second hue
+ * anywhere in the chrome, which is why --accent below is near-white rather than
+ * a blue, and why the ramps are expressed as alpha rather than as new greys.
  *
- * Translucency survives only where something is layered over other PAGE content
- * and therefore reads as depth rather than as wallpaper: the command palette,
- * the autocomplete list, tooltips and the plan modal. Those keep their alphas.
+ * The window is TRANSPARENT again, with a native macOS vibrancy material behind
+ * it. Two things about the earlier removal, one right and one wrong:
+ *
+ *   right — backdrop-filter over a transparent window samples nothing, because
+ *           the page has no in-page backdrop and the material lives behind the
+ *           web contents at the OS compositing level. Three full-height blur
+ *           passes ran every frame and showed zero pixels. It stays deleted.
+ *           Do not reintroduce backdrop-filter here.
+ *
+ *   wrong — the transparency went with it. Native vibrancy is what actually
+ *           blurs, and it was never the broken part. Translucency now comes
+ *           from the surface fills' own alpha (--surface-a / --rail-a), which
+ *           is exactly how Cursor does it.
  */
 
 :root {
   color-scheme: dark;
 
-  /* base palette (dark) */
-  --bg: 0 0 0;
-  --surface: 22 22 26;
-  --surface-2: 32 32 38;
-  --surface-3: 44 44 52;
+  /* base palette (dark) — Cursor Dark, verbatim */
+  --bg: 13 13 13; /* window backing and scrims */
+  --surface: 24 24 24; /* #181818 chat, editor, side panel */
+  --surface-rail: 20 20 20; /* #141414 the rail, one step darker */
+  --surface-2: 31 31 31; /* elevated: menus, modals, popovers */
+  --surface-3: 38 38 38; /* the step above that */
 
-  --text: 244 244 247;
-  --text-dim: 172 172 184;
-  --text-faint: 132 132 148;
+  /* One hue. --text is Cursor's #F0F0F0; the two dim steps are that colour
+     pre-composited over --surface at 72% and 50%, because most call sites use
+     them flat as rgb(var(--text-dim)) with no alpha of their own. */
+  --text: 240 240 240;
+  --text-dim: 179 179 179;
+  --text-faint: 132 132 132;
 
-  --border: 255 255 255 / 0.09;
-  --border-strong: 255 255 255 / 0.16;
+  /* Cursor's stroke ramp: 20 / 12 / 8 / 4 percent of the foreground. --border
+     and --border-strong are the two the existing rules already reach for, kept
+     as aliases onto that ramp so 3,900 lines below did not have to move. */
+  --stroke-1: 240 240 240 / 0.2;
+  --stroke-2: 240 240 240 / 0.12;
+  --stroke-3: 240 240 240 / 0.08;
+  --stroke-4: 240 240 240 / 0.04;
+  /* Spelled out rather than `var(--stroke-3)`. These two are read back out
+     through tokens.ts by Monaco and xterm, which parse the string themselves —
+     keeping them literal means those two never depend on how a browser computes
+     a custom property that references another. Same values as --stroke-3 and
+     --stroke-2; change them together. */
+  --border: 240 240 240 / 0.08;
+  --border-strong: 240 240 240 / 0.12;
 
-  --accent: 10 132 255;
-  --accent-fg: 255 255 255;
+  /* Cursor's fill ramp, same idea. --fill-hover is their list.hoverBackground
+     and --fill-2 their list.activeSelectionBackground. */
+  --fill-1: 240 240 240 / 0.14;
+  --fill-2: 240 240 240 / 0.12;
+  --fill-3: 240 240 240 / 0.07;
+  --fill-4: 240 240 240 / 0.04;
+  --fill-hover: 255 255 255 / 0.07;
+
+  /* Near-white, not blue. Cursor's primary action is a white pill with dark
+     text and its send button a white circle; there is no saturated accent in
+     the chrome at all. Keeping the token NAME means .btn[data-variant='primary'],
+     the focus rings and the selected-row fills all become Cursor's treatment
+     without touching their rules. */
+  --accent: 240 240 240;
+  --accent-fg: 24 24 24;
+
+  /* The one place a near-white accent could not follow: a link. Underline alone
+     does not survive in a transcript full of code and paths, and an accent-
+     coloured link would now be the same colour as the prose around it. Cursor's
+     textLink.foreground, their only chrome colour that is not a grey. */
+  --link: 129 161 193; /* #81A1C1 */
 
   /* Anthropic's coral, the one colour here that is a brand constant rather than
      a theme token — so it is declared once and deliberately absent from the
-     [data-theme='light'] block. Only ClaudeMark uses it. */
+     [data-theme='light'] block. Only ClaudeMark uses it, and with the blue gone
+     it is now the only saturated colour left in the app. */
   --brand: 217 119 87;
 
-  --ok: 48 209 88;
-  --warn: 255 159 10;
-  --danger: 255 69 58;
+  /* Cursor's status hues are muted, not the system's saturated ones. */
+  --ok: 63 162 102; /* charts.green #3FA266 */
+  --warn: 241 180 103; /* editorWarning #F1B467 */
+  --danger: 227 70 113; /* editorError #E34671 */
 
-  --add-fg: 126 231 135;
-  --add-bg: 48 209 88 / 0.13;
-  --del-fg: 255 138 128;
-  --del-bg: 255 69 58 / 0.13;
+  --add-fg: 112 180 137; /* gitDecoration.added #70B489 */
+  --add-bg: 63 162 102 / 0.13;
+  --del-fg: 252 107 131; /* gitDecoration.deleted #FC6B83 */
+  --del-bg: 184 0 73 / 0.16;
 
-  /* geometry */
-  --r-sm: 6px;
+  /* Surface alpha. Cursor ships a vibrancy-on/off pair and runs the rail far
+     more transparent than the chat — counter-intuitive, but it is what makes
+     the chrome read as glass while the text stays legible. Their numbers are
+     36-42% sidebar and 72-84% chat/editor. */
+  --surface-a: 0.84;
+  --rail-a: 0.38;
+
+  /* geometry — Cursor's radius scale, plus the pill every button of theirs uses */
+  --r-sm: 8px;
   --r-md: 10px;
   --r-lg: 14px;
+  --r-xl: 16px;
+  --r-pill: 999px;
+
+  /* 4px spacing scale, Cursor's --cursor-spacing-* */
+  --sp-0-5: 2px;
+  --sp-1: 4px;
+  --sp-1-5: 6px;
+  --sp-2: 8px;
+  --sp-2-5: 10px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+
+  /* type scale */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 16px;
+
+  /* Conversation geometry, all Cursor's. --convo-inset is what pushes the user
+     message in from the left as the column widens, so a short message hugs the
+     right edge instead of stretching; -human floors it at 32px on a narrow one. */
+  --composer-max-w: 840px;
+  --convo-gap: 10px;
+  --convo-lh: 1.6;
+  --convo-inset: clamp(0px, (100% - 480px) * 0.4, 20%);
+  --convo-inset-human: max(32px, var(--convo-inset));
+
+  /* Shadows were six hardcoded blacks; they are tokens now so the light block
+     can soften them. Shape follows Cursor's --cursor-box-shadow-*: a hairline
+     ring first, then the drop. */
+  --shadow: 0 0 0 / 0.4;
+  --shadow-sm: 0 0 0 1px rgb(var(--stroke-3)), 0 2px 8px 0 rgb(var(--shadow));
+  --shadow-md: 0 0 0 1px rgb(var(--stroke-3)), 0 0 4px 0 rgb(var(--shadow)),
+    0 8px 24px -2px rgb(var(--shadow));
+  --shadow-lg: 0 0 0 1px rgb(var(--stroke-3)), 0 0 4px 0 rgb(var(--shadow)),
+    0 16px 24px 0 rgb(var(--shadow));
+  --shadow-xl: 0 0 0 1px rgb(var(--stroke-3)), 0 0 4px 0 rgb(var(--shadow)),
+    0 12px 24px 0 rgb(var(--shadow)), 0 24px 36px 0 rgb(var(--shadow));
   /* Layout widths, in two layers. The -user pair is what the resize handles
      write and what Appearance persists; the plain pair is what the grid uses.
 
@@ -72,51 +169,84 @@
 
   /* Syntax highlighting. Declared as tokens rather than importing one of
      highlight.js's stylesheets, because those hardcode a single palette and
-     would strand light mode on dark-mode colours. */
-  --syn-key: 255 121 198;
-  --syn-str: 126 231 135;
-  --syn-num: 189 147 249;
-  --syn-comment: 132 132 148;
-  --syn-fn: 102 187 255;
-  --syn-type: 255 198 109;
+     would strand light mode on dark-mode colours.
+
+     Values are Cursor Dark's own tokenColors, so a fenced block in the
+     transcript matches what the same code looks like in their editor. */
+  --syn-key: 130 210 206; /* #82D2CE */
+  --syn-str: 227 148 220; /* #e394dc */
+  --syn-num: 235 200 141; /* #ebc88d */
+  --syn-comment: 122 122 122;
+  --syn-fn: 239 176 128; /* #efb080 */
+  --syn-type: 135 195 255; /* #87c3ff */
 }
 
-/* Only the palette flips. Geometry, fonts and the user alpha knobs are
-   theme-independent, so they are NOT redeclared here.
+/* Only the palette flips. Geometry, fonts, the spacing/type scales and the
+   conversation metrics are theme-independent, so they are NOT redeclared here.
 
-   The one thing that must invert rather than lighten: borders are white-on-dark
-   above and have to become black-on-light, or every divider disappears. */
+   The things that must INVERT rather than lighten: the stroke and fill ramps
+   are white-on-dark above and have to become black-on-light, or every divider
+   and every hover state disappears.
+
+   NOT yet tuned against Cursor Light — this pass is dark-first. What is here is
+   a coherent inversion of the new system so light mode stays navigable rather
+   than pixel-matched. Cursor Light ships on disk at theme-cursor/themes/
+   cursor-light-color-theme.json when we come back to it. */
 :root[data-theme='light'] {
   color-scheme: light;
 
   --bg: 255 255 255;
-  --surface: 250 250 252;
-  --surface-2: 238 238 243;
-  --surface-3: 224 224 231;
+  --surface: 250 250 250;
+  --surface-rail: 244 244 244;
+  --surface-2: 255 255 255;
+  --surface-3: 240 240 240;
 
   /* Darker than a straight inversion of the dark-mode greys. Those sit on an
      opaque-feeling dark fill; these sit on a near-white one that a bright
      wallpaper still tints, so they need the extra contrast headroom. */
-  --text: 26 26 30;
-  --text-dim: 74 74 86;
-  --text-faint: 108 108 122;
+  --text: 26 26 26;
+  --text-dim: 90 90 90;
+  --text-faint: 130 130 130;
 
-  --border: 0 0 0 / 0.11;
-  --border-strong: 0 0 0 / 0.2;
+  --stroke-1: 0 0 0 / 0.2;
+  --stroke-2: 0 0 0 / 0.12;
+  --stroke-3: 0 0 0 / 0.08;
+  --stroke-4: 0 0 0 / 0.04;
+  /* Literals, matching --stroke-3 / --stroke-2 — see the dark block. */
+  --border: 0 0 0 / 0.08;
+  --border-strong: 0 0 0 / 0.12;
 
-  --accent: 0 113 227;
-  --accent-fg: 255 255 255;
+  --fill-1: 0 0 0 / 0.09;
+  --fill-2: 0 0 0 / 0.07;
+  --fill-3: 0 0 0 / 0.05;
+  --fill-4: 0 0 0 / 0.03;
+  --fill-hover: 0 0 0 / 0.05;
 
-  --ok: 30 158 60;
-  --warn: 178 108 0;
-  --danger: 209 42 34;
+  /* The light-mode analogue of Cursor's white pill: a near-black one. Same
+     move — the primary action is the only high-contrast thing on the screen. */
+  --accent: 26 26 26;
+  --accent-fg: 250 250 250;
+
+  --link: 0 100 176; /* Cursor Light's textLink.foreground #0064B0 */
+
+  --ok: 30 128 76;
+  --warn: 168 112 30;
+  --danger: 194 44 84;
 
   /* Diff foregrounds are darkened well past the dark-mode pastels — the same
      hues at the same lightness are illegible on a light fill. */
   --add-fg: 22 114 48;
-  --add-bg: 48 209 88 / 0.17;
+  --add-bg: 63 162 102 / 0.15;
   --del-fg: 173 32 26;
-  --del-bg: 255 69 58 / 0.14;
+  --del-bg: 184 0 73 / 0.12;
+
+  /* A near-white fill barely darkens a bright wallpaper, so light mode needs
+     far more opacity than dark to stay legible over one — the dim text washes
+     out long before the fill looks solid. Verified the hard way once already. */
+  --surface-a: 0.95;
+  --rail-a: 0.72;
+
+  --shadow: 0 0 0 / 0.14;
 
   /* Same reasoning as the diff foregrounds: the dark-mode syntax pastels are
      unreadable on a light fill, so these are proper darkened hues. */
@@ -141,12 +271,16 @@ body,
   overflow: hidden;
 }
 
+/* Transparent all the way down to .app. The window is transparent with a native
+   vibrancy material behind it; an opaque fill anywhere on this chain paints over
+   the material and there is no blur left to see. Every surface colour in the app
+   is applied at .pane-fill or below, with its own alpha. */
 body {
   font-family: var(--font);
-  font-size: 13px;
+  font-size: var(--fs-base);
   line-height: 1.5;
   color: rgb(var(--text));
-  background: rgb(var(--bg));
+  background: transparent;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -162,8 +296,16 @@ body {
    the filter without this would let those scrims escape to the viewport.
    `contain: paint` reproduces both, at zero render cost. */
 .pane-fill {
-  background: rgb(var(--surface));
+  background: rgb(var(--surface) / var(--surface-a));
   contain: paint;
+}
+
+/* The rail runs far more transparent than the chat, and one step darker.
+   Counter-intuitive — you would expect the reverse — but it is what Cursor
+   does and it is what makes the chrome read as glass while the transcript
+   stays legible against it. Their numbers are 36-42% sidebar, 72-84% chat. */
+.rail.pane-fill {
+  background: rgb(var(--surface-rail) / var(--rail-a));
 }
 
 .drag {
@@ -233,12 +375,26 @@ select {
   display: grid;
   grid-template-columns: var(--rail-w) minmax(0, 1fr) var(--side-w);
   height: 100%;
-  gap: 1px;
-  background: rgb(var(--border));
-  /* Matches the window's own rounded corners, so the web contents don't paint
-     square ones over them. */
+  /* NO fill here, and no `gap: 1px` to show it through.
+     `background` on a grid container paints the ENTIRE box, not just the gaps —
+     so the old divider trick put a full-window fill behind every pane. Opaque
+     that is invisible; translucent it is fatal, because a 38%-transparent rail
+     over an 84% backing shows no wallpaper at all and the vibrancy silently
+     does nothing. The dividers moved onto the panes' own edges below. */
+  background: transparent;
+  /* Matches the window's own rounded corners. Load-bearing now that the window
+     is transparent again: without them the web contents paint square corners
+     over the rounded native window and the mismatch shows. */
   border-radius: 12px;
   overflow: hidden;
+}
+
+/* The divider, drawn on each pane's leading edge. box-sizing is border-box
+   globally, so this costs the pane 1px of content rather than widening the
+   grid — the column template and the absolutely-positioned .rs handles, which
+   key off --rail-w / --side-w and never off the gap, are both unaffected. */
+.app > .pane ~ .pane {
+  border-left: 1px solid rgb(var(--stroke-2));
 }
 
 /* Right pane closed — the default. `display: none` generates no box at all, so
@@ -342,18 +498,18 @@ select {
   min-height: 0;
 }
 
+/* Quiet. No uppercase, no letter-spacing, no rule underneath, no weight — all
+   four were doing the same job of announcing "this is a header", and Cursor
+   does that job with colour alone. The height stays because it is the drag
+   region's height, not a typographic choice. */
 .pane-head {
   height: var(--titlebar-h);
   flex: 0 0 auto;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
-  border-bottom: 1px solid rgb(var(--border));
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  gap: var(--sp-2);
+  padding: 0 var(--sp-3);
+  font-size: var(--fs-sm);
   color: rgb(var(--text-faint));
 }
 
@@ -392,10 +548,21 @@ select {
   padding-left: 12px;
 }
 
+/* The scroll edges fade instead of being cut off — Cursor's .agent-sidebar-body
+   trick, and the reason their rail has no rule above the footer: content
+   dissolving into the surface says "there is more" better than a line does.
+   16px matches the list's own row rhythm, so a row is never half-ghosted. */
 .rail-list {
   flex: 1;
   overflow-y: auto;
   padding: 6px;
+  mask-image: linear-gradient(
+    180deg,
+    transparent 0,
+    #000 16px,
+    #000 calc(100% - 16px),
+    transparent
+  );
 }
 
 /* Project separators between groups of live sessions.
@@ -426,9 +593,12 @@ select {
      offset and the text still lands 15px from the rail edge — level with
      .session's own 6px + 9px inset. Change one, change the other. */
   padding: 16px 9px 5px;
-  font-size: 10px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  /* Sentence case at body size, dimmed — Cursor's "Repositories". The old
+     10px uppercase treatment read as a system label; this reads as a quiet
+     heading, which is what it is. Capitalisation is applied here rather than in
+     the component so the group name stays the raw project basename. */
+  font-size: var(--fs-sm);
+  text-transform: capitalize;
   color: rgb(var(--text-faint));
 }
 .rail-group-n {
@@ -437,22 +607,30 @@ select {
   color: rgb(var(--text-faint) / 0.7);
 }
 
+/* Cursor's cell metrics: 6px gap, 8px radius, and the selected state carries a
+   hairline border as well as a fill. The fill alone is only 12% of the
+   foreground, which over a 38%-transparent rail is far too weak to read as
+   selection on its own — the border is what makes it land. */
 .session {
   width: 100%;
   display: flex;
   align-items: center;
-  gap: 9px;
-  padding: 8px 9px;
-  border-radius: var(--r-md);
+  gap: var(--sp-1-5);
+  padding: var(--sp-1-5) var(--sp-2);
+  border: 1px solid transparent;
+  border-radius: var(--r-sm);
   text-align: left;
   color: rgb(var(--text-dim));
-  transition: background 0.12s ease;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease;
 }
 .session:hover {
-  background: rgb(var(--surface-3) / 0.5);
+  background: rgb(var(--fill-hover));
 }
 .session[data-active='true'] {
-  background: rgb(var(--surface-3) / 0.85);
+  background: rgb(var(--fill-2));
+  border-color: rgb(var(--stroke-2));
   color: rgb(var(--text));
 }
 
@@ -503,8 +681,10 @@ select {
   display: flex;
   flex-direction: column;
 }
+/* Regular weight. Cursor carries list hierarchy entirely on colour — the active
+   row goes from --text-dim to --text and nothing changes shape. Bolding the
+   title as well made every row shout at the same volume. */
 .session-title {
-  font-weight: 550;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -517,12 +697,16 @@ select {
   text-overflow: ellipsis;
 }
 
-/* Which worktree an agent is editing. Accent-coloured because it is the one
-   thing distinguishing otherwise-identical rows for the same project. */
+/* Which worktree an agent is editing — the one thing distinguishing otherwise
+   identical rows for the same project. It used to lean on --accent to say so,
+   which no longer works: --accent is near-white now, so an accent branch would
+   have outshouted the title above it. Monospace plus the caption size carry the
+   distinction instead, at Cursor's 11px/14px caption metric. */
 .session-branch {
-  font-size: 10.5px;
+  font-size: var(--fs-xs);
+  line-height: 14px;
   font-family: var(--mono);
-  color: rgb(var(--accent));
+  color: rgb(var(--text-faint));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -640,7 +824,8 @@ select {
 .rail-foot {
   flex: 0 0 auto;
   padding: 8px;
-  border-top: 1px solid rgb(var(--border));
+  /* No top rule. .rail-list's mask already fades content out above this row,
+     and a line on top of a fade reads as two separate attempts to divide. */
   display: flex;
   /* Wrap, because this row does not fit at every rail width. Five controls need
      ~251px and the rail's own minimum is 180px, so on a narrow rail the last two
@@ -653,18 +838,25 @@ select {
   gap: 6px;
 }
 
+/* Every button in the app is a pill. That is Cursor's most recognisable control
+   and it is not decoration: with the blue accent gone, shape is what separates
+   an action from a label, since colour no longer can. Primary is a near-white
+   fill with dark text, secondary a hairline outline, and there is nothing
+   saturated in between. */
 .btn {
-  padding: 6px 10px;
-  border-radius: var(--r-sm);
-  border: 1px solid rgb(var(--border-strong));
+  padding: 5px 12px;
+  border-radius: var(--r-pill);
+  border: 1px solid rgb(var(--stroke-2));
   color: rgb(var(--text-dim));
-  font-size: 12px;
+  font-size: var(--fs-sm);
   transition:
     background 0.12s ease,
-    color 0.12s ease;
+    color 0.12s ease,
+    border-color 0.12s ease;
 }
 .btn:hover {
-  background: rgb(var(--surface-3) / 0.7);
+  background: rgb(var(--fill-hover));
+  border-color: rgb(var(--stroke-1));
   color: rgb(var(--text));
 }
 .btn[data-variant='primary'] {
@@ -672,8 +864,10 @@ select {
   border-color: transparent;
   color: rgb(var(--accent-fg));
 }
+/* Dimming, not brightening. --accent is now near-white, so brightness(1.12)
+   clipped to flat #ffffff and the hover read as no change at all. */
 .btn[data-variant='primary']:hover {
-  filter: brightness(1.12);
+  background: rgb(var(--accent) / 0.86);
 }
 .btn[data-variant='danger'] {
   color: rgb(var(--danger));
@@ -685,7 +879,8 @@ select {
 /* Toggle buttons that lost their Past/Hide-style label to an icon still need to
    say which way they're set. */
 .btn[data-active='true'] {
-  background: rgb(var(--surface-3) / 0.9);
+  background: rgb(var(--fill-2));
+  border-color: rgb(var(--stroke-2));
   color: rgb(var(--text));
 }
 .btn:disabled {
@@ -708,10 +903,21 @@ select {
      that legitimately overflows sideways scrolls itself: `.code-wrap pre` and
      `.md table` both carry their own overflow-x. */
   overflow-x: hidden;
-  padding: 18px 22px 8px;
+  /* Capped at Cursor's --composer-max-width so the transcript is a readable
+     column rather than a full-bleed sheet, and the composer below caps itself
+     at the same number — that is what keeps the two on one axis as the pane
+     resizes.
+
+     The cap is PADDING, not `max-width` + `margin: auto`. Constraining the
+     scroller itself would drag the scrollbar in off the pane edge with it and
+     leave it floating in the middle of the window; growing the inline padding
+     centres the column while the scroll container stays full width. */
+  padding-block: var(--sp-6) var(--sp-2);
+  padding-inline: max(var(--sp-5), calc((100% - var(--composer-max-w)) / 2));
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: var(--convo-gap);
+  line-height: var(--convo-lh);
 }
 
 /* Column flex children shrink by default, so once the transcript overflows the
@@ -771,30 +977,58 @@ select {
   contain-intrinsic-size: auto 120px;
 }
 
+/* A hairline card, not a filled bubble, and no tail.
+   Cursor's .composer-human-message: 4%-foreground fill, 12%-foreground border,
+   one uniform 14px radius. The old treatment — a solid accent bubble with a
+   clipped bottom-right corner — was the single biggest departure from their
+   look, and it stopped being possible anyway once --accent went near-white: a
+   white bubble with dark text would have been the loudest thing on the screen,
+   for the message you already know you sent.
+
+   `width: fit-content` with a 150px floor is what makes a short message hug the
+   right edge instead of stretching to a percentage of the column. The left
+   inset lives on the wrapper below, because THIS element is the flex item that
+   `align-self` acts on and it must stay sized to its own text. */
 .msg-user {
   align-self: flex-end;
-  /* Anchors .msg-actions, which hangs below the bubble rather than inside it. */
+  /* Anchors .msg-actions, which hangs below the card rather than inside it. */
   position: relative;
-  max-width: 78%;
-  background: rgb(var(--accent) / 0.9);
-  color: rgb(var(--accent-fg));
-  padding: 9px 13px;
+  width: fit-content;
+  min-width: 150px;
+  max-width: 100%;
+  background: rgb(var(--fill-4));
+  border: 1px solid rgb(var(--stroke-2));
+  color: rgb(var(--text));
+  padding: var(--sp-2) var(--sp-3);
   border-radius: var(--r-lg);
-  border-bottom-right-radius: var(--r-sm);
   /* No `white-space: pre-wrap`: this renders markdown now, and preserving the
      source newlines on top of real block elements double-spaces every paragraph. */
   overflow-wrap: anywhere;
 }
 
+/* The opposed inset — Cursor's --conversation-opposed-inset-human. As the
+   column widens the user card is pushed further off the left margin, so the
+   asymmetry that used to come from a saturated fill now comes from position
+   alone. Floored at 32px so a narrow pane does not squeeze it to nothing.
+
+   Applied to the [data-item-id] wrapper rather than .msg-user because that
+   wrapper IS the flex item (see the rule above this section, which makes it a
+   column) — insetting the card itself would fight its own align-self. */
+.convo > [data-item-id]:has(> .msg-user) {
+  margin-left: var(--convo-inset-human);
+}
+
 /* No `white-space: pre-wrap` here, unlike the user and thinking bubbles: the
    markdown renderer emits real block elements, and preserving the source
    newlines on top of them double-spaces every paragraph. */
+/* Full width now, not 92%. The column cap moved up to .convo's padding, so a
+   second cap here would only inset the assistant text from a margin that is
+   already there — and Cursor runs their assistant prose to the full column. */
 .msg-assistant {
   display: flex;
   gap: 9px;
-  max-width: 92%;
   overflow-wrap: anywhere;
-  line-height: 1.62;
+  line-height: var(--convo-lh);
 }
 /* Reserved on every assistant block, filled only on the one that opens a turn,
    so the text column stays on one left edge all the way down. */
@@ -825,15 +1059,22 @@ select {
 .msg-assistant .md > *:last-child {
   margin-bottom: 0;
 }
+/* These used --accent-fg, which was white against the old solid-accent bubble.
+   --accent-fg is now the near-BLACK that sits on a white pill, so a dark wash
+   over an already-dark card rendered as nothing at all. Lift off the foreground
+   ramp instead, the same direction as every other inset surface in the app. */
 .msg-user .md :not(pre) > code {
-  background: rgb(var(--accent-fg) / 0.18);
+  background: rgb(var(--fill-2));
   color: inherit;
 }
 .msg-user .md pre {
-  background: rgb(var(--accent-fg) / 0.14);
+  background: rgb(var(--fill-3));
 }
+/* `inherit` was right when the card was a solid accent fill and its text was
+   --accent-fg; against the hairline card it would resolve to plain --text and a
+   link would be invisible but for the underline. */
 .msg-user .md a {
-  color: inherit;
+  color: rgb(var(--link));
   text-decoration: underline;
 }
 
@@ -965,18 +1206,24 @@ select {
 }
 
 .tool {
-  border: 1px solid rgb(var(--border));
+  border: 1px solid rgb(var(--stroke-3));
   border-radius: var(--r-md);
   overflow: hidden;
-  background: rgb(var(--surface-2) / 0.5);
+  background: rgb(var(--fill-4));
 }
+/* Cursor's .composer-tool-call-simple-layout-header, to the pixel: a 28px row,
+   8px gap, and asymmetric padding — tighter on the icon side than the text
+   side, so the glyph sits closer to the card edge than the label does. Vertical
+   padding is zero because min-height is what sets the row height; adding both
+   made the row grow past 28px the moment a label wrapped. */
 .tool-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 11px;
+  gap: var(--sp-2);
+  min-height: 28px;
+  padding: 0 var(--sp-2-5) 0 var(--sp-2);
   width: 100%;
-  font-size: 12px;
+  font-size: var(--fs-base);
 }
 /* Most cards no longer expand — there is nothing behind them since the raw JSON
    went away — so they render as a div and must not look clickable. */
@@ -1006,16 +1253,20 @@ select {
 .tool-head[data-status='error'] .tool-icon {
   color: rgb(var(--danger));
 }
+/* Regular weight, at the tertiary text step. Cursor's whole tool-call header
+   sits at one colour and one weight — the icon says which tool and its colour
+   says how the call went, so bolding the name too was a third signal for
+   information already carried twice. */
 .tool-name {
-  font-weight: 600;
+  color: rgb(var(--text-dim));
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
 }
 .tool-arg {
   color: rgb(var(--text-faint));
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-sm);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1053,6 +1304,9 @@ select {
 .tool-nest .msg-user {
   align-self: flex-start;
   max-width: 100%;
+  /* Drop the 150px floor too. Nested inside a tool card the column is already
+     narrow, and a minimum meant for the main transcript overflows it. */
+  min-width: 0;
 }
 
 .tool-plan {
@@ -1099,33 +1353,55 @@ select {
 
 /* ---------------------------------------------------------------- composer */
 
+/* No top rule. The card below has its own border, and a line across the pane as
+   well made two horizontal edges 10px apart. Capped and centred on the same
+   --composer-max-w as .convo, so the composer sits on the transcript's axis
+   instead of running the full pane width. */
 .composer {
   flex: 0 0 auto;
-  border-top: 1px solid rgb(var(--border));
-  padding: 10px 12px 12px;
+  width: 100%;
+  max-width: var(--composer-max-w);
+  margin: 0 auto;
+  padding: var(--sp-2) var(--sp-5) var(--sp-4);
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: var(--sp-2);
+}
+
+/* The card: one surface holding the text and its controls. Radius is Cursor's
+   --cursor-radius-2xl rather than the --r-md the bare input used — a taller box
+   needs a bigger corner to keep the same optical roundness. */
+.composer-card {
+  display: flex;
+  flex-direction: column;
+  background: rgb(var(--fill-4));
+  border: 1px solid rgb(var(--stroke-2));
+  border-radius: var(--r-xl);
+  transition: border-color 0.12s ease;
+}
+/* A hairline lift, not a ring. --accent is near-white now, so the old
+   `--accent / 0.7` border read as a hard white outline around the whole card. */
+.composer-card:focus-within {
+  border-color: rgb(var(--stroke-1));
 }
 
 /* The box is a CodeMirror editor now, not a textarea. Same geometry on purpose —
    padding, min/max height and border all carried over so it doesn't visually
    move — but the growth is CodeMirror's own rather than the old JS scrollHeight
    dance. */
+/* Transparent. The border, fill and radius that used to live here moved up to
+   .composer-card, which now wraps this AND the control row — keeping them here
+   too would draw a box inside a box. */
 .composer-editor {
   width: 100%;
-  background: rgb(var(--surface-2) / 0.6);
-  border: 1px solid rgb(var(--border-strong));
-  border-radius: var(--r-md);
+  background: transparent;
+  border: none;
   overflow: hidden;
-}
-.composer-editor:focus-within {
-  border-color: rgb(var(--accent) / 0.7);
 }
 .composer-editor .cm-editor {
   background: transparent;
   font-family: var(--font);
-  font-size: 13px;
+  font-size: var(--fs-base);
 }
 /* CodeMirror paints its own focus ring on .cm-focused; the wrapper above owns
    that, so this one has to go or they double up. */
@@ -1191,25 +1467,70 @@ select {
   font-weight: 650;
 }
 
+/* Inside the card now, so it carries its own padding instead of relying on
+   .composer's. No top border: the controls belong to the same surface as the
+   text above them, and a rule would split the card back into two boxes. */
 .composer-row {
   display: flex;
   align-items: center;
-  gap: 7px;
-  row-gap: 6px;
+  gap: var(--sp-1-5);
+  row-gap: var(--sp-1-5);
   flex-wrap: wrap;
+  padding: 0 var(--sp-2) var(--sp-2);
+}
+
+/* Every button in this row is icon-only, so they are circles rather than
+   pills — Cursor's send is a filled white ⬤ with a dark glyph, and the two
+   in-flight controls beside it are the same circle without the fill. Squaring
+   width and height is what keeps --r-pill a circle instead of a stadium. */
+.composer-row .btn {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-color: transparent;
+}
+.composer-row .btn:hover {
+  background: rgb(var(--fill-hover));
+  border-color: transparent;
+}
+.composer-row .btn[data-variant='primary'] {
+  background: rgb(var(--accent));
+  color: rgb(var(--accent-fg));
+}
+.composer-row .btn[data-variant='primary']:hover {
+  background: rgb(var(--accent) / 0.86);
+}
+.composer-row .btn[data-variant='danger']:hover {
+  background: rgb(var(--danger) / 0.14);
 }
 
 /* Worktree opt-in, live only on an untouched tab, and its read-only counterpart
    once the session actually is in one. */
+/* A pill, matching the outline buttons beside it, rather than a bare native
+   checkbox — that control was the last piece of system chrome left in the row
+   and it read as a form field dropped into a chat composer. */
 .wt-toggle {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-1-5);
   flex: 0 0 auto;
-  font-size: 11.5px;
-  color: rgb(var(--text-dim));
+  padding: 4px var(--sp-2-5);
+  border: 1px solid rgb(var(--stroke-3));
+  border-radius: var(--r-pill);
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-faint));
   cursor: pointer;
   user-select: none;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.wt-toggle:not([data-off]):hover {
+  background: rgb(var(--fill-hover));
+  color: rgb(var(--text-dim));
 }
 .wt-toggle input {
   accent-color: rgb(var(--accent));
@@ -1244,15 +1565,33 @@ select {
    .ctx-strip below the composer, so the row no longer has anything to drop
    first — the selects above are now the only things that give. */
 
+/* Borderless. Cursor's pickers are plain text plus a chevron with no box at all
+   — "Composer 2.5 Fast ⌄" sitting directly on the composer surface. Three
+   bordered boxes in a row was the loudest thing left in the app once the blue
+   went, and they are settings you glance at, not buttons you aim for. The box
+   comes back on hover, so the target is still discoverable. */
 .select {
-  background: rgb(var(--surface-2) / 0.75);
-  border: 1px solid rgb(var(--border-strong));
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: var(--r-sm);
-  padding: 5px 7px;
-  font-size: 11.5px;
-  color: rgb(var(--text-dim));
+  padding: 4px 6px;
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-faint));
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
   outline: none;
   max-width: 190px;
+}
+.select:hover {
+  background: rgb(var(--fill-hover));
+  color: rgb(var(--text-dim));
+}
+/* The native menu itself still paints on the OS surface, so its rows need a
+   readable fill of their own — they do not inherit the transparent trigger. */
+.select option {
+  background: rgb(var(--surface-2));
+  color: rgb(var(--text));
 }
 
 /* A labelled control: a glyph that says what the dropdown is for, overlaid on
@@ -1391,23 +1730,35 @@ select {
 
 /* Below the composer rather than in it: how big the window is and what is left
    of it are session facts, not controls, and .composer-row had no width left. */
+/* Lives at the foot of the RAIL now, not under the composer, so it re-flows for
+   a 244px column instead of a full-width strip: it wraps, and the meter drops
+   to its own line under the numbers rather than being squeezed between them. */
 .ctx-strip {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 8px;
-  padding-top: 8px;
-  border-top: 1px solid rgb(var(--border));
+  gap: var(--sp-1) var(--sp-2);
+  padding: var(--sp-2) var(--sp-2) 0;
+  font-size: var(--fs-xs);
 }
 .ctx-strip-model {
   flex: 0 0 auto;
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: rgb(var(--text-dim));
 }
+/* At rail width there is nothing to push apart — the row wraps instead, so the
+   spacer would only ever force a pointless empty line. */
+.ctx-strip > .spacer {
+  display: none;
+}
 /* Reuses the session panel's bar container, but with a single fill instead of
-   its seven category segments — at this width those are unreadable slivers. */
+   its seven category segments — at this width those are unreadable slivers.
+   `order` puts it last on its own full-width line, so it reads as a meter under
+   the figures rather than a sliver wedged between them. */
 .ctx-strip .ctx-bar {
-  flex: 0 1 120px;
-  height: 5px;
+  flex: 1 0 100%;
+  order: 1;
+  height: 4px;
 }
 .ctx-strip .cost {
   flex: 0 1 auto;
@@ -1424,18 +1775,22 @@ select {
   gap: 2px;
   margin-left: auto;
 }
+/* Icon buttons. The uppercase/letter-spacing/600 trio here was left over from
+   when these carried text labels — on a glyph it does nothing but cost a line
+   of CSS, so it is gone with the labels it was shaped for. */
 .tab {
   position: relative; /* anchors the diff count */
-  padding: 5px 8px; /* squarer than the old 4px 10px — these are icons now */
+  padding: 5px 8px;
   border-radius: var(--r-sm);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
   color: rgb(var(--text-faint));
+  transition: background 0.12s ease;
+}
+.tab:hover:not(:disabled) {
+  background: rgb(var(--fill-hover));
+  color: rgb(var(--text-dim));
 }
 .tab[data-active='true'] {
-  background: rgb(var(--surface-3) / 0.9);
+  background: rgb(var(--fill-2));
   color: rgb(var(--text));
 }
 .tab:disabled {
@@ -1443,15 +1798,19 @@ select {
   cursor: default;
 }
 
+/* A raised chip, not a filled one. On --accent this was a solid white lozenge
+   pinned to the corner of a dim icon — the brightest thing in the chrome, for a
+   file count. Cursor reserves that much contrast for the primary action only. */
 .badge {
-  min-width: 17px;
-  padding: 0 5px;
-  height: 17px;
-  border-radius: 99px;
-  background: rgb(var(--accent));
-  color: rgb(var(--accent-fg));
+  min-width: 16px;
+  padding: 0 4px;
+  height: 16px;
+  border-radius: var(--r-pill);
+  background: rgb(var(--fill-1));
+  border: 1px solid rgb(var(--stroke-2));
+  color: rgb(var(--text-dim));
   font-size: 10px;
-  font-weight: 700;
+  font-weight: 600;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1691,7 +2050,10 @@ button.diff-more:hover {
   flex: 1;
   min-height: 0;
   padding: 8px 4px 4px 10px;
-  background: rgb(var(--bg));
+  /* Translucent, matching every other surface. xterm paints nothing of its own
+     now (theme.background is rgba(0,0,0,0)), so this fill IS the terminal's
+     background and an opaque one would read as a hole cut in the glass. */
+  background: rgb(var(--bg) / var(--surface-a));
 }
 .term-host .xterm {
   height: 100%;
@@ -1717,6 +2079,24 @@ button.diff-more:hover {
   text-align: center;
   padding: 24px;
 }
+
+/* With no transcript, the composer rides UP and sits with the hero instead of
+   staying pinned to the bottom of an empty pane — Cursor centres the two as one
+   group and only drops the composer once there is something to sit under.
+
+   Done with auto margins rather than a wrapper: releasing .convo's `flex: 1`
+   and putting `margin-top: auto` on it plus `margin-bottom: auto` on the
+   composer makes the flex column split its free space above the pair and below
+   it, which centres the group without either element knowing about the other.
+   :has() keys it off the empty state that is already rendered, so no new prop
+   has to be threaded from App down through two components. */
+.pane-fill:has(> .convo > .empty) > .convo {
+  flex: 0 1 auto;
+  margin-top: auto;
+}
+.pane-fill:has(> .convo > .empty) > .composer {
+  margin-bottom: auto;
+}
 /* Labelled chips rather than a ` · `-joined line — a repo name, a branch slug
    and a permission mode read as one broken string when run together. */
 .empty-chips {
@@ -1730,12 +2110,12 @@ button.diff-more:hover {
   align-items: center;
   gap: 4px;
   max-width: 240px;
-  padding: 3px 8px;
-  border: 1px solid rgb(var(--border));
-  border-radius: 99px;
-  background: rgb(var(--surface-2) / 0.5);
-  font-size: 11px;
-  color: rgb(var(--text-dim));
+  padding: 3px var(--sp-2-5);
+  border: 1px solid rgb(var(--stroke-3));
+  border-radius: var(--r-pill);
+  background: transparent;
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-faint));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1745,8 +2125,8 @@ button.diff-more:hover {
   color: rgb(var(--text-faint));
 }
 .empty h2 {
-  font-size: 15px;
-  font-weight: 600;
+  font-size: var(--fs-lg);
+  font-weight: 500;
   color: rgb(var(--text-dim));
 }
 
@@ -1925,7 +2305,7 @@ button.diff-more:hover {
   font-size: 1.08em;
 }
 .md a {
-  color: rgb(var(--accent));
+  color: rgb(var(--link));
   text-decoration: underline;
   text-underline-offset: 2px;
 }
@@ -2556,7 +2936,9 @@ button.diff-more:hover {
    cancel affordance because it is still withdrawable. */
 .msg-user[data-queued] {
   opacity: 0.62;
-  border: 1px dashed rgb(var(--accent-fg) / 0.5);
+  /* Same --accent-fg inversion as the code fills above: dashed near-black on a
+     dark card was invisible, and the dash IS the "not sent yet" signal. */
+  border: 1px dashed rgb(var(--stroke-1));
 }
 .queued-cancel {
   display: block;
@@ -2924,7 +3306,7 @@ button.diff-more:hover {
   background: rgb(var(--danger) / 0.12);
 }
 .home-link {
-  color: rgb(var(--accent));
+  color: rgb(var(--link));
   text-decoration: underline;
   font-size: inherit;
 }

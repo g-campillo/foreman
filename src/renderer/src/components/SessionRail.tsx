@@ -18,6 +18,7 @@ import type { PastSession, SessionMeta, TranscriptSearchHit } from '../../../sha
 import { onHome, useStore } from '../store'
 import { activityOf, groupSessions, type Activity } from '../derive.mts'
 import LspStrip from './LspStrip'
+import ContextStrip from './ContextStrip'
 
 /** Debounce on search: each keystroke otherwise re-reads up to 40 transcripts. */
 const SEARCH_DELAY_MS = 250
@@ -113,7 +114,12 @@ export default function SessionRail(): React.JSX.Element {
    * every agent in its own directory. Rows without a cwd are already disabled.
    */
   const [allProjects, setAllProjects] = useState(false)
-  const cwd = useStore((s) => s.sessions.find((x) => x.id === s.activeId)?.cwd)
+  /* `find`, not `filter` — it hands back a reference that already lives in the
+     array, so the snapshot is stable across reads. A filtering selector mints a
+     fresh array every time and zustand loops forever on it, blanking the app.
+     `?? null` keeps the miss case a stable primitive rather than undefined. */
+  const active = useStore((s) => s.sessions.find((x) => x.id === s.activeId) ?? null)
+  const cwd = active?.cwd
   const scope = allProjects ? undefined : cwd
 
   useEffect(() => {
@@ -388,6 +394,19 @@ export default function SessionRail(): React.JSX.Element {
           active session because the fleet is per-host, and a host serves one
           session. */}
       {activeId && <LspStrip sessionId={activeId} />}
+
+      {/* Model, context pressure and running cost. This lived under the composer
+          until the chat pane lost its status bar — Cursor keeps the equivalent
+          readout at the foot of the SIDEBAR, above the account row, and it
+          belongs there for a reason that outlives the restyle: none of it is
+          about the message you are typing, and down here it stops competing for
+          width with the composer's controls.
+
+          Keyed by session id for the same reason it always was: Conversation and
+          Composer render unkeyed, so without it this component's polled state
+          would survive a tab switch and print one session's numbers under
+          another's model name. */}
+      {active && <ContextStrip key={active.id} session={active} />}
 
       <footer className="rail-foot">
         <button

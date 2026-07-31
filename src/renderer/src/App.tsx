@@ -57,7 +57,6 @@ type Seam = keyof typeof SEAMS
 export default function App(): React.JSX.Element {
   const session = useStore(activeSession)
   const diffCount = useStore((s) => (s.activeId ? (s.diffCounts[s.activeId] ?? 0) : 0))
-  const branch = useStore((s) => (s.activeId ? (s.branches[s.activeId] ?? null) : null))
   const newSession = useStore((s) => s.newSession)
   const startDraft = useStore((s) => s.startDraft)
   // A conversation with no project yet. Takes over the pane, so the chooser is
@@ -219,23 +218,18 @@ export default function App(): React.JSX.Element {
       <SessionRail />
 
       <section className="pane pane-fill">
-        <header className="pane-head drag">
-          <span>
-            {draft ? 'New conversation' : home ? 'Home' : session ? session.title : 'Foreman'}
-          </span>
-          {session && !draft && !home && (
-            /* A worktree path is long and says nothing useful — it lives under
-               userData with a disambiguating suffix. The branch is what the user
-               thinks of this session as; the full path stays in the tooltip. */
-            <span className="pane-path" title={session.cwd}>
-              {session.worktree ? session.worktree.repoRoot : session.cwd}
-              {/* The live branch, so a `git checkout` shows up and a plain
-                  session gets one too. worktree.branch is only the fallback now:
-                  it's frozen at creation and goes stale the moment you switch. */}
-              {(branch ?? session.worktree?.branch) && ` · ${branch ?? session.worktree?.branch}`}
-            </span>
-          )}
+        {/* Deliberately empty on the left. The title and the cwd · branch line
+            that used to sit here are gone: the rail already names the session,
+            and the empty state carries branch and model as chips, so this strip
+            was repeating both while costing a divider and a row of uppercase.
 
+            It stays in the flow as a 44px strip rather than floating over the
+            transcript, and that is load-bearing — this is the ONLY drag region
+            on the chat side of a frameless window. Floating it top-right would
+            leave the whole left half of the title bar undraggable. Transparent
+            with nothing in it, it looks like the absence Cursor has, and still
+            moves the window. */}
+        <header className="pane-head drag">
           {/* The toolbar lives here, not in the side pane: that pane's header is
               gone whenever the panel is closed, which is the default. `no-drag`
               on the wrapper covers all four — -webkit-app-region inherits. */}

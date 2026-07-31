@@ -399,11 +399,14 @@ export interface Appearance {
   /**
    * 'auto' follows the OS live via matchMedia; the other two pin it.
    *
-   * The only look knob left. Surface opacity, terminal opacity and the macOS
-   * vibrancy material all went with the transparent window — see theme.css's
-   * header for why none of them were rendering anything worth their frame cost.
-   * Persisted Appearance objects still carry those keys; loadAppearance picks
-   * key by key, so they are simply never read again.
+   * The only look knob left, and deliberately so. The window is transparent
+   * again with a native 'under-window' vibrancy material behind it, but the
+   * surface alphas that sit on top of it are fixed tokens (--surface-a and
+   * --rail-a in theme.css) rather than user controls — they are tuned per theme
+   * against Cursor's own numbers, and a slider over them mostly produces
+   * illegible text. Persisted Appearance objects from the era when opacity and
+   * blur WERE controls still carry those keys; loadAppearance picks key by key,
+   * so they are simply never read again.
    */
   theme: 'auto' | 'dark' | 'light'
   /**

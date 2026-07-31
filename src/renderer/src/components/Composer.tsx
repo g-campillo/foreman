@@ -25,7 +25,6 @@ import { useStore } from '../store'
 import { filterEntries, triggerAt } from '../derive.mts'
 import Autocomplete, { type Suggestion } from './Autocomplete'
 import MarkdownInput from './MarkdownInput'
-import ContextStrip from './ContextStrip'
 
 /** Sentinel for "whatever the session is already running" when no alias matches. */
 const CURRENT = '__current__'
@@ -367,283 +366,289 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         </div>
       )}
 
-      <div className="composer-input">
-        {/* Ghost text for the predicted next prompt. Only while the box is
-            empty and idle — overlaying a suggestion on real typing is noise. */}
-        {ghost && (
-          <button
-            className="ghost"
-            data-tip="Predicted next prompt — Tab to use"
-            onClick={acceptGhost}
-          >
-            {session.promptSuggestion}
-          </button>
-        )}
-        {suggestions.length > 0 && (
-          <Autocomplete items={suggestions} cursor={cursor} onPick={pick} />
-        )}
-        <MarkdownInput
-          viewRef={box}
-          value={text}
-          caret={caret}
-          // The ghost is an overlay on this same box, so leaving the
-          // placeholder on paints the two strings on top of each other.
-          placeholder={
-            ghost ? '' : busy ? 'Queue a message…' : `Message the agent in ${session.title}…`
-          }
-          // One channel for both, because in CodeMirror a caret move and an edit
-          // arrive as the same update — and `triggerAt` needs the pair in step.
-          onChange={(next, pos) => {
-            setText(next)
-            setCaret(pos)
-          }}
-          onPaste={(e) => {
-            const imgs = Array.from(e.clipboardData?.files ?? []).filter((f) =>
-              ACCEPTED.includes(f.type as ImageMediaType),
-            )
-            if (!imgs.length) return
-            e.preventDefault() // or the filename lands in the editor too
-            addFiles(imgs)
-          }}
-          onDragOver={(e) => e.preventDefault()}
-          onDrop={(e) => {
-            if (!e.dataTransfer?.files.length) return
-            e.preventDefault()
-            addFiles(e.dataTransfer.files)
-          }}
-          onKeyDown={(e) => {
-            if (suggestions.length) {
-              if (e.key === 'ArrowDown') {
-                e.preventDefault()
-                setCursor((c) => Math.min(c + 1, suggestions.length - 1))
-                return
-              }
-              if (e.key === 'ArrowUp') {
-                e.preventDefault()
-                setCursor((c) => Math.max(c - 1, 0))
-                return
-              }
-              // Enter completes rather than sends while the popover is open —
-              // otherwise picking a file would fire off a half-typed message.
-              if (e.key === 'Enter' || e.key === 'Tab') {
-                e.preventDefault()
-                pick(suggestions[cursor])
-                return
-              }
-              if (e.key === 'Escape') {
-                e.preventDefault()
-                setCaret(-1) // closes the popover without touching the text
-                return
-              }
-            }
-            if (e.key === 'Tab' && !text && session.promptSuggestion) {
-              e.preventDefault()
-              acceptGhost()
-              return
-            }
-            if (e.key === 'Enter' && !e.shiftKey) {
-              e.preventDefault()
-              submit()
-            }
-          }}
-        />
-      </div>
+      {/* One card, controls inside it. The row of pickers and buttons used to
+          sit BELOW the input box as a separate strip; Cursor puts the same
+          controls inside the same rounded surface as the text, which is what
+          makes their composer read as one object rather than a field with a
+          toolbar bolted underneath.
 
-      {/* Not just "three boxes are here": each chip carries the rolling AI
-          progress summary the SDK emits on task_progress, so backgrounded work
-          is watchable instead of opaque. The full summary is in the tooltip,
-          since a chip only has room for one line of it. */}
-      {session.backgroundTasks.length > 0 && (
-        <div className="bg-tray">
-          {session.backgroundTasks.map((t) => (
-            <span
-              key={t.taskId}
-              className="chip bg-task"
-              title={t.description}
-              data-tip={
-                [t.progress, t.lastTool && `last: ${t.lastTool}`].filter(Boolean).join('\n') ||
-                'Running — no progress reported yet'
-              }
+          The border, radius and fill moved here from .composer-editor, which is
+          now transparent — otherwise there would be a box drawn inside a box. */}
+      <div className="composer-card">
+        <div className="composer-input">
+          {/* Ghost text for the predicted next prompt. Only while the box is
+              empty and idle — overlaying a suggestion on real typing is noise. */}
+          {ghost && (
+            <button
+              className="ghost"
+              data-tip="Predicted next prompt — Tab to use"
+              onClick={acceptGhost}
             >
-              <Cog size={12} className="bg-spin" />
-              <span className="bg-desc">{t.description || t.taskType}</span>
-              {t.progress && <span className="bg-progress">{t.progress}</span>}
-              {t.tokens ? <span className="bg-tok">{Math.round(t.tokens / 1000)}k</span> : null}
-              <button
-                aria-label="Stop this background task"
-                onClick={() => void window.foreman.stopTask(session.id, t.taskId)}
-              >
-                <X size={12} />
-              </button>
-            </span>
-          ))}
-        </div>
-      )}
-
-      <div className="composer-row">
-        {/* Each select gets a glyph, because three unlabelled dropdowns say
-            nothing about what they control. A native <select> can't hold an
-            icon, so the glyph is a sibling and the select is padded to clear
-            it — see `.ctl` in theme.css. */}
-        <label className="ctl" data-tip="Permission mode — how much the agent may do without asking">
-          <ShieldCheck size={12} />
-          <select
-            className="select"
-            aria-label="Permission mode"
-            value={session.permissionMode}
-            onChange={(e) =>
-              void window.foreman.setPermissionMode(session.id, e.target.value as PermissionMode)
+              {session.promptSuggestion}
+            </button>
+          )}
+          {suggestions.length > 0 && (
+            <Autocomplete items={suggestions} cursor={cursor} onPick={pick} />
+          )}
+          <MarkdownInput
+            viewRef={box}
+            value={text}
+            caret={caret}
+            // The ghost is an overlay on this same box, so leaving the
+            // placeholder on paints the two strings on top of each other.
+            placeholder={
+              ghost ? '' : busy ? 'Queue a message…' : `Message the agent in ${session.title}…`
             }
-          >
-            {MODES.map((m) => (
-              <option key={m.value} value={m.value}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-        </label>
-
-        <label className="ctl" data-tip="Model">
-          <Sparkles size={12} />
-          <select
-            className="select"
-            aria-label="Model"
-            // Aliases ('opus', '') don't equal the running wire id, so match on
-            // resolvedModel. Before the first turn there is no wire id at all,
-            // so fall back to the row for the user's configured default — which
-            // is what this session was actually created with.
-            value={
-              (models.find((m) => m.resolvedModel === session.model) ??
-                (session.model
-                  ? models.find((m) => bareModel(m.resolvedModel) === bareModel(session.model))
-                  : models.find((m) => m.id === (prefs.model || 'default'))))?.id ?? CURRENT
-            }
-            onChange={(e) => {
-              if (e.target.value !== CURRENT)
-                void window.foreman.setModel(session.id, e.target.value)
+            // One channel for both, because in CodeMirror a caret move and an edit
+            // arrive as the same update — and `triggerAt` needs the pair in step.
+            onChange={(next, pos) => {
+              setText(next)
+              setCaret(pos)
             }}
-          >
-            {!models.some(
-              (m) => bareModel(m.resolvedModel) === bareModel(session.model),
-            ) && <option value={CURRENT}>{session.model ?? 'Loading…'}</option>}
-            {models.map((m, i) => (
-              <option key={m.displayName} value={m.id}>
-                {modelRows[i]}
-              </option>
-            ))}
-          </select>
-        </label>
+            onPaste={(e) => {
+              const imgs = Array.from(e.clipboardData?.files ?? []).filter((f) =>
+                ACCEPTED.includes(f.type as ImageMediaType),
+              )
+              if (!imgs.length) return
+              e.preventDefault() // or the filename lands in the editor too
+              addFiles(imgs)
+            }}
+            onDragOver={(e) => e.preventDefault()}
+            onDrop={(e) => {
+              if (!e.dataTransfer?.files.length) return
+              e.preventDefault()
+              addFiles(e.dataTransfer.files)
+            }}
+            onKeyDown={(e) => {
+              if (suggestions.length) {
+                if (e.key === 'ArrowDown') {
+                  e.preventDefault()
+                  setCursor((c) => Math.min(c + 1, suggestions.length - 1))
+                  return
+                }
+                if (e.key === 'ArrowUp') {
+                  e.preventDefault()
+                  setCursor((c) => Math.max(c - 1, 0))
+                  return
+                }
+                // Enter completes rather than sends while the popover is open —
+                // otherwise picking a file would fire off a half-typed message.
+                if (e.key === 'Enter' || e.key === 'Tab') {
+                  e.preventDefault()
+                  pick(suggestions[cursor])
+                  return
+                }
+                if (e.key === 'Escape') {
+                  e.preventDefault()
+                  setCaret(-1) // closes the popover without touching the text
+                  return
+                }
+              }
+              if (e.key === 'Tab' && !text && session.promptSuggestion) {
+                e.preventDefault()
+                acceptGhost()
+                return
+              }
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                submit()
+              }
+            }}
+          />
+        </div>
 
-        <label className="ctl" data-tip="Reasoning effort — how long the model thinks before answering">
-          <Gauge size={12} />
-          <select
-            className="select"
-            aria-label="Reasoning effort"
-            value={session.effort ?? ''}
-            onChange={(e) => void window.foreman.setEffort(session.id, e.target.value || null)}
-          >
-            {EFFORTS.map((x) => (
-              <option key={x.value} value={x.value}>
-                {x.label}
-              </option>
+        {/* Not just "three boxes are here": each chip carries the rolling AI
+            progress summary the SDK emits on task_progress, so backgrounded work
+            is watchable instead of opaque. The full summary is in the tooltip,
+            since a chip only has room for one line of it. */}
+        {session.backgroundTasks.length > 0 && (
+          <div className="bg-tray">
+            {session.backgroundTasks.map((t) => (
+              <span
+                key={t.taskId}
+                className="chip bg-task"
+                title={t.description}
+                data-tip={
+                  [t.progress, t.lastTool && `last: ${t.lastTool}`].filter(Boolean).join('\n') ||
+                  'Running — no progress reported yet'
+                }
+              >
+                <Cog size={12} className="bg-spin" />
+                <span className="bg-desc">{t.description || t.taskType}</span>
+                {t.progress && <span className="bg-progress">{t.progress}</span>}
+                {t.tokens ? <span className="bg-tok">{Math.round(t.tokens / 1000)}k</span> : null}
+                <button
+                  aria-label="Stop this background task"
+                  onClick={() => void window.foreman.stopTask(session.id, t.taskId)}
+                >
+                  <X size={12} />
+                </button>
+              </span>
             ))}
-          </select>
-        </label>
+          </div>
+        )}
 
-        {/* A session's cwd is fixed when it's created, so this is only a live
-            choice on an untouched tab — after that it's a read-only chip saying
-            where you ended up. Ticking it recreates the session in a worktree,
-            through the same openPath the rail's branch button already uses. */}
-        {session.worktree ? (
-          <span className="wt-chip" title={`Isolated in ${session.worktree.repoRoot}`}>
-            <GitBranch size={12} />
-            {session.worktree.branch}
-          </span>
-        ) : (
-          <label
-            className="wt-toggle"
-            data-off={fresh ? undefined : ''}
-            title={
-              fresh
-                ? 'Run this session in its own git worktree, on its own branch'
-                : 'Only available before the first message — a session cannot change directory'
+        <div className="composer-row">
+          {/* Each select gets a glyph, because three unlabelled dropdowns say
+              nothing about what they control. A native <select> can't hold an
+              icon, so the glyph is a sibling and the select is padded to clear
+              it — see `.ctl` in theme.css. */}
+          <label className="ctl" data-tip="Permission mode — how much the agent may do without asking">
+            <ShieldCheck size={12} />
+            <select
+              className="select"
+              aria-label="Permission mode"
+              value={session.permissionMode}
+              onChange={(e) =>
+                void window.foreman.setPermissionMode(session.id, e.target.value as PermissionMode)
+              }
+            >
+              {MODES.map((m) => (
+                <option key={m.value} value={m.value}>
+                  {m.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="ctl" data-tip="Model">
+            <Sparkles size={12} />
+            <select
+              className="select"
+              aria-label="Model"
+              // Aliases ('opus', '') don't equal the running wire id, so match on
+              // resolvedModel. Before the first turn there is no wire id at all,
+              // so fall back to the row for the user's configured default — which
+              // is what this session was actually created with.
+              value={
+                (models.find((m) => m.resolvedModel === session.model) ??
+                  (session.model
+                    ? models.find((m) => bareModel(m.resolvedModel) === bareModel(session.model))
+                    : models.find((m) => m.id === (prefs.model || 'default'))))?.id ?? CURRENT
+              }
+              onChange={(e) => {
+                if (e.target.value !== CURRENT)
+                  void window.foreman.setModel(session.id, e.target.value)
+              }}
+            >
+              {!models.some(
+                (m) => bareModel(m.resolvedModel) === bareModel(session.model),
+              ) && <option value={CURRENT}>{session.model ?? 'Loading…'}</option>}
+              {models.map((m, i) => (
+                <option key={m.displayName} value={m.id}>
+                  {modelRows[i]}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          <label className="ctl" data-tip="Reasoning effort — how long the model thinks before answering">
+            <Gauge size={12} />
+            <select
+              className="select"
+              aria-label="Reasoning effort"
+              value={session.effort ?? ''}
+              onChange={(e) => void window.foreman.setEffort(session.id, e.target.value || null)}
+            >
+              {EFFORTS.map((x) => (
+                <option key={x.value} value={x.value}>
+                  {x.label}
+                </option>
+              ))}
+            </select>
+          </label>
+
+          {/* A session's cwd is fixed when it's created, so this is only a live
+              choice on an untouched tab — after that it's a read-only chip saying
+              where you ended up. Ticking it recreates the session in a worktree,
+              through the same openPath the rail's branch button already uses. */}
+          {session.worktree ? (
+            <span className="wt-chip" title={`Isolated in ${session.worktree.repoRoot}`}>
+              <GitBranch size={12} />
+              {session.worktree.branch}
+            </span>
+          ) : (
+            <label
+              className="wt-toggle"
+              data-off={fresh ? undefined : ''}
+              title={
+                fresh
+                  ? 'Run this session in its own git worktree, on its own branch'
+                  : 'Only available before the first message — a session cannot change directory'
+              }
+            >
+              <input
+                type="checkbox"
+                checked={false}
+                disabled={!fresh}
+                onChange={() => void goWorktree()}
+              />
+              worktree
+            </label>
+          )}
+
+          <span className="spacer" />
+
+          {/* The running cost used to sit here. It moved to ContextStrip below:
+              it is a readout rather than a control, and this row had no width left
+              for it. Two decimals there — cents are the unit anyone reads, and a
+              sub-cent turn showing $0.00 is the accepted trade. */}
+
+          {/* Send stays available while running: the queue holds the message and
+              the transcript shows it as cancellable until the agent picks it up. */}
+          {busy && (
+            <>
+              {/* Moves in-flight Bash/subagent work to the background so the turn
+                  continues instead of blocking on a long command. */}
+              <button
+                className="btn"
+                data-tip="Run in-flight work in the background, so the turn continues"
+                aria-label="Run in-flight work in the background"
+                onClick={() => void window.foreman.backgroundTasks(session.id)}
+              >
+                <SendToBack size={14} />
+              </button>
+              {/* A red square is the most universally-read control glyph there is,
+                  and it only exists while running, so its context is unambiguous. */}
+              <button
+                className="btn"
+                data-variant="danger"
+                data-tip="Stop the agent  Esc"
+                aria-label="Stop the agent"
+                onClick={() => void window.foreman.interrupt(session.id)}
+              >
+                <Square size={14} />
+              </button>
+            </>
+          )}
+          {/* Icon-only: this is the core loop, bound to ⏎ and pressed hundreds of
+              times a session — the two glyphs read the state better than the two
+              words did, and the word was pure chrome. */}
+          {/* data-tip rides on the wrapper, not the button: the button is disabled
+              while `empty`, and a disabled control fires no pointer events, so the
+              one tip that explains the disabled state would never appear. */}
+          <span
+            className="tw"
+            data-tip={
+              empty
+                ? 'Type a message first'
+                : busy
+                  ? 'Queue this message — the agent picks it up when the turn ends  ⏎'
+                  : 'Send  ⏎'
             }
           >
-            <input
-              type="checkbox"
-              checked={false}
-              disabled={!fresh}
-              onChange={() => void goWorktree()}
-            />
-            worktree
-          </label>
-        )}
-
-        <span className="spacer" />
-
-        {/* The running cost used to sit here. It moved to ContextStrip below:
-            it is a readout rather than a control, and this row had no width left
-            for it. Two decimals there — cents are the unit anyone reads, and a
-            sub-cent turn showing $0.00 is the accepted trade. */}
-
-        {/* Send stays available while running: the queue holds the message and
-            the transcript shows it as cancellable until the agent picks it up. */}
-        {busy && (
-          <>
-            {/* Moves in-flight Bash/subagent work to the background so the turn
-                continues instead of blocking on a long command. */}
             <button
               className="btn"
-              data-tip="Run in-flight work in the background, so the turn continues"
-              aria-label="Run in-flight work in the background"
-              onClick={() => void window.foreman.backgroundTasks(session.id)}
+              data-variant="primary"
+              onClick={submit}
+              disabled={empty}
+              aria-label={busy ? 'Queue this message' : 'Send'}
             >
-              <SendToBack size={14} />
+              {busy ? <ListPlus size={14} /> : <SendHorizontal size={14} />}
             </button>
-            {/* A red square is the most universally-read control glyph there is,
-                and it only exists while running, so its context is unambiguous. */}
-            <button
-              className="btn"
-              data-variant="danger"
-              data-tip="Stop the agent  Esc"
-              aria-label="Stop the agent"
-              onClick={() => void window.foreman.interrupt(session.id)}
-            >
-              <Square size={14} />
-            </button>
-          </>
-        )}
-        {/* Icon-only: this is the core loop, bound to ⏎ and pressed hundreds of
-            times a session — the two glyphs read the state better than the two
-            words did, and the word was pure chrome. */}
-        {/* data-tip rides on the wrapper, not the button: the button is disabled
-            while `empty`, and a disabled control fires no pointer events, so the
-            one tip that explains the disabled state would never appear. */}
-        <span
-          className="tw"
-          data-tip={
-            empty
-              ? 'Type a message first'
-              : busy
-                ? 'Queue this message — the agent picks it up when the turn ends  ⏎'
-                : 'Send  ⏎'
-          }
-        >
-          <button
-            className="btn"
-            data-variant="primary"
-            onClick={submit}
-            disabled={empty}
-            aria-label={busy ? 'Queue this message' : 'Send'}
-          >
-            {busy ? <ListPlus size={14} /> : <SendHorizontal size={14} />}
-          </button>
-        </span>
+          </span>
+        </div>
       </div>
-
-      {/* Keyed: Composer is rendered unkeyed by App, so without this the strip's
-          fetched context would survive a tab switch onto the wrong session. */}
-      <ContextStrip key={session.id} session={session} />
     </div>
   )
 }
