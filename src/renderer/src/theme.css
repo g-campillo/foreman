@@ -999,6 +999,13 @@ select {
   opacity: 0.4;
   cursor: default;
 }
+/* Nothing in this file gave a button a focus ring before, because nothing in the
+   app moved focus to one. The approval card does now — it hands focus to Allow
+   so ⏎ answers natively — and Tab-to-Deny from there is a real path. */
+.btn:focus-visible {
+  outline: 2px solid rgb(var(--accent) / 0.55);
+  outline-offset: 2px;
+}
 .btn.grow {
   flex: 1;
   text-align: center;
@@ -1452,39 +1459,167 @@ button.tool-line:hover {
   overflow-y: auto;
 }
 
-/* ---------------------------------------------------------------- approval */
+/* ---------------------------------------------------------------- approval
 
+   The last un-restyled surface in the app: this card was untouched since the
+   first commit, painted with --warn at 45% border over an 8% fill while every
+   other card had moved to --fill-4 / --stroke-2 / --r-lg.
+
+   The tinted card was the wrong SHAPE for this surface, not just the wrong
+   colour. It said "warning" about the whole thing — including the diff you are
+   being asked to read, which is the part that most needs to look like ordinary
+   code. So the card is now neutral like every other card in the column, and the
+   warning is one rail at its left edge.
+
+   The partial-approval rules (.approval-hunk and friends) used to live 3000
+   lines further down under their own heading. One card, one block. */
 .approval {
-  border: 1px solid rgb(var(--warn) / 0.45);
-  background: rgb(var(--warn) / 0.08);
-  border-radius: var(--r-md);
-  padding: 12px;
+  position: relative;
+  background: rgb(var(--fill-4));
+  border: 1px solid rgb(var(--stroke-2));
+  border-radius: var(--r-lg);
+  padding: var(--sp-3);
   display: flex;
   flex-direction: column;
-  gap: 9px;
+  gap: var(--sp-2-5);
+}
+/* A PSEUDO-ELEMENT, not `border-left`. A 2px --warn edge mitred into a 1px
+   --stroke-2 one leaves a visible diagonal seam at both rounded corners, and it
+   would shift this card's content 1px right of every other card in the column.
+   Inset top and bottom so it reads as a marker rather than a second border. */
+.approval::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: var(--sp-2);
+  bottom: var(--sp-2);
+  width: 2px;
+  border-radius: var(--r-pill);
+  background: rgb(var(--warn) / 0.55);
 }
 .approval-title {
   font-weight: 600;
 }
+/* The rest of the --warn budget goes here: the tool name is the thing being
+   decided about. */
 .approval-title code {
   font-family: var(--mono);
   color: rgb(var(--warn));
 }
+/* --bg on purpose, and NOT a --fill-*: --bg is the window backing, so this
+   darkens in dark mode and lightens in light, which is what makes it read as
+   recessed in both. A --fill-* would RAISE it in dark mode. */
 .approval-input {
   font-family: var(--mono);
-  font-size: 11.5px;
+  font-size: var(--fs-xs);
   color: rgb(var(--text-dim));
   background: rgb(var(--bg) / 0.35);
+  border: 1px solid rgb(var(--stroke-3));
   border-radius: var(--r-sm);
-  padding: 8px 10px;
+  padding: var(--sp-2) var(--sp-2-5);
   max-height: 200px;
   overflow: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+/* Tighter than the card's own rhythm, deliberately: a three-hunk change should
+   read as one proposal, not as three adjacent cards. */
+.approval-hunks {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1-5);
+}
+/* One hunk of a proposed change, with its tick. Only drawn when accepting part
+   is actually expressible — see the ApprovalCard docblock for why that is Write
+   and nothing else today. */
+.approval-hunk {
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--r-sm);
+  overflow: hidden;
+}
+/* A rejected hunk stays VISIBLE and readable, just clearly out. Hiding it would
+   mean approving a set you can no longer see. */
+.approval-hunk[data-off] {
+  opacity: 0.42;
+}
+/* `cursor: pointer`, because it is a <label> that toggles a checkbox. The
+   `default` it carried since the first commit made the one control on this card
+   you are meant to click look like text. */
+.approval-tick {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1-5);
+  padding: 5px var(--sp-2);
+  border-bottom: 1px solid rgb(var(--border));
+  background: rgb(var(--surface-2) / 0.6);
+  font-size: var(--fs-xs);
+  color: rgb(var(--text-dim));
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.approval-tick:hover {
+  background: rgb(var(--surface-3) / 0.7);
+  color: rgb(var(--text));
+}
+.approval-tick input {
+  accent-color: rgb(var(--accent));
+  cursor: pointer;
+}
+/* Four controls now, one of them carrying a path — so this wraps rather than
+   pushing the file name off the card. */
 .approval-actions {
   display: flex;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: var(--sp-2);
+}
+/* `:focus`, NOT `:focus-visible`, and this is the one place that inversion is
+   correct. Chromium only matches :focus-visible on a SCRIPTED focus when the
+   previously-focused element matched it too — so the single case that most
+   needs a ring, an approval landing while you were working the mouse, is exactly
+   the case :focus-visible refuses. Bare :focus is normally over-eager and cannot
+   be here: clicking Allow answers the request and unmounts the card. */
+.approval-allow:focus {
+  outline: 2px solid rgb(var(--accent) / 0.55);
+  outline-offset: 2px;
+}
+/* Hidden by OPACITY rather than display, so the button never changes width when
+   focus arrives. The delay is ARM_GRACE_MS in ApprovalCard.tsx and has to stay
+   in step with it: a badge promising ⏎ during the window that deliberately
+   ignores ⏎ is a lie. */
+.approval-key {
+  margin-left: var(--sp-0-5);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.approval-allow:focus .approval-key {
+  opacity: 0.7;
+  transition-delay: 0.35s;
+}
+/* What "Always allow" would actually grant, in words, under the row. Quiet
+   enough not to compete with the diff above it, and permanently visible rather
+   than a tooltip — a permission you cannot read is not consent. Sits inside the
+   card's own gap, so it needs no margin of its own. */
+.approval-rules {
+  font-size: var(--fs-xs);
+  color: rgb(var(--text-faint));
+  overflow-wrap: anywhere;
+}
+/* Pushed to its own end of the row: it is not a third answer to the question,
+   it is a way to go and look before answering. Mono and small so it reads as a
+   path rather than as a decision. */
+.approval-open {
+  margin-left: auto;
+  max-width: 45%;
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------------------------------------------------------------- composer */
@@ -1673,10 +1808,28 @@ button.tool-line:hover {
     background 0.12s ease,
     color 0.12s ease;
 }
-.composer-add:hover,
-.composer-add[data-open] {
+/* No `[data-open]` arm any more: this opened a menu for one release and is a
+   plain button again, so there is no open state to paint. */
+.composer-add:hover {
   background: rgb(var(--fill-1));
   color: rgb(var(--text));
+}
+
+/* The permission mode, always on screen. Shrinks like the model picker beside
+   it — `.composer-card .picker` already sets `flex: 0 1 auto`, and this restates
+   it only because the pill is placed rather than inherited. Worst case ("Accept
+   edits") is about 120px, and `.picker-label` ellipsises before the row breaks.
+   Deliberately no icon-only fallback at narrow widths: hiding the label would
+   reintroduce the exact "which mode is on?" problem the pill exists to fix. */
+.composer-mode {
+  flex: 0 1 auto;
+}
+/* LOAD-BEARING. `+` leads the compact row via `order: -1`, and at equal order
+   DOM position decides — the pill sits after the input in markup, so without
+   this the compact row reads `+ | input | mode | model` and the mode ends up on
+   the wrong side of the field it governs. */
+.composer-card[data-compact] .composer-mode {
+  order: -1;
 }
 
 /* Every button in the card is icon-only, so they are circles rather than
@@ -1807,6 +1960,35 @@ button.tool-line:hover {
    the affordance is still legible. */
 .picker-chevron {
   opacity: 0.7;
+}
+
+/* A tinted picker, for a setting whose only remaining signal it is — today that
+   is exactly two of the five permission modes. See MODE_TONE in Composer.tsx for
+   why two and not three.
+
+   AFTER `.picker:hover` on purpose: these are the same specificity, so source
+   order is what makes the tint survive a hover instead of being repainted with
+   the neutral fill. A TINT and not a fill — 12% rising to 20% — because this is
+   12px chrome in a one-hue palette and a solid coral pill would instantly be the
+   loudest thing in the window. `color` carries the hue, and the lucide glyph and
+   the chevron are `currentColor`, so both follow for free. */
+.picker[data-tone='warn'] {
+  background: rgb(var(--warn) / 0.12);
+  color: rgb(var(--warn));
+}
+.picker[data-tone='warn']:hover,
+.picker[data-tone='warn'][data-open] {
+  background: rgb(var(--warn) / 0.2);
+  color: rgb(var(--warn));
+}
+.picker[data-tone='danger'] {
+  background: rgb(var(--danger) / 0.12);
+  color: rgb(var(--danger));
+}
+.picker[data-tone='danger']:hover,
+.picker[data-tone='danger'][data-open] {
+  background: rgb(var(--danger) / 0.2);
+  color: rgb(var(--danger));
 }
 
 .spacer {
@@ -4705,46 +4887,8 @@ button.diff-more:hover {
   color: rgb(var(--text-faint));
 }
 
-/* --------------------------------------------------- partial approval
-
-   One hunk of a proposed change, with its tick. Only drawn when accepting part
-   is actually expressible — see the ApprovalCard docblock for why that is Write
-   and nothing else today. */
-.approval-hunk {
-  border: 1px solid rgb(var(--border));
-  border-radius: var(--r-sm);
-  overflow: hidden;
-}
-/* A rejected hunk stays VISIBLE and readable, just clearly out. Hiding it would
-   mean approving a set you can no longer see. */
-.approval-hunk[data-off] {
-  opacity: 0.42;
-}
-.approval-tick {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 9px;
-  border-bottom: 1px solid rgb(var(--border));
-  background: rgb(var(--surface-2) / 0.6);
-  font-size: 11px;
-  color: rgb(var(--text-dim));
-  cursor: default;
-  user-select: none;
-}
-.approval-tick input {
-  accent-color: rgb(var(--accent));
-  cursor: default;
-}
-/* Pushed to its own end of the row: it is not a third answer to the question,
-   it is a way to go and look before answering. */
-.approval-open {
-  margin-left: auto;
-  max-width: 45%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+/* The partial-approval rules lived here, 3000 lines from the card they belong
+   to. They are folded into the .approval block above — one card, one block. */
 
 /* Opens the file a tool row touched. Only appears on hover: every Read and Edit
    row would otherwise carry a permanent button nobody asked for. */

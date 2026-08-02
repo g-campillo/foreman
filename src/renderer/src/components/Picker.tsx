@@ -47,6 +47,8 @@ export default function Picker({
   searchPlaceholder,
   disabled,
   ariaLabel,
+  className,
+  tone,
 }: {
   icon?: React.ReactNode
   label: string
@@ -57,15 +59,29 @@ export default function Picker({
   searchPlaceholder?: string
   disabled?: boolean
   ariaLabel: string
+  /** Appended to `picker`, for a caller that needs to place this one. */
+  className?: string
+  /**
+   * Tints the trigger, for a setting whose only remaining signal it is.
+   *
+   * A TINT, not a fill: this is 12px chrome in a deliberately one-hue palette,
+   * and a solid coral pill would instantly be the loudest thing in the app. The
+   * lucide glyph and the chevron are `currentColor`, so they follow for free.
+   *
+   * `undefined` omits the attribute entirely, which is what leaves the four
+   * existing callers untouched.
+   */
+  tone?: 'warn' | 'danger'
 }): React.JSX.Element {
   const menu = useMenu()
   return (
     <>
       <button
-        className="picker"
+        className={className ? `picker ${className}` : 'picker'}
         ref={menu.ref}
         type="button"
         disabled={disabled}
+        data-tone={tone}
         data-open={menu.anchor ? '' : undefined}
         aria-label={ariaLabel}
         aria-haspopup="menu"

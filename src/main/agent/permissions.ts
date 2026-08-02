@@ -1,15 +1,56 @@
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
-import type { CanUseTool, PermissionResult } from '@anthropic-ai/claude-agent-sdk'
-import { IPC, type PermissionMode, type PermissionRequest } from '../../shared/types'
+import type { CanUseTool, PermissionResult, PermissionUpdate } from '@anthropic-ai/claude-agent-sdk'
+import {
+  IPC,
+  type PermissionAnswer,
+  type PermissionMode,
+  type PermissionRequest,
+  type SuggestedUpdate,
+} from '../../shared/types'
 import { send } from '../../shared/sink'
 import { recomposeWrite, subsetMultiEdit } from '../../shared/diff.mts'
+
+/**
+ * Compile-time only: the renderer's mirror of PermissionUpdate must keep
+ * covering the SDK's union.
+ *
+ * `describeGrant` in shared/rules.mts is what tells the user what an "always
+ * allow" click grants, and the click sends the SDK's suggestions back verbatim —
+ * so an update type the SDK adds and the mirror lacks would be granted with
+ * nothing on screen about it. This alias is the tripwire: it stops compiling the
+ * day that happens. Zero runtime cost; it emits nothing at all.
+ */
+type Covers<Ours, Theirs extends Ours> = Theirs
+type _RuleTypesMirrored = Covers<SuggestedUpdate['type'], PermissionUpdate['type']>
 
 interface Waiter {
   resolve: (r: PermissionResult) => void
   sessionId: string
   /** The card's payload, kept so a renderer that lost its copy can be re-sent it. */
   req: PermissionRequest
+  /**
+   * The SDK's own "always allow" suggestions for THIS call — the thing actually
+   * granted, as opposed to `req.rules`, which is only what the card SAYS would
+   * be granted.
+   *
+   * BE PRECISE ABOUT WHERE THE ISOLATION COMES FROM, because it is not object
+   * identity: `makeCanUseTool` casts one array and stores it in both places, so
+   * this and `req.rules` are the same object in this process. What makes the
+   * split safe is that the renderer's copy is a STRUCTURED CLONE made by IPC on
+   * the way out, and that nothing here ever reads `req.rules` back — the grant
+   * below replays THIS field. So the renderer answers `alwaysAllow: true` and
+   * can never name a rule, a tool or a destination, whatever it does to the copy
+   * it was given.
+   *
+   * Same trust boundary `keep` draws with indices instead of content, one step
+   * further: not even indices.
+   *
+   * The corollary, for whoever changes this next: `req.rules` may be reshaped or
+   * redacted freely, and the grant is unaffected. Reading it back here to decide
+   * anything is what would break the property.
+   */
+  suggestions?: PermissionUpdate[]
   onPendingChange: (count: number) => void
   onModeChanged: (mode: PermissionMode) => void
 }
@@ -56,16 +97,34 @@ export function makeCanUseTool(
       sessionId,
       toolName,
       input: input as Record<string, unknown>,
-      hasSuggestions: Boolean(options.suggestions?.length),
+      // Verbatim, not a boolean. The card has to name the exact rule and the
+      // exact settings file BEFORE the click, because these differ enormously in
+      // reach — `Read` is every file on the machine, `Bash(npm run build:*)` is
+      // one command — and a permission you cannot read is not consent. The
+      // structural mirror is checked above; the shapes are identical.
+      ...(options.suggestions?.length
+        ? { rules: options.suggestions as SuggestedUpdate[] }
+        : {}),
     }
     send(IPC.permRequest, req)
 
     return new Promise<PermissionResult>((resolve) => {
-      waiting.set(requestId, { resolve, sessionId, req, onPendingChange, onModeChanged })
+      waiting.set(requestId, {
+        resolve,
+        sessionId,
+        req,
+        suggestions: options.suggestions,
+        onPendingChange,
+        onModeChanged,
+      })
       onPendingChange(countFor(sessionId))
 
       // If the turn is aborted (interrupt, session close) the callback would
       // otherwise dangle forever and wedge the CLI subprocess.
+      //
+      // No `decisionClassification` here, deliberately: the user never saw this
+      // prompt, so calling it a rejection poisons exactly the telemetry the
+      // field exists for. Same at 'Session closed' below. Do not "fix" either.
       options.signal.addEventListener(
         'abort',
         () => settle(requestId, { behavior: 'deny', message: 'Interrupted' }),
@@ -99,48 +158,15 @@ export function pendingPermissions(sessionId?: string): PermissionRequest[] {
 export function cancelPending(sessionId: string): void {
   for (const [id, w] of waiting) {
     if (w.sessionId !== sessionId) continue
+    // Unclassified on purpose — see the abort listener in makeCanUseTool. The
+    // user never answered this; nobody rejected anything.
     settle(id, { behavior: 'deny', message: 'Session closed' })
   }
 }
 
-/** Arguments of a permission answer, as they arrive from the renderer. */
-export interface PermissionAnswer {
-  requestId: string
-  behavior: 'allow' | 'deny'
-  /** Replaces the default deny text; see the AskUserQuestion note below. */
-  message?: string
-  /**
-   * Permission mode to switch to as part of the same allow.
-   *
-   * This rides on the permission result rather than going out as a separate
-   * setPermissionMode call because approving ExitPlanMode makes the CLI change
-   * the mode too — two writers, and whichever landed second would win.
-   * `updatedPermissions` is applied with the decision, so the user's pick can't
-   * lose that race.
-   */
-  setMode?: PermissionMode
-  alwaysAllow?: boolean
-  /**
-   * Indices of the edits/hunks the user actually accepted. Absent means all.
-   *
-   * INDICES, never content, and that is the whole safety argument. The host
-   * subsets its OWN copy of the tool input, so the renderer cannot name bytes
-   * that reach disk — a nasty new trust boundary collapses into a bounds check.
-   * See subsetMultiEdit in shared/diff.mts for the property that buys.
-   */
-  keep?: number[]
-  /**
-   * Approving a plan AND handing the work to subagents.
-   *
-   * Rides the permission answer for the same reason `setMode` does, only more
-   * so: it has to be known BEFORE the tool runs. The input queue is gated shut
-   * for the whole turn, so a follow-up message would not reach the model until
-   * after it had already implemented the plan alone. The directive itself
-   * travels on a PostToolUse hook — see plan.ts — and this flag is only how the
-   * click reaches it.
-   */
-  subagents?: boolean
-}
+/* PermissionAnswer used to be declared here. It moved to shared/types.ts, where
+   the preload bridge can take it as an options object — the six positionals it
+   had grown were already one too many. Same fields, same docblocks. */
 
 /**
  * Sessions whose next ExitPlanMode result should carry the orchestration
@@ -176,9 +202,6 @@ export async function respondPermission({
   keep,
   subagents,
 }: PermissionAnswer): Promise<boolean> {
-  void alwaysAllow // ponytail: rule persistence needs updatedPermissions + the SDK's
-  // suggestions passed back through; add when the always-allow button ships.
-
   // A deny message becomes the tool_result the model reads, which is the
   // only channel an SDK host has for answering AskUserQuestion: allowing the
   // tool just runs it, and it reports "The user did not answer the
@@ -233,17 +256,62 @@ export async function respondPermission({
     orchestrate.add(waiter.sessionId)
   }
 
+  /**
+   * "Stop asking me about this" — the SDK's own suggestions, replayed verbatim.
+   *
+   * Verbatim is the point: the renderer sent one boolean, so what is granted is
+   * exactly what the CLI proposed for exactly this call, and nothing the
+   * renderer could have widened it to. Three guards, each refusing an incoherent
+   * combination rather than a dangerous one:
+   *
+   *  - `!denyInstead` — unticking every hunk IS a rejection, and a rejection
+   *    that writes a permanent allow rule is a contradiction.
+   *  - `!updatedInput` — "allow every future Write to this path, but trim THIS
+   *    one" cannot be honoured: the rule would have no idea it was meant to be
+   *    partial. So a partial approval stays a one-off.
+   *  - non-empty — the CLI offers no suggestions for some calls at all, and an
+   *    empty updatedPermissions array is a change that changes nothing.
+   */
+  const grantRules =
+    behavior === 'allow' &&
+    alwaysAllow &&
+    !denyInstead &&
+    !updatedInput &&
+    Boolean(waiter?.suggestions?.length)
+
+  // ONE array, so a plan approval carrying a mode still works alongside a grant.
+  // Two separate updatedPermissions would mean whichever was spread second won.
+  const updatedPermissions: PermissionUpdate[] = [
+    ...(grantRules ? (waiter?.suggestions ?? []) : []),
+    ...(setMode ? [{ type: 'setMode' as const, mode: setMode, destination: 'session' as const }] : []),
+  ]
+
   const settled = settle(
     requestId,
     behavior === 'allow' && !denyInstead
       ? {
           behavior: 'allow',
           updatedInput,
-          ...(setMode
-            ? { updatedPermissions: [{ type: 'setMode', mode: setMode, destination: 'session' }] }
-            : {}),
+          ...(updatedPermissions.length ? { updatedPermissions } : {}),
+          // `user_permanent` only when rules were ACTUALLY granted, not merely
+          // asked for: one refused by the `updatedInput` guard above is honestly
+          // temporary, and saying otherwise would misreport the one decision
+          // this field exists to distinguish. A plan approval carrying a setMode
+          // is temporary too — switching mode is not a rule grant.
+          decisionClassification: grantRules ? 'user_permanent' : 'user_temporary',
         }
-      : { behavior: 'deny', message: denyInstead ?? message ?? 'Denied by user' },
+      : {
+          // Noticed and accepted: this also labels AskUserQuestion ANSWERS as
+          // rejections, because an answer rides the deny channel (see
+          // QuestionCard.submit and the ANSWER_PREFIX machinery that exists to
+          // stop the rest of the app reading one as a failure). There is no
+          // "answered" value in the vocabulary to say anything truer with, and
+          // it is not a regression either way — sdk.d.ts:2072 says the CLI
+          // already infers `reject` for a deny with this unset.
+          behavior: 'deny',
+          message: denyInstead ?? message ?? 'Denied by user',
+          decisionClassification: 'user_reject',
+        },
   )
 
   // The CLI now has the new mode, but nothing told our own meta — and the

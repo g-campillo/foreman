@@ -6,7 +6,6 @@ import {
   FolderPlus,
   GitBranch,
   GitBranchPlus,
-  Image as ImageIcon,
   ListChecks,
   ListPlus,
   Pencil,
@@ -18,22 +17,23 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import type {
-  EffortLevel,
-  ImageMediaType,
-  ModelInfo,
-  PermissionMode,
-  SendBlock,
-  SessionMeta,
-  SlashCommandInfo,
+import {
+  PERMISSION_MODES,
+  type EffortLevel,
+  type ImageMediaType,
+  type ModelInfo,
+  type PermissionMode,
+  type SendBlock,
+  type SessionMeta,
+  type SlashCommandInfo,
 } from '../../../shared/types'
-import type { EditorView } from '@codemirror/view'
 import { useStore } from '../store'
+import { composerBox } from '../composerBox'
 import { filterEntries, recentProjects, triggerAt } from '../derive.mts'
 import Autocomplete, { type Suggestion } from './Autocomplete'
 import MarkdownInput from './MarkdownInput'
-import Menu, { type MenuItem } from './Menu'
-import Picker, { useMenu } from './Picker'
+import type { MenuItem } from './Menu'
+import Picker from './Picker'
 import { ContextCard, ContextRing, useContextUsage } from './ContextRing'
 
 /* The CURRENT sentinel lived here — a fake <option> for "whatever the session is
@@ -146,14 +146,25 @@ export const modelLabels = (all: readonly ModelInfo[]): string[] => {
   )
 }
 
-/** Exported so the command palette offers the same modes, spelled the same way. */
-export const MODES: { value: PermissionMode; label: string }[] = [
-  { value: 'default', label: 'Ask' },
-  { value: 'acceptEdits', label: 'Accept edits' },
-  { value: 'plan', label: 'Plan' },
-  { value: 'bypassPermissions', label: 'Bypass' },
-  { value: 'dontAsk', label: "Don't ask" },
-]
+/** How each mode is spelled, everywhere. A Record rather than a list, so a sixth
+ *  mode added to PERMISSION_MODES cannot ship without being labelled — the same
+ *  exhaustiveness MODE_ICON already had. */
+const MODE_LABEL: Record<PermissionMode, string> = {
+  default: 'Ask',
+  acceptEdits: 'Accept edits',
+  plan: 'Plan',
+  bypassPermissions: 'Bypass',
+  dontAsk: "Don't ask",
+}
+
+/** Exported so the command palette and Settings offer the same modes, spelled
+ *  the same way. Derived from the shared array rather than written out again,
+ *  because ⇧Tab cycles that array and a second ordering here would mean the
+ *  menu and the keyboard disagreed about what comes next. */
+export const MODES: { value: PermissionMode; label: string }[] = PERMISSION_MODES.map((value) => ({
+  value,
+  label: MODE_LABEL[value],
+}))
 
 /** Separate from MODES rather than a field on it, because the palette and
  *  Settings render these as text rows and would import lucide for nothing. */
@@ -163,6 +174,28 @@ const MODE_ICON: Record<PermissionMode, React.ReactNode> = {
   plan: <ListChecks size={14} />,
   bypassPermissions: <Zap size={14} />,
   dontAsk: <ShieldOff size={14} />,
+}
+
+/**
+ * The two modes the pill tints, and what it says about them.
+ *
+ * Partial on purpose, and covering exactly two of five. The argument is NOT
+ * "these are dangerous" — acceptEdits is too — it is that these are the two
+ * where THE PILL IS THE ONLY REMAINING SIGNAL. Bypass suppresses the approval
+ * card, which is how the app normally tells you something consequential is
+ * happening; dontAsk suppresses it too AND produces tool failures that read as
+ * bugs. Every other mode still announces itself by prompting you.
+ *
+ * Tinting three of five would be the same as tinting none.
+ */
+const MODE_TONE: Partial<Record<PermissionMode, 'warn' | 'danger'>> = {
+  bypassPermissions: 'danger',
+  dontAsk: 'warn',
+}
+
+const MODE_HINT: Partial<Record<PermissionMode, string>> = {
+  bypassPermissions: 'no prompts at all',
+  dontAsk: 'denies anything not pre-approved',
 }
 
 /** Chips under the empty composer. Cursor's are mode shortcuts too — "Plan New
@@ -203,9 +236,6 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
   /** Live branch, kept fresh by the diff panel. worktree.branch is frozen at
    *  creation and lies after a checkout, so it is only the fallback. */
   const branch = useStore((s) => s.branches[session.id] ?? null)
-  /** The `+` menu. useMenu rather than MenuButton so the file input below can
-   *  be triggered from one of its rows. */
-  const add = useMenu()
   /* Fetched here rather than inside the ring, because the ring and the card it
      opens are siblings — the ring sits under the composer, the card floats above
      it, so neither can own the poll for the other. */
@@ -220,11 +250,18 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
   const [files, setFiles] = useState<string[]>([])
   /** Directory listing for a mention that points outside the project. */
   const [browsed, setBrowsed] = useState<string[]>([])
-  const box = useRef<EditorView | null>(null)
+  const setComposerDirty = useStore((s) => s.setComposerDirty)
 
   const busy = session.status === 'running' || session.status === 'awaiting-approval'
   /** Nothing to send. Drives both the disabled state and its tooltip. */
   const empty = !text.trim() && attachments.length === 0
+
+  /* Mirrored into the store as a FLAG, never as the text: the approval card has
+     to know whether stealing focus would interrupt something, and that is one
+     bit. Lifting `text` itself would put a store write on every keystroke and
+     notify every subscriber in the app; this writes at most twice per message,
+     because setComposerDirty short-circuits when nothing flipped. */
+  useEffect(() => setComposerDirty(!empty), [empty, setComposerDirty])
 
   // Commands are fixed for the session's lifetime, so once is enough.
   useEffect(() => {
@@ -311,7 +348,7 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     setCaret(pos)
     // The editor syncs both from props; it just needs the focus back, since the
     // click that picked the suggestion took it.
-    requestAnimationFrame(() => box.current?.focus())
+    requestAnimationFrame(() => composerBox.current?.focus())
   }
 
   const submit = (): void => {
@@ -389,7 +426,7 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     const s = session.promptSuggestion ?? ''
     setText(s)
     setCaret(s.length)
-    box.current?.focus()
+    composerBox.current?.focus()
   }
 
   // ------------------------------------------------------------------ menus
@@ -477,26 +514,21 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     })),
   ]
 
-  /** Cursor keeps its modes in here rather than on the toolbar, and so do we.
-   *  Skills and MCP servers are deliberately absent: the SDK has no read-only
-   *  skills listing (only a reload, which is a side effect no menu should have)
-   *  and Foreman has no per-request MCP toggle for those rows to drive. */
-  const addItems: MenuItem[] = [
-    ...MODES.map((m) => ({
-      id: m.value,
-      label: m.label,
-      icon: MODE_ICON[m.value],
-      checked: session.permissionMode === m.value,
-      onSelect: () => void window.foreman.setPermissionMode(session.id, m.value),
-    })),
-    { kind: 'divider' as const },
-    {
-      id: 'image',
-      label: 'Image',
-      icon: <ImageIcon size={14} />,
-      onSelect: () => picker.current?.click(),
-    },
-  ]
+  /* The modes lived inside the `+` menu for one release, and that was the whole
+     bug: a `+` glyph reads as "attach a file", the menu had no section header,
+     and nothing in the window said which mode was live. The feature was alive
+     and invisible. They are a labelled trigger on the toolbar now — bottom-left,
+     which is where Cursor puts its own mode control and the mirror of the model
+     picker on the right. No section header in the menu: the trigger already
+     reads `Plan ⌄`. */
+  const modeItems: MenuItem[] = MODES.map((m) => ({
+    id: m.value,
+    label: m.label,
+    icon: MODE_ICON[m.value],
+    hint: MODE_HINT[m.value],
+    checked: session.permissionMode === m.value,
+    onSelect: () => void window.foreman.setPermissionMode(session.id, m.value),
+  }))
 
   const projectPicker = (
     <Picker
@@ -517,6 +549,23 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
       items={branchItems}
       ariaLabel="Branch"
       tip="Branch this session is working on"
+    />
+  )
+  /* The live permission mode, always on screen. Its label is the whole point of
+     the feature — there is deliberately NO icon-only fallback at narrow widths,
+     because that would reintroduce the exact "which one is on?" problem this
+     exists to fix. `.composer-card .picker { flex: 0 1 auto }` and
+     `.picker-label`'s ellipsis already exist, so this and the model picker give
+     before anything else in the row does. */
+  const modePicker = (
+    <Picker
+      className="composer-mode"
+      icon={MODE_ICON[session.permissionMode]}
+      label={MODE_LABEL[session.permissionMode]}
+      items={modeItems}
+      tone={MODE_TONE[session.permissionMode]}
+      ariaLabel="Permission mode"
+      tip="What the agent may do without asking  ⇧Tab"
     />
   )
 
@@ -621,7 +670,7 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
             <Autocomplete items={suggestions} cursor={cursor} onPick={pick} />
           )}
           <MarkdownInput
-            viewRef={box}
+            viewRef={composerBox}
             value={text}
             caret={caret}
             // The ghost is an overlay on this same box, so leaving the
@@ -650,6 +699,33 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
               addFiles(e.dataTransfer.files)
             }}
             onKeyDown={(e) => {
+              // ⇧Tab cycles the permission mode, matching the CLI.
+              //
+              // FIRST, before both Tab branches below: the autocomplete's accept
+              // tests bare `Tab` and so does the ghost's, so either would swallow
+              // this. preventDefault beats defaultKeymap's indentLess too.
+              //
+              // Composer-scoped and deliberately NOT global. This handler runs at
+              // Prec.highest inside CodeMirror (see MarkdownInput), so it fires
+              // only while the composer has focus. The window-level handler in
+              // App.tsx gates on `if (!e.metaKey) return`, and removing that to
+              // fit a bare ⇧Tab would route every keystroke in the app through
+              // it — while the only editable-target guard in the codebase tests
+              // HTMLTextAreaElement | HTMLInputElement, which catches neither
+              // CodeMirror nor Monaco nor xterm. Typing a capital letter would
+              // cycle the permission mode.
+              //
+              // Cost, accepted knowingly: ⇧Tab is no longer a focus-escape from
+              // the text box. The CLI only cycles from its prompt too.
+              if (e.key === 'Tab' && e.shiftKey) {
+                e.preventDefault()
+                const i = PERMISSION_MODES.indexOf(session.permissionMode)
+                void window.foreman.setPermissionMode(
+                  session.id,
+                  PERMISSION_MODES[(i + 1) % PERMISSION_MODES.length],
+                )
+                return
+              }
               if (suggestions.length) {
                 if (e.key === 'ArrowDown') {
                   e.preventDefault()
@@ -690,24 +766,25 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         {/* The background-task tray used to sit here, between the input and the
             controls. It moved out of the card entirely — see `bgTray` above. */}
 
-        {/* Cursor's `+`. The three visible dropdowns that used to stand here are
-            gone: the five permission modes moved inside this menu, effort folded
-            into the model label, and the worktree checkbox became a row in the
-            branch picker. What is left is one label and one button, which is the
-            whole point — their composer shows the model and nothing else. */}
+        {/* Cursor's `+`, back to meaning one thing. It briefly held a menu whose
+            first five rows were the permission modes, which is how a control the
+            whole app steers on ended up behind a glyph that reads as "attach a
+            file" — and with no menu it does not need one: a single row is a
+            button. Images could otherwise only ever arrive by paste or drop. */}
         <button
           className="composer-add"
-          ref={add.ref}
           type="button"
-          aria-label="Mode and context"
-          aria-haspopup="menu"
-          aria-expanded={!!add.anchor}
-          data-open={add.anchor ? '' : undefined}
-          data-tip="Mode, and attach an image"
-          onClick={add.toggle}
+          aria-label="Attach an image"
+          data-tip="Attach an image"
+          onClick={() => picker.current?.click()}
         >
           <Plus size={14} />
         </button>
+
+        {/* Mode left, model right — Cursor's split, and the reason the pill is a
+            Picker rather than a bespoke control is that it then behaves exactly
+            like the other three: same trigger, same menu, same keyboard. */}
+        {modePicker}
 
         <span className="spacer" />
 
@@ -832,9 +909,9 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         </div>
       )}
 
-      {/* Images could only ever arrive by paste or drop before. The `+` menu's
-          Image row needs something to click, and a hidden input is the only way
-          to open the file picker without a visible control of its own. */}
+      {/* Images could only ever arrive by paste or drop before. The `+` above
+          needs something to click, and a hidden input is the only way to open
+          the file picker without a visible control of its own. */}
       <input
         ref={picker}
         type="file"
@@ -847,7 +924,6 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
           e.target.value = ''
         }}
       />
-      <Menu anchor={add.anchor} items={addItems} onClose={add.close} />
     </div>
   )
 }

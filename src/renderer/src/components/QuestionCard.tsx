@@ -146,11 +146,9 @@ export default function QuestionCard({
       const note = a.note.trim() ? ` — note: ${sanitize(a.note)}` : ''
       return `${oneLine(q.question)} → ${parts.join(', ') || '(no answer)'}${note}`
     })
-    void window.foreman.respondPermission(
-      req.requestId,
-      'deny',
-      `${ANSWER_PREFIX}\n${lines.join('\n')}`,
-    )
+    void window.foreman.respondPermission(req.requestId, 'deny', {
+      message: `${ANSWER_PREFIX}\n${lines.join('\n')}`,
+    })
   }
   const skip = (): void => void window.foreman.respondPermission(req.requestId, 'deny')
 
@@ -184,7 +182,16 @@ export default function QuestionCard({
       // stopPropagation() so this never fires for them; it is the safety net for
       // any field added later, and the failure it prevents is silent — typing
       // "3 things" into a note would pick option 3.
-      if (e.target instanceof HTMLTextAreaElement || e.target instanceof HTMLInputElement) return
+      //
+      // The contentEditable arm is not hypothetical: the composer is CodeMirror,
+      // which is neither a textarea nor an input, so with a question modal up and
+      // focus left in the composer, typing a digit toggled an option.
+      if (
+        e.target instanceof HTMLTextAreaElement ||
+        e.target instanceof HTMLInputElement ||
+        (e.target instanceof HTMLElement && e.target.isContentEditable)
+      )
+        return
 
       if (e.key === 'Escape') {
         setOpen(false)

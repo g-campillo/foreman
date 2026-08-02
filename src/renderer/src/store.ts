@@ -91,6 +91,23 @@ interface State {
   focusItemId: string | null
   revealItem(itemId: string | null): void
 
+  /**
+   * Whether the composer currently holds something worth keeping.
+   *
+   * A FLAG, not the text. The approval card reads this to decide whether
+   * stealing focus for its Allow button would interrupt anything, and that
+   * question is one bit wide. Composer already computes
+   * `!text.trim() && attachments.length === 0` for its own send button, so one
+   * effect mirrors it here — lifting `text` itself would put a store write on
+   * every keystroke and notify every subscriber in the app.
+   *
+   * Deliberately NOT keyed by session: App renders ONE unkeyed `<Composer>`, so
+   * a half-typed message survives a session switch, and a per-session map would
+   * be a fiction about state that does not exist.
+   */
+  composerDirty: boolean
+  setComposerDirty(dirty: boolean): void
+
   select(id: string): void
   openPath(cwd: string, worktreeBranch?: string): Promise<void>
   newSession(worktreeBranch?: string): Promise<void>
@@ -395,6 +412,14 @@ export const useStore = create<State>((set, get) => ({
   hiddenProjects: loadHiddenProjects(),
   editor: null,
   focusItemId: null,
+  composerDirty: false,
+
+  setComposerDirty(composerDirty) {
+    // Returns the state object UNCHANGED when nothing flipped, the same
+    // short-circuit onPermissionRequest uses below — so a mirroring effect that
+    // runs on every keystroke still writes at most twice per message.
+    set((s) => (s.composerDirty === composerDirty ? s : { composerDirty }))
+  },
 
   setNotice(notice) {
     set({ notice })
@@ -481,9 +506,15 @@ export const useStore = create<State>((set, get) => ({
   },
 
   async resume(sessionId, cwd, title) {
-    // Defaults apply on resume too: without them a reopened conversation lands
-    // on the SDK's 'default' mode regardless of what the user configured, which
-    // is strictly more surprising than honouring their setting.
+    // These are the FALLBACK on resume, not the winner. The Session constructor
+    // resolves `prior.permissionMode ?? init.permissionMode ?? 'default'` off
+    // the per-conversation sidecar, so a conversation reopened after being put
+    // in Plan mode comes back in Plan mode — it used to be silently force-reset
+    // to whatever the default pref happened to be, discarding what it was.
+    //
+    // The right division: the renderer knows what you configured, the host knows
+    // what THIS conversation was. Model and effort still have the old behaviour
+    // for want of the same three lines; see the sidecar's docblock.
     const meta: SessionMeta = await window.foreman.resumeSession({
       cwd,
       resume: sessionId,

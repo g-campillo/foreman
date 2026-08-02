@@ -33,26 +33,17 @@ export default function PlanCard({
   const [writing, setWriting] = useState(false)
   const title = planTitle(plan.markdown)
 
-  // The `undefined` before `subagents` is `keep`, which only the partial-approval
-  // path uses. If a seventh parameter ever lands here, that is the argument for
-  // turning respondPermission into an options object.
+  // The two positionals plus an options bag — respondPermission grew its seventh
+  // argument (`alwaysAllow`), which is exactly what the note that used to sit
+  // here said would be the moment to collapse them.
   const approve = (mode: PermissionMode, subagents?: boolean): void => {
-    void window.foreman.respondPermission(
-      req.requestId,
-      'allow',
-      undefined,
-      mode,
-      undefined,
-      subagents,
-    )
+    void window.foreman.respondPermission(req.requestId, 'allow', { setMode: mode, subagents })
   }
   const revise = (): void => {
     if (!feedback.trim()) return
-    void window.foreman.respondPermission(
-      req.requestId,
-      'deny',
-      `${PLAN_FEEDBACK_PREFIX}\n\n${feedback.trim()}`,
-    )
+    void window.foreman.respondPermission(req.requestId, 'deny', {
+      message: `${PLAN_FEEDBACK_PREFIX}\n\n${feedback.trim()}`,
+    })
   }
 
   useEffect(() => {

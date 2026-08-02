@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem, SessionMeta } from '../../shared/types'
-import { activityOf, answeredQuestions, ANSWER_PREFIX, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, swatch, level, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, buildTree, focusTarget, authorEdits, resolveAnchors } from './derive.mts'
+import { activityOf, answeredQuestions, ANSWER_PREFIX, armedApproval, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, swatch, level, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, buildTree, focusTarget, authorEdits, resolveAnchors } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -480,6 +480,51 @@ assert.equal(
   false,
   'an empty planFilePath is dropped, not shown as a blank path',
 )
+
+// ------------------------------------------------------------ armedApproval
+
+// This decides which Allow button takes focus, and therefore what a stray ⏎
+// activates. Getting it wrong does not throw — it approves something.
+{
+  const req = (requestId: string, toolName: string, input: unknown = {}) => ({
+    requestId,
+    toolName,
+    input,
+  })
+  const write = req('w1', 'Write', { file_path: '/a/x.ts', content: 'x' })
+  const write2 = req('w2', 'Write', { file_path: '/a/y.ts', content: 'y' })
+  const plan = req('p1', 'ExitPlanMode', { plan: '# Ship it' })
+  const asked = req('q1', 'AskUserQuestion', {
+    questions: [{ question: 'Which?', options: [{ label: 'A' }] }],
+  })
+
+  assert.equal(armedApproval([]), null, 'nothing pending, nothing armed')
+  assert.equal(armedApproval([write]), 'w1')
+  assert.equal(armedApproval([write, write2]), 'w1', 'only the FIRST arms')
+
+  // THE CASE THAT MATTERS. PlanCard and QuestionCard bind window-level keydown
+  // listeners and QuestionCard's binds plain Enter, so a focused Allow button
+  // anywhere on screen means one ⏎ answers the questions AND approves an
+  // unrelated tool. A plan that is not even first still disarms everything.
+  assert.equal(armedApproval([write, plan]), null, 'a plan anywhere disarms')
+  assert.equal(armedApproval([write, asked]), null, 'a question anywhere disarms')
+  assert.equal(armedApproval([plan]), null)
+  assert.equal(armedApproval([asked]), null)
+
+  // ...but only a REAL one. A malformed question set falls back to a plain
+  // approval card with no listener of its own, so there is nothing to collide
+  // with and the request in front of it is free to arm.
+  assert.equal(
+    armedApproval([write, req('q2', 'AskUserQuestion', { questions: 'nope' })]),
+    'w1',
+    'a malformed question set renders as a plain card and disarms nothing',
+  )
+  assert.equal(
+    armedApproval([write, req('p2', 'ExitPlanMode', { plan: '   ' })]),
+    'w1',
+    'a blank plan is not a plan',
+  )
+}
 
 // ---------------------------------------------------------------- planTitle
 

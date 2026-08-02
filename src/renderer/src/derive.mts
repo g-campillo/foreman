@@ -500,6 +500,49 @@ export function planTitle(markdown: string): string {
 export const PLAN_FEEDBACK_PREFIX =
   'The user did not approve this plan. Stay in plan mode and revise it based on this feedback:'
 
+// ------------------------------------------------------- arming an approval
+
+/**
+ * The one approval, if any, whose Allow button may take focus so that ⏎
+ * activates it natively.
+ *
+ * Focus rather than a global keydown listener, because a focused `<button>`
+ * activates on ⏎ for free, gets a real focus ring, is announced by VoiceOver as
+ * the default action, and stays Tab-reachable. A global handler would have to
+ * re-derive all three of those AND answer "is the user typing right now" on
+ * every keystroke instead of once.
+ *
+ * Three rules, and the middle one is the whole reason this is a function rather
+ * than an index test:
+ *
+ *  1. Only the FIRST pending request arms. Anything else would put the default
+ *     action on a card the user has not read.
+ *  2. NOTHING arms while a plan or a question is pending — even one that is not
+ *     first. PlanCard and QuestionCard come out of the same `approvals` array as
+ *     these, and both mount window-level keydown listeners; QuestionCard's binds
+ *     plain Enter. A focused button plus that listener means one ⏎ both answers
+ *     the questions and approves an unrelated tool. Conversation cannot see
+ *     whether those modals are open, so the conservative test is the presence of
+ *     the request, reusing the very helpers that decide which card gets rendered.
+ *  3. Otherwise, the first id.
+ *
+ * A MALFORMED question set does arm the request in front of it, and that is
+ * correct rather than sloppy: askQuestions returning null is exactly the case
+ * where Conversation falls back to a plain approval card with no listener of its
+ * own, so there is nothing left to collide with.
+ */
+export function armedApproval(
+  reqs: readonly { requestId: string; toolName: string; input: unknown }[],
+): string | null {
+  const first = reqs[0]
+  if (!first) return null
+  for (const r of reqs) {
+    if (planProposal(r.toolName, r.input)) return null
+    if (askQuestions(r.toolName, r.input)) return null
+  }
+  return first.requestId
+}
+
 // -------------------------------------------------------- composer triggers
 
 export interface Trigger {
@@ -1037,9 +1080,13 @@ export interface UsageTotals {
   inputTokens: number
   outputTokens: number
   /**
-   * Sidecars found — conversations that have taken at least one turn *in
-   * Foreman*. Sessions started from the Claude CLI never get one, so this is
-   * not a machine-wide total and the UI must not claim it is.
+   * Sidecars found — very nearly "conversations that have taken at least one
+   * turn *in Foreman*". Sessions started from the Claude CLI never get one, so
+   * this is not a machine-wide total and the UI must not claim it is.
+   *
+   * "Very nearly", because the sidecar also carries the permission mode now, and
+   * changing that before the first turn writes the file — so a conversation you
+   * put in Plan mode and then abandoned counts here at $0.
    */
   sessions: number
   byProject: { root: string; costUsd: number; sessions: number }[]

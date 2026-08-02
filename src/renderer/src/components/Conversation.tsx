@@ -18,6 +18,7 @@ import QuestionCard from './QuestionCard'
 import PlanCard from './PlanCard'
 import {
   answeredQuestions,
+  armedApproval,
   askQuestions,
   fmt,
   groupTurns,
@@ -55,6 +56,12 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
     () => allApprovals.filter((a) => a.sessionId === sessionId),
     [allApprovals, sessionId],
   )
+  /* Which Allow button may take focus, so ⏎ answers it natively. Conversation
+     renders only the ACTIVE session, so an approval raised by a background
+     agent can never arm — and armedApproval refuses to arm anything at all
+     while a plan or a question is pending, because those two cards bind their
+     own window-level Enter. */
+  const armId = useMemo(() => armedApproval(approvals), [approvals])
   const allElicitations = useStore((s) => s.elicitations)
   const elicitations = useMemo(
     () => allElicitations.filter((e) => e.sessionId === sessionId),
@@ -179,7 +186,7 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
         return questions ? (
           <QuestionCard key={a.requestId} req={a} questions={questions} />
         ) : (
-          <ApprovalCard key={a.requestId} req={a} />
+          <ApprovalCard key={a.requestId} req={a} arm={a.requestId === armId} />
         )
       })}
       {elicitations.map((e) => (

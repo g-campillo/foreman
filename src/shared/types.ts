@@ -7,9 +7,27 @@
 
 export type SessionStatus = 'starting' | 'idle' | 'running' | 'awaiting-approval' | 'error'
 
-/** Mirrors the SDK's own union, minus 'auto' (no UI for the classifier yet).
- *  'dontAsk' denies anything not pre-approved instead of prompting. */
-export type PermissionMode = 'default' | 'acceptEdits' | 'plan' | 'bypassPermissions' | 'dontAsk'
+/**
+ * Mirrors the SDK's own union, minus 'auto' (no UI for the classifier yet).
+ * 'dontAsk' denies anything not pre-approved instead of prompting.
+ *
+ * An array first and a type derived from it, rather than a bare union, because
+ * two places now need the modes at RUNTIME and neither can be trusted to keep a
+ * hand-written copy in step: the composer's ⇧Tab cycles through this order, and
+ * the usage sidecar VALIDATES against it — that file is user-editable storage,
+ * and a bad mode reaching `query({permissionMode})` kills the session at
+ * startup. `as const` is what keeps the derived type exactly as narrow as the
+ * hand-written union was.
+ */
+export const PERMISSION_MODES = [
+  'default',
+  'acceptEdits',
+  'plan',
+  'bypassPermissions',
+  'dontAsk',
+] as const
+
+export type PermissionMode = (typeof PERMISSION_MODES)[number]
 
 /** Mirrors the SDK's EffortLevel. 'max' is session-scoped and never persisted. */
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
@@ -188,13 +206,127 @@ export type ChatItem =
   | { id: string; kind: 'result'; text: string; costUsd: number; durationMs: number; isError: boolean }
   | { id: string; kind: 'error'; text: string }
 
+/**
+ * Where a permission rule would be written.
+ *
+ * Mirrors the SDK's PermissionUpdateDestination, so the renderer never imports
+ * the SDK — the same refusal every other type in this file makes. `scopeLabel`
+ * in shared/rules.mts turns each of these into the FILE it names, because a
+ * grant whose location you cannot read is not consent.
+ */
+export type RuleScope =
+  | 'userSettings'
+  | 'projectSettings'
+  | 'localSettings'
+  | 'session'
+  | 'cliArg'
+
+/** One rule. `Bash` + `npm run build:*`, or a bare tool name meaning all of it. */
+export interface RuleValue {
+  toolName: string
+  /** The argument pattern the rule matches. Absent means the whole tool. */
+  ruleContent?: string
+}
+
+/**
+ * A permission change the SDK offered alongside a prompt — the "you will not be
+ * asked again" half of an approval.
+ *
+ * Mirrors the SDK's PermissionUpdate union. DISPLAY ONLY: the host keeps the
+ * real suggestions on its own waiter and replays those verbatim, so the renderer
+ * answers `alwaysAllow: true` and can never name a rule, a tool or a
+ * destination. This copy exists purely so the card can say what the click grants
+ * BEFORE it happens — see describeGrant in shared/rules.mts, which is total over
+ * this union for exactly that reason.
+ */
+export type SuggestedUpdate =
+  | {
+      type: 'addRules' | 'replaceRules' | 'removeRules'
+      rules: RuleValue[]
+      behavior: 'allow' | 'deny' | 'ask'
+      destination: RuleScope
+    }
+  | { type: 'setMode'; mode: PermissionMode; destination: RuleScope }
+  | {
+      type: 'addDirectories' | 'removeDirectories'
+      directories: string[]
+      destination: RuleScope
+    }
+
 export interface PermissionRequest {
   requestId: string
   sessionId: string
   toolName: string
   input: Record<string, unknown>
-  /** Present when the SDK offers "always allow"-style rule suggestions. */
-  hasSuggestions: boolean
+  /**
+   * The SDK's own "always allow"-style suggestions, for display.
+   *
+   * Optional, and that is not laziness: the host's on-disk event log gets
+   * replayed when the app re-adopts a live agent, so a request an older build
+   * wrote carries no rules at all. That has to render as "no always-allow
+   * offered" rather than crash.
+   */
+  rules?: SuggestedUpdate[]
+}
+
+/**
+ * Arguments of a permission answer, as they arrive from the renderer.
+ *
+ * Lives here rather than beside the host's respondPermission because the
+ * preload bridge takes it as an options object — six positionals was already
+ * one too many, and PlanCard's note about "if a seventh parameter ever lands
+ * here" was written the turn before one did.
+ */
+export interface PermissionAnswer {
+  requestId: string
+  behavior: 'allow' | 'deny'
+  /** Replaces the default deny text; see the AskUserQuestion note below. */
+  message?: string
+  /**
+   * Permission mode to switch to as part of the same allow.
+   *
+   * This rides on the permission result rather than going out as a separate
+   * setPermissionMode call because approving ExitPlanMode makes the CLI change
+   * the mode too — two writers, and whichever landed second would win.
+   * `updatedPermissions` is applied with the decision, so the user's pick can't
+   * lose that race.
+   */
+  setMode?: PermissionMode
+  /**
+   * Allow this, and stop being asked about it.
+   *
+   * A BARE BOOLEAN, deliberately. The rules actually granted are the SDK's own
+   * suggestions, which the host kept on the waiter and never sent anywhere — so
+   * this cannot name a tool, a pattern or a settings file, and a compromised or
+   * simply buggy renderer cannot widen a grant beyond what the CLI itself
+   * proposed for this exact call. Same trust boundary `keep` draws by sending
+   * indices instead of content, one step further: not even indices.
+   *
+   * `PermissionRequest.rules` is the display copy the card reads to say what
+   * this would do. The two are never compared — the host does not trust it, it
+   * simply does not need it.
+   */
+  alwaysAllow?: boolean
+  /**
+   * Indices of the edits/hunks the user actually accepted. Absent means all.
+   *
+   * INDICES, never content, and that is the whole safety argument. The host
+   * subsets its OWN copy of the tool input, so the renderer cannot name bytes
+   * that reach disk — a nasty new trust boundary collapses into a bounds check.
+   * See subsetMultiEdit in shared/diff.mts for the property that buys.
+   */
+  keep?: number[]
+  /**
+   * Approving a plan AND handing the work to subagents.
+   *
+   * Rides the permission answer for the same reason `setMode` does, only more
+   * so: it has to be known BEFORE the tool runs. The input queue is gated shut
+   * for the whole turn, so a follow-up message would not reach the model until
+   * after it had already implemented the plan alone. The directive itself
+   * travels on a PostToolUse hook — see plan.ts — and this flag is only how the
+   * click reaches it.
+   */
+  subagents?: boolean
 }
 
 export interface FileDiff {

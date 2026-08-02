@@ -16,6 +16,7 @@ import {
   type ElicitationAction,
   type ElicitationRequest,
   type PastSession,
+  type PermissionAnswer,
   type PermissionRequest,
   type SendContent,
   type SessionMeta,
@@ -37,7 +38,6 @@ import {
   commitFiles,
 } from './gitdiff'
 import { listProjectFiles, FILE_LIMIT } from '../files'
-import type { PermissionAnswer } from './permissions'
 
 /**
  * Live agents, by session id.

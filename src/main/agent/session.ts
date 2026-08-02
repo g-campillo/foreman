@@ -32,7 +32,7 @@ import { lspMcpServer, READ_ONLY_TOOLS } from '../../lsp/tools'
 import { makeDiagnosticsHook } from '../../lsp/diagnose'
 import { claudeExecutable } from './executable'
 import { proposeTitle } from './title'
-import { readUsage, writeUsage } from './usage'
+import { readUsage, writeUsage, type SessionSidecar } from './usage'
 import {
   FALLBACK_MODEL,
   MAX_BUDGET_USD,
@@ -147,10 +147,14 @@ export class Session {
     const id = init.sessionId ?? randomUUID()
     this.named = Boolean(init.title)
     this.autoTitleOn = init.autoTitle !== false
-    // What this conversation had already spent before this run. Zero for a
-    // fresh session; for a resumed one it comes back off the sidecar, because
-    // the CLI's own `total_cost_usd` restarts from zero on resume.
-    const prior = init.resume ? readUsage(init.resume) : { costUsd: 0, inputTokens: 0, outputTokens: 0 }
+    // What we already knew about this conversation before this run. A literal
+    // zero for a fresh session, so a genuinely new one is untouched by anything
+    // below; for a resumed one it comes back off the sidecar, because the CLI's
+    // own `total_cost_usd` restarts from zero on resume and its transcript has
+    // nowhere to record a permission mode at all.
+    const prior: SessionSidecar = init.resume
+      ? readUsage(init.resume)
+      : { costUsd: 0, inputTokens: 0, outputTokens: 0 }
     this.restoredCost = prior.costUsd
     this.meta = {
       id,
@@ -163,7 +167,12 @@ export class Session {
       outputTokens: prior.outputTokens,
       turnStartedAt: null,
       turnTokens: 0,
-      permissionMode: init.permissionMode ?? 'default',
+      // What this conversation WAS beats what the renderer configures a new one
+      // to be. Resolved here rather than in the renderer's resume() because it
+      // has to be known BEFORE query() is constructed twelve lines down —
+      // otherwise the session starts on the wrong mode and gets patched, which
+      // is exactly the flash sessionPrefs() exists to avoid.
+      permissionMode: prior.permissionMode ?? init.permissionMode ?? 'default',
       createdAt: Date.now(),
       effort: init.effort ?? null,
       promptSuggestion: null,
@@ -304,6 +313,32 @@ export class Session {
   private patchMeta(patch: Partial<SessionMeta>): void {
     Object.assign(this.meta, patch)
     send(IPC.evtMeta, { sessionId: this.meta.id, patch })
+    // Keyed off the PATCH, not called from each writer. There are already two
+    // writers of permissionMode — setPermissionMode() and the plan-approval
+    // onModeChanged callback in the constructor — and a third can be added by
+    // someone with no reason to know this file needs telling.
+    if ('permissionMode' in patch || 'costUsd' in patch) this.persistSidecar()
+  }
+
+  /**
+   * Everything about this conversation the CLI's transcript cannot hold.
+   *
+   * Whole-record, because writeUsage replaces the file: writing only the fields
+   * that changed would erase the others. Cheap either way — one ~80-byte file,
+   * and the cadence is unchanged from when the cost write sat inline in the
+   * `result` handler, since 'costUsd' is patched exactly once per turn.
+   */
+  private persistSidecar(): void {
+    if (!this.meta.sdkSessionId) return
+    writeUsage(this.meta.sdkSessionId, {
+      // The project, not the scratch worktree — attribution should survive the
+      // worktree being removed. Already canonical: createSession realpaths the cwd.
+      cwd: this.meta.worktree?.repoRoot ?? this.meta.cwd,
+      costUsd: this.meta.costUsd,
+      inputTokens: this.meta.inputTokens,
+      outputTokens: this.meta.outputTokens,
+      permissionMode: this.meta.permissionMode,
+    })
   }
 
   private setStatus(status: SessionStatus): void {
@@ -498,19 +533,9 @@ export class Session {
           turnStartedAt: null,
           turnTokens: r.usage?.output_tokens ?? this.meta.turnTokens,
         })
-        // Cost is in no transcript the CLI writes, so it only survives a resume
-        // if we record it ourselves. Cheap: one ~80-byte file per turn.
-        if (this.meta.sdkSessionId) {
-          writeUsage(this.meta.sdkSessionId, {
-            // The project, not the scratch worktree — attribution should survive
-            // the worktree being removed. Already canonical: createSession
-            // realpaths the cwd.
-            cwd: this.meta.worktree?.repoRoot ?? this.meta.cwd,
-            costUsd: this.meta.costUsd,
-            inputTokens: this.meta.inputTokens,
-            outputTokens: this.meta.outputTokens,
-          })
-        }
+        // The sidecar write that used to sit here is gone: the patchMeta above
+        // carries 'costUsd', which is what now triggers persistSidecar(). Same
+        // single call per turn, byte-for-byte the same cadence.
         this.setStatus(!interrupted && r.is_error ? 'error' : 'idle')
         // The transcript file exists by now, so an auto-title can reach disk.
         this.persistTitle()

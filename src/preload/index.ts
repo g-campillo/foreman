@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import { IPC, type PermissionMode } from '../shared/types'
+import { IPC, type PermissionAnswer } from '../shared/types'
 
 function on(channel: string, cb: (payload: any) => void): () => void {
   const listener = (_e: IpcRendererEvent, payload: any): void => cb(payload)
@@ -65,27 +65,21 @@ const api = {
   reloadSkills: (sessionId: string) => ipcRenderer.invoke(IPC.sessionReloadSkills, { sessionId }),
 
   // permissions
+  /**
+   * Answer a parked prompt.
+   *
+   * The two decisions every caller makes stay positional; everything else is an
+   * options bag typed off the wire contract itself, so a field added there
+   * cannot be forgotten here. This used to be six positionals and PlanCard's own
+   * comment said "if a seventh parameter ever lands here, that is the argument
+   * for turning respondPermission into an options object" — `alwaysAllow` is
+   * the seventh.
+   */
   respondPermission: (
     requestId: string,
     behavior: 'allow' | 'deny',
-    message?: string,
-    /** Switch the session to this mode as part of the same allow. */
-    setMode?: PermissionMode,
-    /** Indices of the edits/hunks accepted. Absent means all of them. */
-    keep?: number[],
-    /** Approving a plan AND handing the work to subagents. Rides the answer
-     *  because the queue gate makes a follow-up message arrive too late — see
-     *  main/agent/plan.ts. */
-    subagents?: boolean,
-  ) =>
-    ipcRenderer.invoke(IPC.permRespond, {
-      requestId,
-      behavior,
-      message,
-      setMode,
-      keep,
-      subagents,
-    }),
+    opts?: Omit<PermissionAnswer, 'requestId' | 'behavior'>,
+  ) => ipcRenderer.invoke(IPC.permRespond, { requestId, behavior, ...opts }),
 
   // MCP elicitation
   respondElicitation: (
