@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import { IPC, type PermissionAnswer } from '../shared/types'
+import { IPC, type McpActionResult, type McpStatus, type PermissionAnswer } from '../shared/types'
 
 function on(channel: string, cb: (payload: any) => void): () => void {
   const listener = (_e: IpcRendererEvent, payload: any): void => cb(payload)
@@ -27,7 +27,10 @@ const api = {
     ipcRenderer.invoke(IPC.sessionStopTask, { sessionId, taskId }),
   toggleMcp: (sessionId: string, name: string, enabled: boolean) =>
     ipcRenderer.invoke(IPC.mcpToggle, { sessionId, name, enabled }),
-  reconnectMcp: (sessionId: string, name: string) =>
+  /* Annotated where every other channel here is inferred as `any`, because the
+     failure reason is the entire point: it has to reach the panel typed, or the
+     renderer silently ignores it exactly as the old `void` did. */
+  reconnectMcp: (sessionId: string, name: string): Promise<McpActionResult> =>
     ipcRenderer.invoke(IPC.mcpReconnect, { sessionId, name }),
   setMcpPermissionOverride: (sessionId: string, name: string, mode: string | null) =>
     ipcRenderer.invoke(IPC.mcpPermissionOverride, { sessionId, name, mode }),
@@ -61,7 +64,8 @@ const api = {
   accountInfo: (sessionId: string) => ipcRenderer.invoke(IPC.sessionAccount, { sessionId }),
   usageInfo: (sessionId: string) => ipcRenderer.invoke(IPC.sessionUsage, { sessionId }),
   supportedAgents: (sessionId: string) => ipcRenderer.invoke(IPC.sessionAgents, { sessionId }),
-  mcpStatus: (sessionId: string) => ipcRenderer.invoke(IPC.sessionMcpStatus, { sessionId }),
+  mcpStatus: (sessionId: string): Promise<McpStatus> =>
+    ipcRenderer.invoke(IPC.sessionMcpStatus, { sessionId }),
   reloadSkills: (sessionId: string) => ipcRenderer.invoke(IPC.sessionReloadSkills, { sessionId }),
 
   // permissions

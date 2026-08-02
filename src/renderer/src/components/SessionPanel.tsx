@@ -4,7 +4,7 @@ import type {
   AccountInfo,
   AgentInfo,
   ContextUsage,
-  McpServerInfo,
+  McpStatus,
   SessionMeta,
   UsageInfo,
 } from '../../../shared/types'
@@ -25,7 +25,7 @@ interface Data {
   context: ContextUsage | null
   account: AccountInfo | null
   usage: UsageInfo | null
-  mcp: McpServerInfo[]
+  mcp: McpStatus
   agents: AgentInfo[]
 }
 
@@ -84,7 +84,7 @@ export default function SessionPanel({
       f.contextUsage(session.id).catch(() => null),
       f.accountInfo(session.id).catch(() => null),
       f.usageInfo(session.id).catch(() => null),
-      f.mcpStatus(session.id).catch(() => []),
+      f.mcpStatus(session.id).catch(() => ({ servers: [], staleEnv: false })),
       f.supportedAgents(session.id).catch(() => []),
     ])
     setData({ context, account, usage, mcp, agents })
@@ -105,7 +105,7 @@ export default function SessionPanel({
      often than it is right. */
   const counts: Record<SubTab, number | null> = {
     overview: null,
-    mcp: data ? data.mcp.length : null,
+    mcp: data ? data.mcp.servers.length : null,
     agents: data ? data.agents.length : null,
   }
   return (
@@ -157,7 +157,8 @@ export default function SessionPanel({
         {tab === 'mcp' && (
           <McpTab
             sessionId={session.id}
-            servers={data?.mcp ?? []}
+            servers={data?.mcp.servers ?? []}
+            staleEnv={data?.mcp.staleEnv ?? false}
             overrides={overrides}
             onOverride={(server, value) => setOverrides((m) => ({ ...m, [server]: value }))}
             onChanged={() => void refresh()}

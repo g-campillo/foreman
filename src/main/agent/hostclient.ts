@@ -14,6 +14,7 @@ import {
   type HostMeta,
 } from '../../shared/hostwire'
 import { send, showNotification } from '../bridge'
+import { currentPathId, shellPathReady } from '../shellpath'
 
 /**
  * Electron's handle on a detached agent host.
@@ -66,6 +67,17 @@ function sockOf(dir: string, meta: HostMeta): string {
 
 export class HostClient {
   meta: SessionMeta
+  /**
+   * The PATH this host was actually spawned with, as a fingerprint.
+   *
+   * A process's environment is frozen at `spawn`, so a host started before the
+   * login-shell PATH arrived — or by a build older than it — can never connect
+   * an MCP server that needs `npx`, however many times the button is pressed.
+   * Set from `currentPathId()` for a host we start, and read back out of
+   * `meta.json` for one we adopt, which is the only way it survives a restart.
+   * Undefined means "older build", which is the same stale case.
+   */
+  pathId: string | undefined
   private sock: Socket | null = null
   private nextId = 1
   private readonly pending = new Map<
@@ -86,6 +98,12 @@ export class HostClient {
 
   /** Spawn a brand-new host and wait for its first `hello`. */
   static async start(init: Record<string, unknown>, sessionId: string): Promise<HostClient> {
+    // The host's env is whatever ours is at this instant, and it keeps it for
+    // life — so a session started in the second before the login shell answers
+    // would inherit the stripped launch PATH permanently. Free on every launch
+    // but the first, where the cached answer has already resolved this.
+    await shellPathReady
+
     const dir = hostDir(sessionId)
     mkdirSync(dir, { recursive: true })
 
@@ -103,7 +121,11 @@ export class HostClient {
     // `unref` is what actually lets it outlive us — without both, quitting
     // Electron takes the host with it and none of this works.
     const script = join(__dirname, 'host.js')
-    const child = spawn(process.execPath, [script, dir, JSON.stringify({ ...init, sessionId }), sock], {
+    // `pathId` rides in with the init JSON so the host can echo it back through
+    // meta.json, which is the one place a fact about this spawn survives into a
+    // later run of the app — the point at which it is needed.
+    const pathId = currentPathId()
+    const child = spawn(process.execPath, [script, dir, JSON.stringify({ ...init, sessionId, pathId }), sock], {
       env: {
         ...process.env,
         ELECTRON_RUN_AS_NODE: '1',
@@ -127,6 +149,7 @@ export class HostClient {
     child.unref()
 
     const client = new HostClient({} as SessionMeta)
+    client.pathId = pathId
     await client.attach(sock)
     return client
   }
@@ -134,6 +157,7 @@ export class HostClient {
   /** Re-attach to a host that is already running — the post-crash path. */
   static async adopt(found: FoundHost): Promise<HostClient> {
     const client = new HostClient({} as SessionMeta)
+    client.pathId = found.meta.pathId
     await client.attach(sockOf(found.dir, found.meta))
     return client
   }

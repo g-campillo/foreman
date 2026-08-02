@@ -417,6 +417,37 @@ export interface McpServerInfo {
   scope?: string
 }
 
+/**
+ * The MCP tab's whole payload, not just the list.
+ *
+ * `staleEnv` is set when the session's host was spawned with a different PATH
+ * than this process now has — usually because the host predates the app
+ * learning the user's login-shell PATH. A host's environment is frozen at
+ * `spawn`, so reconnecting a server inside one of those cannot succeed however
+ * many times it is tried, and the panel says so instead of drawing another red
+ * row with no explanation. Carried alongside the list rather than on its own
+ * channel: it is a property of the session, and the tab already makes exactly
+ * one call.
+ */
+export interface McpStatus {
+  servers: McpServerInfo[]
+  staleEnv: boolean
+}
+
+/**
+ * The result of pressing one of the MCP tab's buttons.
+ *
+ * A result rather than a throw, deliberately: `callOr` in the manager swallows
+ * rejections on purpose so a panel opened mid-teardown renders "unavailable"
+ * rather than failing the renderer's invoke, and that swallow is worth keeping.
+ * So the reason a reconnect failed travels as a value, which is the difference
+ * between a button that looks broken and one that tells you `npx` is missing.
+ */
+export interface McpActionResult {
+  ok: boolean
+  error?: string
+}
+
 export interface AgentInfo {
   name: string
   description: string

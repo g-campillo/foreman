@@ -1,6 +1,8 @@
 import { ipcMain } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { realpathSync } from 'node:fs'
+import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import {
   forkSession,
   getSessionMessages,
@@ -15,6 +17,9 @@ import {
   type PermissionMode,
   type ElicitationAction,
   type ElicitationRequest,
+  type McpActionResult,
+  type McpServerInfo,
+  type McpStatus,
   type PastSession,
   type PermissionAnswer,
   type PermissionRequest,
@@ -32,6 +37,7 @@ import {
 import { send } from '../bridge'
 import type { SessionInit } from './session'
 import { HostClient, policy, reapDeadHost, scanHosts } from './hostclient'
+import { currentPathId } from '../shellpath'
 import {
   computeDiffs,
   revertFile,
@@ -264,6 +270,38 @@ async function broadcastRespond(method: string, answer: unknown): Promise<boolea
   return results.some(Boolean)
 }
 
+/**
+ * The CLI's 15-minute "don't bother retrying" cache, and why we reach into it.
+ *
+ * When a stdio MCP server fails to connect, the bundled `claude` binary records
+ * it in `~/.claude/mcp-needs-auth-cache.json` and skips that server for the next
+ * fifteen minutes — that is where the *"Skipping connection (recent failure
+ * cached; retries automatically in 15 min…)"* text comes from. The string lives
+ * in the binary, not in Foreman, and there is no flag to clear it.
+ *
+ * The explicit reconnect below bypasses the cache, so this is not about making
+ * the button work. It is about the NEXT session: a failed reconnect rewrites the
+ * entry with a fresh timestamp, so leaving it in place means a session started
+ * two minutes later doesn't even attempt the server and reports a cached failure
+ * instead of a real one. On success the CLI removes the entry itself and this is
+ * a no-op.
+ *
+ * User-global, not session-scoped, which is why it happens in main rather than
+ * inside a host. Best-effort throughout: a missing or unreadable file means
+ * there is nothing cached to clear.
+ */
+function clearMcpFailureCache(name: string): void {
+  const file = join(homedir(), '.claude', 'mcp-needs-auth-cache.json')
+  try {
+    const cache = JSON.parse(readFileSync(file, 'utf8')) as Record<string, unknown>
+    if (!(name in cache)) return
+    delete cache[name]
+    writeFileSync(file, JSON.stringify(cache))
+  } catch {
+    /* no file, or not ours to parse — either way there is nothing to clear */
+  }
+}
+
 export function registerSessionIpc(): void {
   ipcMain.handle(IPC.sessionCreate, (_e, init: SessionInit & { worktreeBranch?: string }) =>
     createSession(init),
@@ -440,8 +478,22 @@ export function registerSessionIpc(): void {
   ipcMain.handle(IPC.sessionAgents, (_e, { sessionId }: { sessionId: string }) =>
     callOr(sessionId, [], 'agents'),
   )
-  ipcMain.handle(IPC.sessionMcpStatus, (_e, { sessionId }: { sessionId: string }) =>
-    callOr(sessionId, [], 'mcpStatus'),
+  /**
+   * The server list, plus whether reconnecting anything in it can even work.
+   *
+   * `staleEnv` is decided here rather than in the host because the host is the
+   * one process that cannot see it: its environment is whatever it was spawned
+   * with, so comparing that against what main has NOW is only possible on this
+   * side. A host adopted from a previous run carries its id in `meta.json`; one
+   * started by a build older than the PATH fix has none, which is the same case.
+   */
+  ipcMain.handle(
+    IPC.sessionMcpStatus,
+    async (_e, { sessionId }: { sessionId: string }): Promise<McpStatus> => {
+      const servers = await callOr<McpServerInfo[]>(sessionId, [], 'mcpStatus')
+      const host = get(sessionId)
+      return { servers, staleEnv: !!host && host.pathId !== currentPathId() }
+    },
   )
   ipcMain.handle(IPC.sessionReloadSkills, (_e, { sessionId }: { sessionId: string }) =>
     callOr(sessionId, [], 'reloadSkills'),
@@ -477,8 +529,21 @@ export function registerSessionIpc(): void {
       callOr(sessionId, undefined, 'toggleMcp', name, enabled),
   )
 
-  ipcMain.handle(IPC.mcpReconnect, (_e, { sessionId, name }: { sessionId: string; name: string }) =>
-    callOr(sessionId, undefined, 'reconnectMcp', name),
+  ipcMain.handle(
+    IPC.mcpReconnect,
+    async (_e, { sessionId, name }: { sessionId: string; name: string }): Promise<McpActionResult> => {
+      const result = await callOr<McpActionResult>(
+        sessionId,
+        { ok: false, error: 'This session is no longer running.' },
+        'reconnectMcp',
+        name,
+      )
+      // Success or failure — see clearMcpFailureCache. A failed attempt has just
+      // re-stamped the entry, and that stale stamp is what makes the next
+      // session skip the server outright.
+      clearMcpFailureCache(name)
+      return result
+    },
   )
 
   ipcMain.handle(

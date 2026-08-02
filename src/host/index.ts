@@ -120,6 +120,11 @@ function writeMeta(session: Session): void {
     // So a future launch can find this socket without re-deriving where the
     // running build happened to put it.
     sock: sockPath,
+    // Echoed straight back out of the init JSON: the app is the only side that
+    // can compute it, and meta.json is the only place it survives to the next
+    // run — where a stale env is the difference between "reconnect failed" and
+    // "reconnect cannot possibly work here".
+    pathId: typeof init.pathId === 'string' ? init.pathId : undefined,
     cwd: session.meta.cwd,
     title: session.meta.title,
     sdkSessionId: session.meta.sdkSessionId,

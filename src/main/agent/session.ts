@@ -9,6 +9,7 @@ import {
   type ContextUsage,
   type EffortLevel,
   type LspStatus,
+  type McpActionResult,
   type McpServerInfo,
   type ModelInfo,
   type PermissionMode,
@@ -816,9 +817,25 @@ export class Session {
     await this.q?.toggleMcpServer(serverName, enabled).catch((e) => console.warn('[mcpToggle]', e))
   }
 
-  async reconnectMcp(serverName: string): Promise<void> {
+  /**
+   * Reconnect one MCP server, and say what happened.
+   *
+   * The only control here that returns a result, because it is the only one
+   * whose failure the user is left staring at: the row goes red, the button
+   * looks inert, and the reason — almost always `Executable not found in
+   * $PATH` — died in a `console.warn` inside a detached host process nobody
+   * opens. Reported rather than thrown so `callOr`'s deliberate swallow in the
+   * manager stays intact.
+   */
+  async reconnectMcp(serverName: string): Promise<McpActionResult> {
     await this.ready
-    await this.q?.reconnectMcpServer(serverName).catch((e) => console.warn('[mcpReconnect]', e))
+    try {
+      await this.q?.reconnectMcpServer(serverName)
+      return { ok: true }
+    } catch (err) {
+      console.warn('[mcpReconnect]', err)
+      return { ok: false, error: String((err as Error)?.message ?? err) }
+    }
   }
 
   /**

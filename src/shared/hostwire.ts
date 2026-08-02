@@ -60,6 +60,17 @@ export interface HostMeta {
    * build older than the move; callers fall back to `HOST_FILES.sock`.
    */
   sock?: string
+  /**
+   * A fingerprint of the PATH this host was spawned with — see `currentPathId`.
+   *
+   * A process's environment is frozen at `spawn`, so a host started before the
+   * app learned the user's login-shell PATH is stuck with the stripped launch
+   * one for life, and no MCP server that needs `npx` will ever connect inside
+   * it. This is the only record of that fact that survives into the next run of
+   * the app, which is exactly when adoption makes it matter. Absent on hosts
+   * started by a build older than the fix — which is the same stale case.
+   */
+  pathId?: string
   cwd: string
   title: string
   sdkSessionId: string | null

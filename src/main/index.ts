@@ -6,6 +6,7 @@ import { adoptHosts, registerSessionIpc, disposeAllSessions } from './agent/mana
 import { registerPtyIpc, disposeAllPtys } from './pty'
 import { registerFileIpc } from './files'
 import { listUsage } from './agent/usage'
+import { primeShellPath } from './shellpath'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -140,6 +141,18 @@ app.whenReady().then(async () => {
   // inherit this through spawn. Must be set before anything reads a userData
   // path — see agent/usage.ts.
   process.env.FOREMAN_USER_DATA = app.getPath('userData')
+
+  // Launched from Finder or the Dock we inherit macOS's bare launch PATH, which
+  // has no nvm, no Homebrew and no pyenv on it — and every agent host, the
+  // bundled CLI and every stdio MCP server the CLI spawns inherit it from us.
+  // Deliberately NOT awaited: the cached answer is applied synchronously, so
+  // adoptHosts and the window below already see the right PATH, and only a cold
+  // first launch waits — inside HostClient.start, on `shellPathReady`, rather
+  // than here in front of the window.
+  // The `.catch` is belt and braces — `primeShellPath` resolves `shellPathReady`
+  // in a `finally` and swallows its own failures — but an unhandled rejection
+  // here would be one on a promise nothing else is watching.
+  void primeShellPath().catch((err: unknown) => console.warn('[path] priming failed:', err))
 
   ipcMain.handle('app:initialProject', () => initialProject())
   // There is no app:background channel. The window's pre-paint colour is pinned
