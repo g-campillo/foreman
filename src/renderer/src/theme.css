@@ -3136,11 +3136,88 @@ button.diff-more:hover {
 
 /* ────────────────────────────────────────────────────── session panel */
 
+/* The shell: a fixed tab strip over a scrolling body.
+
+   `container-type` is here, on a wrapper of our own, and NOT on .pane-fill —
+   that element already carries `contain: paint` under an explicit contract (it
+   is the containing block for its `position: fixed` descendants and the
+   stacking context .plan-scrim depends on), and stacking a second containment
+   type onto it is not worth the risk. `inline-size` does not contain block
+   size, so the scroll body's height still resolves from the flex row above. */
+.session-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+}
+
 .panel-scroll {
   flex: 1;
   min-height: 0;
   overflow-y: auto;
   padding: 14px 16px 22px;
+}
+
+/* The sub-tab strip.
+
+   Deliberately NOT .dock-tabs' borderless treatment, even though that is
+   Cursor's tab shape and this is a tab bar. The dock's own tabs sit ~8px above
+   this one; drawing both the same way reads as a single confused two-row tab
+   bar. The container fill is what marks this as sub-navigation — same reasoning
+   .dock-tabs gives for why it is not .composer-chip. */
+.stabs {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: 10px 16px 0;
+}
+.stabs-seg {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: var(--r-md);
+  background: rgb(var(--fill-4));
+}
+.stab {
+  flex: 1;
+  min-width: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 4px var(--sp-1);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-xs);
+  color: rgb(var(--text-faint));
+  white-space: nowrap;
+  overflow: hidden;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.stab:hover {
+  color: rgb(var(--text-dim));
+}
+.stab[data-active='true'] {
+  background: rgb(var(--fill-2));
+  color: rgb(var(--text));
+}
+.stab-n {
+  opacity: 0.5;
+  font-variant-numeric: tabular-nums;
+}
+/* The counts are the first thing to go when the pane is dragged narrow — the
+   labels themselves still fit at the 280px floor, the counts are what pushes
+   them into truncation. A container query rather than a resize observer, for
+   the same reason --side-w is a clamp: CSS adapts without writing through to
+   the width the user chose. */
+@container (max-width: 360px) {
+  .stab-n {
+    display: none;
+  }
 }
 
 .sect-head {
@@ -3159,6 +3236,14 @@ button.diff-more:hover {
 }
 .sect-head > span:first-child {
   flex: 1;
+}
+/* The count beside a section title. Letter-spacing is reset because the heading
+   tracks out at .06em and a tracked-out number reads as a serial. */
+.sect-n {
+  font-weight: 500;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--text-faint));
 }
 .sect-empty {
   font-size: 12px;
@@ -3248,6 +3333,16 @@ button.diff-more:hover {
   display: block;
   height: 100%;
   background: rgb(var(--accent));
+  transition: background 0.12s ease;
+}
+/* Same two thresholds the context ring uses, from the same `level` helper, so a
+   meter and a gauge can never disagree about what nearly-full means. Without
+   these a weekly limit at 99% drew in exactly the same near-white as one at 4%. */
+.meter-track > i[data-level='warn'] {
+  background: rgb(var(--warn));
+}
+.meter-track > i[data-level='danger'] {
+  background: rgb(var(--danger));
 }
 .meter-val {
   width: 34px;
@@ -3274,6 +3369,175 @@ button.diff-more:hover {
 }
 .mcp-dot[data-status='pending'] {
   background: rgb(var(--accent));
+}
+
+/* ─── the session panel's list rows
+
+   One row shape for MCP servers, agents and skills. Dense on purpose: four
+   servers is nothing, but ~47 agents and ~62 skills at two lines each is a
+   1,900px scroll of descriptions that truncate mid-sentence anyway. So the row
+   is one line and the description is a tooltip, which wraps and is read whole.
+
+   The negative inline margin against the matching padding is Cursor's list-row
+   treatment — the hover fill bleeds past the text on both sides instead of
+   boxing it, which is what stops a hovered row reading as a button. */
+.slist {
+  margin-top: 4px;
+}
+.srow {
+  padding: 5px var(--sp-2);
+  margin: 0 calc(var(--sp-2) * -1);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-dim));
+  transition: background 0.12s ease;
+}
+.srow:hover {
+  background: rgb(var(--fill-hover));
+  color: rgb(var(--text));
+}
+.srow-main {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+}
+.srow-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Scope, on the name line rather than the meta slot: it qualifies the name
+   ("brain, the user-scoped one"), it does not report state. */
+.srow-note {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  color: rgb(var(--text-faint));
+}
+.srow-meta {
+  flex: 0 0 auto;
+  font-size: var(--fs-xs);
+  color: rgb(var(--text-faint));
+  font-variant-numeric: tabular-nums;
+}
+/* The failure carve-out, and the only thing allowed to make a row two lines
+   high. Indented past the status dot so it hangs under the name it explains. */
+.srow-sub {
+  margin-top: 1px;
+  padding-left: 15px;
+  font-size: var(--fs-xs);
+  line-height: 1.45;
+  color: rgb(var(--danger));
+}
+
+/* Always visible, not revealed on hover. The usual treatment hides row actions
+   until you point at them, which is right for a long list — but there are about
+   four MCP servers, so there is no clutter to hide, and an inert-looking list is
+   exactly what made this section read as unfinished. Quiet instead of absent. */
+.srow-acts {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  flex: 0 0 auto;
+}
+/* Colour, not opacity, and targeting the buttons rather than the container:
+   .code-btn sets its own `color`, so an inherited value on .srow-acts never
+   reaches it and the "quiet until hovered" effect silently did nothing. */
+.srow-acts > .code-btn {
+  color: rgb(var(--text-faint));
+}
+.srow:hover .srow-acts > .code-btn,
+.srow-acts:focus-within > .code-btn {
+  color: rgb(var(--text-dim));
+}
+/* Same floor the tab counts drop at, and the same reasoning one step further
+   in: .srow-name is the only flexible thing in the row, so it absorbs the whole
+   squeeze. At the 280px minimum the always-visible actions plus the status pill
+   leave it about 29px — four characters. The permission picker is the widest of
+   the three and by far the rarest to want (a tighten-only override you set once
+   and forget), so it is what goes; dragging the pane wider brings it back. */
+@container (max-width: 360px) {
+  .srow-acts > .picker {
+    display: none;
+  }
+}
+
+/* Status word. A pill rather than bold text because these read as states
+   (`failed`, `sign in`) sitting where a count (`6 tools`) also lands, and one
+   shared shape is what stops the eye parsing the count as another state. */
+.spill {
+  padding: 1px var(--sp-1-5);
+  border-radius: var(--r-pill);
+  background: rgb(var(--fill-3));
+  font-size: 10px;
+  font-weight: 500;
+  color: rgb(var(--text-faint));
+  font-variant-numeric: tabular-nums;
+}
+.spill[data-tone='ok'] {
+  background: rgb(var(--ok) / 0.15);
+  color: rgb(var(--ok));
+}
+.spill[data-tone='warn'] {
+  background: rgb(var(--warn) / 0.15);
+  color: rgb(var(--warn));
+}
+.spill[data-tone='danger'] {
+  background: rgb(var(--danger) / 0.15);
+  color: rgb(var(--danger));
+}
+
+/* A namespace heading: `axiom ──────── 34`. The rule is what keeps a bare
+   lowercase word from reading as one more row. Not .sect-head, because that is
+   the tab-level heading and two identical uppercase labels nested would lose the
+   hierarchy rather than express it. */
+.sgrp {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin: var(--sp-2-5) 0 var(--sp-1);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgb(var(--text-faint));
+}
+.sgrp > i {
+  flex: 1;
+  height: 1px;
+  background: rgb(var(--border));
+}
+.sgrp > span:last-child {
+  font-variant-numeric: tabular-nums;
+}
+
+.sfilter {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1-5);
+  padding: 5px var(--sp-2);
+  margin-bottom: var(--sp-2);
+  border: 1px solid rgb(var(--border));
+  border-radius: var(--r-sm);
+  background: rgb(var(--fill-4));
+  color: rgb(var(--text-faint));
+}
+.sfilter:focus-within {
+  border-color: rgb(var(--border-strong));
+}
+.sfilter input {
+  flex: 1;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  font-family: inherit;
+  font-size: var(--fs-sm);
+  color: rgb(var(--text));
+  outline: none;
+}
+.sfilter input::placeholder {
+  color: rgb(var(--text-faint));
 }
 
 /* ──────────────────────────────────────────────────── elicitation card */
@@ -3663,21 +3927,6 @@ button.diff-more:hover {
   flex: none;
   display: flex;
   gap: 2px;
-}
-
-.mcp-acts {
-  display: flex;
-  gap: 4px;
-  flex: 0 0 auto !important;
-  opacity: 0;
-  transition: opacity 0.12s ease;
-}
-.kv li:hover .mcp-acts,
-.mcp-acts:focus-within {
-  opacity: 1;
-}
-.mcp-acts select.code-btn {
-  padding: 1px 3px;
 }
 
 /* ───────────────────────────────────────────── AskUserQuestion card */

@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem, SessionMeta } from '../../shared/types'
-import { activityOf, answeredQuestions, ANSWER_PREFIX, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, buildTree, focusTarget, authorEdits, resolveAnchors } from './derive.mts'
+import { activityOf, answeredQuestions, ANSWER_PREFIX, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, swatch, level, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, buildTree, focusTarget, authorEdits, resolveAnchors } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -205,6 +205,41 @@ assert.deepEqual(contextBreakdown([{ name: 'x', tokens: 0 }], 100, 200).used, []
   assert.deepEqual(used.map((c) => c.name), ['Messages', 'Skills'])
   assert.equal(used.reduce((n, c) => n + c.tokens, 0), 60)
 }
+
+// ------------------------------------------------------------ swatch / level
+
+// Both of these are drawn twice — the ring's card under the composer and the
+// panel's Overview tab share `swatch`, and `level` colours both the ring and the
+// rate-limit meters. Two views disagreeing about which band is which, or about
+// what counts as nearly-full, is the failure mode, so the properties that stop
+// that are what's pinned here.
+
+// Stable for a given index, and every value is a token rather than a literal —
+// a hardcoded colour would not flip with the light theme.
+{
+  assert.equal(swatch(0), swatch(0), 'same index, same colour, every render')
+  assert.notEqual(swatch(0), swatch(1), 'adjacent categories must not collide')
+  for (let i = 0; i < 20; i++) {
+    assert.match(swatch(i), /^rgb\(var\(--[a-z-]+\)\)$/, `swatch(${i}) must be a theme token`)
+  }
+}
+
+// Wraps rather than running off the end. A window with more categories than the
+// palette has entries must still get a colour for every one of them.
+assert.equal(swatch(7), swatch(0), 'the palette wraps')
+assert.equal(swatch(15), swatch(1))
+
+// The two thresholds, and both sides of each. 75 and 90 are inclusive — a meter
+// that reads "90%" and still draws amber contradicts itself.
+assert.equal(level(0), undefined)
+assert.equal(level(74.9), undefined)
+assert.equal(level(75), 'warn')
+assert.equal(level(89.9), 'warn')
+assert.equal(level(90), 'danger')
+assert.equal(level(100), 'danger')
+// Over 100 is reachable: `utilization` comes off the wire and the bar clamps its
+// width, not its level.
+assert.equal(level(140), 'danger')
 
 // -------------------------------------------------------------- schemaFields
 

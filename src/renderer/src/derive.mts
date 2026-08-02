@@ -204,6 +204,51 @@ export function contextBreakdown(
   return { used, deferred }
 }
 
+/** Our own palette, because the SDK's `color` is a CLI theme key, not CSS.
+ *  All theme tokens, so the breakdown flips with light/dark like everything else.
+ *
+ *  ORDER IS THE POINT. Categories are assigned by index, so neighbours in this
+ *  list are neighbours in the legend and in the bar — and --warn next to
+ *  --syn-num next to --syn-fn put three oranges in a row, which at a 9px swatch
+ *  and a 4px bar segment is one colour. Interleaved so consecutive entries
+ *  always jump hue, the way Cursor's grey/purple/green/amber/mauve/blue/salmon
+ *  does. This is the only categorical palette in the app; everywhere else is one
+ *  hue at varying alpha. */
+const SWATCHES = [
+  'rgb(var(--accent))',
+  'rgb(var(--syn-key))',
+  'rgb(var(--ok))',
+  'rgb(var(--warn))',
+  'rgb(var(--syn-str))',
+  'rgb(var(--syn-type))',
+  'rgb(var(--danger))',
+]
+
+/**
+ * Colour for the i-th context category.
+ *
+ * Lives here rather than in either component because BOTH draw the same
+ * breakdown — the ring's card under the composer and the session panel's
+ * Overview tab. It used to be exported from SessionPanel and imported by
+ * ContextRing, which made a leaf component depend on a panel shell for a colour
+ * constant; splitting the panel into components/session/ would have made that
+ * reach across a directory boundary too.
+ */
+export const swatch = (i: number): string => SWATCHES[i % SWATCHES.length]
+
+/**
+ * Pressure band for a 0-100 percentage, as a `data-level` value.
+ *
+ * `undefined` below 75 rather than a `'normal'` string, so the attribute is
+ * absent entirely and the base CSS rule needs no `[data-level='normal']`
+ * counterpart to beat.
+ *
+ * Shared by the context ring and the rate-limit meters so a gauge and a meter
+ * can never disagree about what counts as nearly-full.
+ */
+export const level = (pct: number): string | undefined =>
+  pct >= 90 ? 'danger' : pct >= 75 ? 'warn' : undefined
+
 // -------------------------------------------------------------- elicitation
 
 export interface ElicitField {

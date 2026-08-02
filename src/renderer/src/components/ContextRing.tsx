@@ -1,8 +1,7 @@
 import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import type { ContextUsage, SessionMeta } from '../../../shared/types'
-import { contextBreakdown, fmt, type ContextCategory } from '../derive.mts'
-import { swatch } from './SessionPanel'
+import { contextBreakdown, fmt, level, swatch, type ContextCategory } from '../derive.mts'
 
 /** Ring geometry. 7px radius in an 18px box leaves room for a 2px stroke. */
 const R = 7
@@ -63,9 +62,6 @@ export function useContextUsage(session: SessionMeta): ContextView | null {
   return { tokens, max, pct: (tokens / max) * 100, used }
 }
 
-const level = (pct: number): string | undefined =>
-  pct >= 90 ? 'danger' : pct >= 75 ? 'warn' : undefined
-
 /**
  * Context pressure as a ring, and the button that opens its breakdown.
  *
@@ -122,7 +118,7 @@ export function ContextRing({
  * session panel has always carried, at a size that does not need a panel: one
  * segmented bar, then a row per category.
  *
- * Colours come from SessionPanel's `swatch`, deliberately, so the two views can
+ * Colours come from `derive.mts`'s `swatch`, deliberately, so the two views can
  * never disagree about which band is which — it is the one place in the app with
  * a categorical palette rather than the single-hue chrome.
  */

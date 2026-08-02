@@ -1,36 +1,25 @@
 import { useCallback, useEffect, useState } from 'react'
-import { PlugZap, Power, RefreshCw, RotateCcw } from 'lucide-react'
+import { RefreshCw } from 'lucide-react'
 import type {
   AccountInfo,
   AgentInfo,
   ContextUsage,
   McpServerInfo,
   SessionMeta,
-  SkillInfo,
   UsageInfo,
 } from '../../../shared/types'
-import { contextBreakdown, fmt } from '../derive.mts'
+import AgentsTab from './session/AgentsTab'
+import McpTab from './session/McpTab'
+import OverviewTab from './session/OverviewTab'
 
-/** Our own palette, because the SDK's `color` is a CLI theme key, not CSS.
- *  All theme tokens, so the breakdown flips with light/dark like everything else.
- *
- *  ORDER IS THE POINT. Categories are assigned by index, so neighbours in this
- *  list are neighbours in the legend and in the bar — and --warn next to
- *  --syn-num next to --syn-fn put three oranges in a row, which at a 9px swatch
- *  and a 4px bar segment is one colour. Interleaved so consecutive entries
- *  always jump hue, the way Cursor's grey/purple/green/amber/mauve/blue/salmon
- *  does. This is the only categorical palette in the app; everywhere else is one
- *  hue at varying alpha. */
-const SWATCHES = [
-  'rgb(var(--accent))',
-  'rgb(var(--syn-key))',
-  'rgb(var(--ok))',
-  'rgb(var(--warn))',
-  'rgb(var(--syn-str))',
-  'rgb(var(--syn-type))',
-  'rgb(var(--danger))',
-]
-export const swatch = (i: number): string => SWATCHES[i % SWATCHES.length]
+type SubTab = 'overview' | 'mcp' | 'agents'
+
+/** Key order is the tab order, the same contract App.tsx's PANEL_LABEL has. */
+const LABEL: Record<SubTab, string> = {
+  overview: 'Overview',
+  mcp: 'MCP',
+  agents: 'Agents',
+}
 
 interface Data {
   context: ContextUsage | null
@@ -42,10 +31,17 @@ interface Data {
 
 /**
  * The read-only side of the session: what's in the context window, what the
- * account is spending, which MCP servers are up, and which agents exist.
+ * account is spending, which MCP servers are up, and what the agent can call.
  *
- * One panel rather than four, because every one of these is a handful of rows
- * that nobody wants a separate tab for.
+ * Three tabs rather than one scroll. The flat version worked while every
+ * section was a handful of rows, and stopped the moment plugins arrived — ~47
+ * agents and ~62 skills under a heading two screens down is not a section, it
+ * is a landfill. Overview keeps context and account together because they are
+ * both meters about this session; the two lists that grow without bound get
+ * their own space.
+ *
+ * This file is the shell only: the fetch, the tab state, and the strip. Each
+ * tab's contents live in ./session/.
  */
 export default function SessionPanel({
   session,
@@ -55,14 +51,35 @@ export default function SessionPanel({
   visible: boolean
 }): React.JSX.Element {
   const [data, setData] = useState<Data | null>(null)
-  const [skills, setSkills] = useState<SkillInfo[] | null>(null)
   const [busy, setBusy] = useState(false)
+  /* Local, not persisted. The Appearance whitelist in store.ts is deliberately
+     narrow and a sub-tab does not earn a slot in it; the panel stays mounted for
+     the app's lifetime anyway, so the choice already survives every dock switch
+     that isn't a restart. */
+  const [tab, setTab] = useState<SubTab>('overview')
+  /* Per-server permission override, keyed by server name.
+
+     It lives up here rather than in McpTab for two reasons, both of which are
+     the ORIGINAL bug wearing a different hat. The SDK gives us no way to read an
+     override back, so whoever holds it is the only record of it — and McpTab is
+     mounted only while its tab is selected, so holding it there means one click
+     on Overview resets every picker to "inherit" while the override it set is
+     still in force. That is exactly what the old uncontrolled <select> did.
+
+     Cleared on session change because SessionPanel is NOT keyed by session in
+     App.tsx: without this, session A's override label shows against session B's
+     identically-named server, and these names come from shared project config,
+     so a collision is the normal case rather than a corner one. */
+  const [overrides, setOverrides] = useState<Record<string, string>>({})
+  useEffect(() => setOverrides({}), [session.id])
 
   const refresh = useCallback(async (): Promise<void> => {
     setBusy(true)
     const f = window.foreman
     // One round of calls, in parallel — a slow MCP status shouldn't hold up the
-    // context meter, which is the reason most people open this panel.
+    // context meter, which is the reason most people open this panel. Still one
+    // batch rather than one per tab: fetching per-tab would leave the Overview
+    // numbers stale for exactly as long as you'd been reading another tab.
     const [context, account, usage, mcp, agents] = await Promise.all([
       f.contextUsage(session.id).catch(() => null),
       f.accountInfo(session.id).catch(() => null),
@@ -83,20 +100,40 @@ export default function SessionPanel({
 
   if (!visible) return <></>
 
-  const ctx = data?.context
-  const { used, deferred } = contextBreakdown(
-    ctx?.categories ?? [],
-    ctx?.totalTokens ?? 0,
-    ctx?.maxTokens ?? 0,
-  )
+  /* `null` until the fetch lands, not 0. A tab reading "MCP 0" for the second
+     it takes to answer is a claim that there are none, and it is wrong far more
+     often than it is right. */
+  const counts: Record<SubTab, number | null> = {
+    overview: null,
+    mcp: data ? data.mcp.length : null,
+    agents: data ? data.agents.length : null,
+  }
   return (
-    <div className="panel-scroll">
-      <div className="sect-head">
-        <span>Context</span>
-        {/* The busy state is `:disabled` (opacity .4) rather than a "Refreshing…"
-            word — there's no room for one beside a 12px glyph. */}
-        {/* data-tip on the wrapper: a disabled control fires no pointer events,
-            and this tip exists precisely to explain the disabled state. */}
+    <div className="session-panel">
+      <div className="stabs">
+        <div className="stabs-seg">
+          {(Object.keys(LABEL) as SubTab[]).map((t) => (
+            <button
+              key={t}
+              className="stab"
+              data-active={tab === t}
+              aria-pressed={tab === t}
+              onClick={() => setTab(t)}
+            >
+              {LABEL[t]}
+              {counts[t] !== null && <span className="stab-n">{counts[t]}</span>}
+            </button>
+          ))}
+        </div>
+        {/* Panel-level now rather than living in the Context heading: with tabs,
+            a refresh that reloads one section is a refresh you cannot reach from
+            the other two — and MCP, the tab most likely to need one, never had
+            it at all.
+
+            The busy state is `:disabled` (opacity .4) rather than a "Refreshing…"
+            word — there's no room for one beside a 12px glyph. data-tip sits on
+            the wrapper because a disabled control fires no pointer events, and
+            this tip exists precisely to explain the disabled state. */}
         <span className="tw" data-tip="Refresh — context usage is only meaningful between turns">
           <button
             className="code-btn"
@@ -109,209 +146,30 @@ export default function SessionPanel({
         </span>
       </div>
 
-      {!ctx ? (
-        <p className="sect-empty">Unavailable — send a message first.</p>
-      ) : (
-        <>
-          <div className="ctx-bar">
-            {used.map((c, i) => (
-              <span
-                key={c.name}
-                style={{
-                  width: `${(c.tokens / Math.max(ctx.maxTokens, 1)) * 100}%`,
-                  background: swatch(i),
-                }}
-                title={`${c.name}: ${fmt(c.tokens)}`}
-              />
-            ))}
-          </div>
-          {/* Percentage derived from the same tokens the bar is drawn from. The
-              SDK's own `percentage` is rounded differently (it reported 2.0 for
-              a 2.39% window) and a readout that disagrees with the bar beside it
-              reads as a bug. */}
-          <p className="sect-sub">
-            {fmt(ctx.totalTokens)} / {fmt(ctx.maxTokens)} ·{' '}
-            {((ctx.totalTokens / Math.max(ctx.maxTokens, 1)) * 100).toFixed(1)}% · {ctx.model}
-          </p>
-          <ul className="kv">
-            {used.map((c, i) => (
-              <li key={c.name}>
-                <i className="ctx-dot" style={{ background: swatch(i) }} />
-                <span>{c.name}</span>
-                <b>{fmt(c.tokens)}</b>
-              </li>
-            ))}
-            {/* Loadable on demand, and deliberately NOT in the bar: the SDK
-                excludes these from totalTokens, so drawing them would overstate
-                what the window is actually holding. */}
-            {deferred.map((c) => (
-              <li key={c.name} className="kv-muted">
-                <i className="ctx-dot" style={{ background: 'rgb(var(--text-faint))' }} />
-                <span>{c.name}</span>
-                <b>{fmt(c.tokens)}</b>
-              </li>
-            ))}
-          </ul>
-          {ctx.memoryFiles.length > 0 && (
-            <ul className="kv">
-              {ctx.memoryFiles.map((f) => (
-                <li key={f.path} title={f.path}>
-                  <span className="kv-path">{f.path}</span>
-                  <b>{fmt(f.tokens)}</b>
-                </li>
-              ))}
-            </ul>
-          )}
-        </>
-      )}
-
-      <div className="sect-head">
-        <span>Account &amp; usage</span>
+      <div className="panel-scroll">
+        {tab === 'overview' && (
+          <OverviewTab
+            context={data?.context ?? null}
+            account={data?.account ?? null}
+            usage={data?.usage ?? null}
+          />
+        )}
+        {tab === 'mcp' && (
+          <McpTab
+            sessionId={session.id}
+            servers={data?.mcp ?? []}
+            overrides={overrides}
+            onOverride={(server, value) => setOverrides((m) => ({ ...m, [server]: value }))}
+            onChanged={() => void refresh()}
+          />
+        )}
+        {/* Mounted only while selected, which is what makes the skills reload
+            happen per visit — for this tab, mounting IS activation. The other
+            two are cheap to re-render and hold nothing worth preserving, so
+            none of the three needs the always-mounted treatment App.tsx gives
+            the dock panels themselves. */}
+        {tab === 'agents' && <AgentsTab sessionId={session.id} agents={data?.agents ?? null} />}
       </div>
-      {!data?.account && !data?.usage ? (
-        <p className="sect-empty">Unavailable.</p>
-      ) : (
-        <ul className="kv">
-          {data.account?.email && (
-            <li>
-              <span>Account</span>
-              <b>{data.account.email}</b>
-            </li>
-          )}
-          {data.account?.organization && (
-            <li>
-              <span>Org</span>
-              <b>{data.account.organization}</b>
-            </li>
-          )}
-          {(data.usage?.subscriptionType ?? data.account?.subscriptionType) && (
-            <li>
-              <span>Plan</span>
-              <b>{data.usage?.subscriptionType ?? data.account?.subscriptionType}</b>
-            </li>
-          )}
-          {data.usage && (
-            <li>
-              <span>Session</span>
-              <b>
-                ${data.usage.costUsd.toFixed(2)} · +{data.usage.linesAdded}/−
-                {data.usage.linesRemoved}
-              </b>
-            </li>
-          )}
-          {data.usage && !data.usage.rateLimitsAvailable && (
-            <li>
-              <span>Limits</span>
-              <b>n/a for this auth</b>
-            </li>
-          )}
-        </ul>
-      )}
-
-      {data?.usage?.windows.map((w) => (
-        <div key={w.label} className="meter">
-          <span className="meter-label">{w.label}</span>
-          <span className="meter-track">
-            <i style={{ width: `${Math.min(w.utilization ?? 0, 100)}%` }} />
-          </span>
-          <span className="meter-val">
-            {w.utilization === null ? '—' : `${Math.round(w.utilization)}%`}
-          </span>
-        </div>
-      ))}
-
-      <div className="sect-head">
-        <span>MCP servers</span>
-      </div>
-      {!data?.mcp.length ? (
-        <p className="sect-empty">None configured.</p>
-      ) : (
-        <ul className="kv">
-          {data.mcp.map((srv) => (
-            <li key={srv.name} title={srv.error}>
-              <i className="mcp-dot" data-status={srv.status} />
-              <span>{srv.name}</span>
-              <b>{srv.status === 'connected' ? `${srv.toolCount} tools` : srv.status}</b>
-              <span className="mcp-acts">
-                <button
-                  className="code-btn"
-                  data-tip={srv.status === 'disabled' ? 'Enable this server' : 'Disable this server'}
-                  aria-label={
-                    srv.status === 'disabled' ? 'Enable this server' : 'Disable this server'
-                  }
-                  onClick={() =>
-                    void window.foreman
-                      .toggleMcp(session.id, srv.name, srv.status === 'disabled')
-                      .then(refresh)
-                  }
-                >
-                  <Power size={12} />
-                </button>
-                <button
-                  className="code-btn"
-                  data-tip="Reconnect this server"
-                  aria-label="Reconnect"
-                  onClick={() => void window.foreman.reconnectMcp(session.id, srv.name).then(refresh)}
-                >
-                  <PlugZap size={12} />
-                </button>
-                {/* Tighten-only by construction — the SDK's override can restrict
-                    a server's permission handling but never widen it. */}
-                <select
-                  className="code-btn"
-                  defaultValue=""
-                  data-tip="Permission override — can restrict this server, never widen it"
-                  onChange={(e) =>
-                    void window.foreman.setMcpPermissionOverride(
-                      session.id,
-                      srv.name,
-                      e.target.value || null,
-                    )
-                  }
-                >
-                  <option value="">inherit</option>
-                  <option value="default">ask</option>
-                  <option value="auto">auto</option>
-                </select>
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
-
-      <div className="sect-head">
-        <span>Agents &amp; skills</span>
-        <button
-          className="code-btn"
-          data-tip="Reload skills — the SDK has no read-only listing, so this is how you see them"
-          aria-label="Reload skills"
-          onClick={() => void window.foreman.reloadSkills(session.id).then(setSkills)}
-        >
-          <RotateCcw size={12} />
-        </button>
-      </div>
-      {!data?.agents.length ? (
-        <p className="sect-empty">None available.</p>
-      ) : (
-        <ul className="kv">
-          {data.agents.map((a) => (
-            <li key={a.name} title={a.description}>
-              <span>{a.name}</span>
-              <b>{a.model ?? 'inherits'}</b>
-            </li>
-          ))}
-        </ul>
-      )}
-      {skills && (
-        <ul className="kv">
-          {skills.length === 0 && <li><span>No skills found</span></li>}
-          {skills.map((s) => (
-            <li key={s.name} title={s.description}>
-              <span className="kv-path">{s.name}</span>
-            </li>
-          ))}
-        </ul>
-      )}
     </div>
   )
 }
