@@ -142,7 +142,13 @@ export default function ToolRun({
             data-failed={sum.failed > 0 ? '' : undefined}
             onClick={toggle}
           >
-            {sum.steps} steps
+            {/* A span, NOT a bare text node. Loose text in a flex container
+                becomes an anonymous flex item, which no selector can reach — so
+                `flex: none` and `white-space: nowrap` could not be applied to
+                it, and the step count was the first thing a flex line squeezed:
+                it wrapped to `10` over `steps` and doubled the head's height
+                while .run-groups, which can ellipsise, gave up nothing. */}
+            <span className="run-steps">{sum.steps} steps</span>
             {sum.groups.length > 0 && (
               <span className="run-groups">
                 · {sum.groups.map((g) => `${g.n} ${g.label}`).join(', ')}

@@ -1407,6 +1407,14 @@ select {
   gap: 0;
   max-width: 100%;
   min-width: 0;
+  /* The bleed belongs to the PAIR, not to the head.
+     It used to sit on .run-head, and that quietly cost four pixels of the line:
+     a negative margin shrinks the head's OUTER max-content, .run is shrink-to-fit
+     so it sized to 309px where the head's content wanted 313, and then the head's
+     own `max-width: 100%` clamped it back to its parent — handing back exactly the
+     four pixels the margin had just taken. .run-groups paid them, ellipsising with
+     half the column still empty. Here the whole block shifts and nothing clamps. */
+  margin-left: calc(var(--sp-1) * -1);
 }
 /* Deliberately the same treatment as .turn-head: they are the same gesture at
    two scales, and giving the inner one its own look would read as a different
@@ -1417,7 +1425,7 @@ select {
   display: inline-flex;
   align-items: center;
   gap: var(--sp-1);
-  margin-left: calc(var(--sp-1) * -1);
+  /* The -4px bleed .turn-head carries here lives on .run instead — see above. */
   padding: 1px var(--sp-1);
   border-radius: var(--r-sm);
   font-size: var(--fs-base);
@@ -1434,8 +1442,16 @@ select {
   color: rgb(var(--text-dim));
 }
 /* The breakdown is the first thing to give up room: the step count, the diff
-   stat and the failure count are all short and all load-bearing. */
+   stat and the failure count are all short and all load-bearing.
+   .run-steps has to be a real element for that to be true at all — as loose text
+   it was an anonymous flex item, unreachable by any selector and therefore the
+   only item on the line with nothing holding it together. See ToolRun. */
+.run-steps {
+  flex: none;
+  white-space: nowrap;
+}
 .run-groups {
+  flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1468,9 +1484,16 @@ select {
   transform: rotate(180deg);
 }
 /* .tool-status ellipsises, which does nothing inside a flex column until the
-   item is allowed to be narrower than its content. */
+   item is allowed to be narrower than its content.
+
+   The extra --sp-1 buys back the bleed. On a .tool the status is indented
+   --sp-3 from a row whose text starts at the row's own left edge (.tool-line has
+   no inline padding). Here the whole .run is pulled 4px left, so the same --sp-3
+   would land the subtitle 8px under the head's text instead of 12 — close enough
+   to look like a mistake rather than a different number. */
 .run > .tool-status {
   min-width: 0;
+  padding-left: calc(var(--sp-3) + var(--sp-1));
 }
 
 /* A tool call is a line of prose now, not a card.
