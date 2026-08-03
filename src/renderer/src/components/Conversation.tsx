@@ -11,7 +11,7 @@ import {
 } from 'lucide-react'
 import type { ChatItem, SessionMeta } from '../../../shared/types'
 import { useStore } from '../store'
-import { scrollPin } from '../scrollPin'
+import { scrollPin, switchPin } from '../scrollPin'
 import ToolLine from './ToolLine'
 import ToolRun, { FoldedContext, RevealContext } from './ToolRun'
 import ScrollDown from './ScrollDown'
@@ -47,6 +47,17 @@ const VERB_MS = 60_000
  *  that would be fifty-nine renders that change nothing, so `Working` arms its
  *  own timer against the boundary it actually cares about. */
 const TICK_MS = 1000
+
+/** How many frames the autoscroll re-measures for before giving up.
+ *
+ *  ONE FRAME IS NOT ENOUGH ON A SWITCH, and that is not a race — `.convo` rows
+ *  are `content-visibility: auto` with a `contain-intrinsic-size` estimate, so
+ *  on the frame a different transcript first paints `scrollHeight` is a guess
+ *  built from that estimate and a write to it lands short of the true bottom.
+ *  Each frame the browser renders more of it and the number grows. Four is
+ *  where a long transcript settles in practice, and the loop stops early the
+ *  frame the number stops moving, so it usually costs one. */
+const SETTLE_FRAMES = 4
 
 export default function Conversation({ sessionId }: { sessionId: string }): React.JSX.Element {
   const items = useStore((s) => s.items[sessionId] ?? EMPTY)
@@ -121,8 +132,9 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
 
   // Only autoscroll when the user is already at the bottom, so reading history
   // isn't yanked away mid-stream — or when the user's own message has just
-  // entered this transcript, which is what `scrollPin` carries over from the
-  // store's queue handler.
+  // entered this transcript (`scrollPin`, from the store's queue handler), or
+  // when this conversation has just come on screen and still owes a scroll to
+  // its newest message (`switchPin`, from the store's activeId subscription).
   //
   // Next frame, not in the effect body: reading scrollHeight and writing
   // scrollTop forces a synchronous layout, and doing that inside React's commit
@@ -131,20 +143,58 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
   // is the same number for free. Cancelled on re-run so a burst of updates
   // scrolls once.
   //
-  // The latch is SPENT INSIDE THE rAF, not in the effect body, so it is spent on
-  // the frame that actually scrolls: a cancelled callback never spends it, which
-  // is what makes a burst of deltas arriving alongside the sent message collapse
-  // to one scroll rather than swallowing the pin on a frame that never ran.
+  // The send latch is SPENT INSIDE THE rAF, not in the effect body, so it is
+  // spent on the frame that actually scrolls: a cancelled callback never spends
+  // it, which is what makes a burst of deltas arriving alongside the sent
+  // message collapse to one scroll rather than swallowing the pin on a frame
+  // that never ran.
+  //
+  // NEITHER LATCH WRITES `pinned.current`. ScrollDown's scroll handler is that
+  // ref's only writer — see scrollPin.ts.
   useEffect(() => {
-    const frame = requestAnimationFrame(() => {
+    // Read ONCE per effect run rather than per frame: a switch landing while
+    // this loop is settling must not let a chain that is still looking at the
+    // session it was started for decide the new session's debt is paid.
+    const owed = switchPin.current === sessionId
+    let frame = 0
+    let last = -1
+
+    const settle = (tries: number): void => {
       const el = scroller.current
       if (!el) return
+      // The same zero guard useTailPin documents: a scroller inside a
+      // `content-visibility: auto` ancestor that is off screen generates no
+      // boxes at all and reports 0, and writing that rewinds it to its top.
+      const h = el.scrollHeight
+      if (h === 0) return
+      el.scrollTop = h
+      // THE DEBT IS CLEARED BY A WRITE THAT MOVED SOMETHING, not by a write.
+      // Only a scroller that actually moved fires the scroll event ScrollDown
+      // recomputes `pinned` from, and until that has happened `pinned` still
+      // holds the PREVIOUS conversation's answer — this component is rendered
+      // unkeyed, so the ref and the DOM node both come across a switch. One
+      // geometric condition subsumes "is it still hydrating", "has it any items
+      // yet" and "is `pinned` stale": all three end in scrollTop staying 0. It
+      // is also what survives the `items: [] → full` second render an asleep
+      // session hydrates through, because the first render pays nothing.
+      if (owed && el.scrollTop > 0) switchPin.current = null
+      // Stop the frame the height stops moving. It moves at all because the
+      // rows are content-visibility: auto — see SETTLE_FRAMES. And never keep
+      // spinning against a reader who has scrolled away in the meantime, which
+      // `owed` deliberately ignores for exactly as long as `pinned` is stale.
+      if (tries === 0 || h === last) return
+      if (!owed && !pinned.current) return
+      last = h
+      frame = requestAnimationFrame(() => settle(tries - 1))
+    }
+
+    frame = requestAnimationFrame(() => {
       if (scrollPin.current) scrollPin.current = false
-      else if (!pinned.current) return
-      el.scrollTop = el.scrollHeight
+      else if (!owed && !pinned.current) return
+      settle(SETTLE_FRAMES - 1)
     })
     return () => cancelAnimationFrame(frame)
-  }, [items, approvals, elicitations, rewindPreview])
+  }, [items, approvals, elicitations, rewindPreview, sessionId])
 
   /* Which turn and which run a given item lives in.
 

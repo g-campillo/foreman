@@ -136,7 +136,13 @@ export default function SessionRail(): React.JSX.Element {
      fresh array every time and zustand loops forever on it, blanking the app.
      `?? null` keeps the miss case a stable primitive rather than undefined. */
   const active = useStore((s) => s.sessions.find((x) => x.id === s.activeId) ?? null)
-  const cwd = active?.cwd
+  /* THE PROJECT, not the checkout — the same expression Composer and App's dock
+     heading use. From a worktree session this used to be the worktree path, and
+     it scopes four things at once: History (which looked empty, because the
+     stored conversations are filed under the project), transcript search (same),
+     the scope chip's own label (it read the checkout's directory name), and the
+     base directory `startBranch` cuts a new worktree from. */
+  const cwd = active?.worktree?.repoRoot ?? active?.cwd
   const scope = allProjects ? undefined : cwd
 
   useEffect(() => {
@@ -305,7 +311,15 @@ export default function SessionRail(): React.JSX.Element {
                     onAuxClick={(e) => {
                       if (e.button === 1) void close(s.id)
                     }}
-                    title={`${tildePath(s.cwd, window.foreman.homeDir)}\nDouble-click to rename`}
+                    /* The base line only for a worktree row, and only when we
+                       know it — see WorktreeInfo.base. It is the one fact about
+                       a worktree session that has nowhere else to live once the
+                       notice has been dismissed. */
+                    title={[
+                      tildePath(s.cwd, window.foreman.homeDir),
+                      ...(s.worktree?.base ? [`Cut from ${s.worktree.base}`] : []),
+                      'Double-click to rename',
+                    ].join('\n')}
                   >
                     <ActivityIcon session={s} />
                     <span className="session-body">

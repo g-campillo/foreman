@@ -3084,13 +3084,14 @@ button.tool-line:hover {
    Absolutely positioned inside .pane-fill, whose `contain: paint` makes it the
    containing block. Right-aligned text so the list reads as a column against
    the window edge rather than a floating menu. */
-/* `--todos-h` is published by TodoStrip, which measures itself — see the effect
-   there for why this cannot be a constant. It is absent for most sessions, so
-   the fallback is the real common case rather than a defensive one: with no
-   plan on screen this resolves to the bare titlebar offset it always had. */
+/* The `--todos-h` term this used to add is gone with the checklist's move below
+   the transcript: it was the only reader of that property, and leaving it would
+   still render correctly through the fallback — which makes it a lie that
+   nothing can catch. Nothing overlaps the strip any more; it is a flex sibling
+   of `.convo`, so it takes its space rather than floating over it. */
 .dock-entries {
   position: absolute;
-  top: calc(var(--titlebar-h) + var(--todos-h, 0px) + var(--sp-2));
+  top: calc(var(--titlebar-h) + var(--sp-2));
   right: var(--sp-5);
   z-index: 2;
   display: flex;
@@ -3894,24 +3895,34 @@ label.setting {
 
 /* ────────────────────────────────────────────────────── todo strip */
 
+/* ON THE COMPOSER'S AXIS, not the pane's: max-width, margin and padding-inline
+   are verbatim the values `.composer` uses, so the checkboxes stand on the same
+   vertical rule as the card below them rather than three pixels off it.
+
+   No border and no fill, matching `.q-tray` — the other thing that sits in this
+   gap between the transcript and the composer. It used to be a banded strip
+   under the title bar, which needed both to separate itself from the transcript
+   it was covering; down here there is nothing to separate it from. */
 .todos {
-  flex-shrink: 0;
-  border-bottom: 1px solid rgb(var(--border));
-  background: rgb(var(--surface-2) / 0.4);
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: var(--composer-max-w);
+  margin: 0 auto;
+  padding-inline: var(--sp-5);
 }
 .todos-head {
   display: flex;
   align-items: center;
-  gap: 9px;
+  gap: var(--sp-2);
   width: 100%;
-  padding: 7px 22px;
-  font-size: 12px;
+  padding: var(--sp-1-5) 0;
+  font-size: var(--fs-sm);
   text-align: left;
 }
 .todos-count {
   font-variant-numeric: tabular-nums;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--fs-xs);
   color: rgb(var(--text-faint));
   flex-shrink: 0;
 }
@@ -3936,17 +3947,24 @@ label.setting {
 }
 .todos-list {
   list-style: none;
-  padding: 0 22px 9px;
+  padding: 0 0 var(--sp-2);
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: var(--sp-1);
+  font-size: var(--fs-sm);
+}
+/* The cap belongs to the FULL list alone. The windowed body is five rows by
+   construction (see todoWindow), so a max-height on the shared rule would only
+   ever fire on a viewport short enough that 30vh is under six rows — at which
+   point it silently turns the window into a second scroller inside a strip
+   whose whole point is that it does not scroll. */
+.todos-list[data-full] {
   max-height: 30vh;
   overflow-y: auto;
-  font-size: 12px;
 }
 .todos-list li {
   display: flex;
-  gap: 8px;
+  gap: var(--sp-2);
   color: rgb(var(--text-dim));
 }
 .todos-list li[data-status='completed'] {
@@ -3965,6 +3983,20 @@ label.setting {
 }
 .todos-list li[data-status='in_progress'] .todos-mark {
   color: rgb(var(--accent));
+}
+/* Indented to the ROWS' TEXT column, not to the checkbox column: it is a line
+   about the steps, not another step, so it lines up with what they say rather
+   than with the boxes they are ticked in. Same arithmetic the row uses —
+   `.todos-mark` is 1em wide with the list's own gap after it. */
+.todos-more {
+  padding: 0 0 var(--sp-2) calc(1em + var(--sp-2));
+  font-size: var(--fs-xs);
+  color: rgb(var(--text-faint));
+  text-align: left;
+  transition: color 0.12s ease;
+}
+.todos-more:hover {
+  color: rgb(var(--text-dim));
 }
 
 /* ─────────────────────────────────────────────────── command palette */

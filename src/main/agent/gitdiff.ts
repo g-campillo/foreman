@@ -8,7 +8,7 @@ import { send } from '../../shared/sink'
 import { parsePorcelainZ } from './porcelain.mts'
 import { countLines, parseNumstat } from './numstat.mts'
 import { diffRow, MAX_DIFF_BYTES } from '../../shared/diff.mts'
-import { within } from './policy.mts'
+import { underWorktrees, within } from './policy.mts'
 
 const exec = promisify(execFile)
 
@@ -214,6 +214,12 @@ export async function computeDiffs(sessionId: string, cwd: string): Promise<File
     // braces — but it is the guard that keeps plan mode's writes to
     // ~/.claude/plans/*.md out of a panel that could never stage them.
     if (!within(st.root, path)) continue
+    // An UNTRACKED `.worktrees/…` means ensureExcluded failed to write (a
+    // read-only info/exclude, a repo we could not resolve a common dir for), and
+    // that is meant to be cosmetic. Without this it is not: the row git offers
+    // for an untracked directory is the DIRECTORY, so the panel would offer a
+    // whole live checkout to revertFile as a single "discard".
+    if (code.startsWith('??') && underWorktrees(st.root, path)) continue
 
     const before = code.startsWith('??') ? null : await contentAtHead(st.root, path)
     const after = await readFile(path, 'utf8').catch(() => null)

@@ -9,7 +9,7 @@ import DiffPanel from './components/DiffPanel'
 import TerminalModal from './components/TerminalModal'
 import FileTree from './components/FileTree'
 import FileModal from './components/FileModal'
-import Settings from './components/Settings'
+import Settings, { type Category as SettingsCategory } from './components/Settings'
 import TodoStrip from './components/TodoStrip'
 import SessionMeter from './components/SessionMeter'
 import SessionPanel from './components/SessionPanel'
@@ -21,24 +21,28 @@ import { usePresence } from './usePresence'
 
 export type Panel = 'diff' | 'session' | 'files'
 
-/** Order matters: this is the dock's tab order, left to right. */
+/** A lookup, not an order — the tab bar iterates PANEL_KEY. */
 const PANEL_LABEL: Record<Panel, string> = {
   diff: 'Changes',
-  files: 'Files',
   session: 'Session',
+  files: 'Files',
 }
 
 /** Elements rather than components, because they are only ever rendered at one
  *  size in one place — see ICON below for why that size is fixed. */
 const PANEL_ICON: Record<Panel, React.ReactNode> = {
   diff: <GitCompare size={14} />,
-  files: <FolderTree size={14} />,
   session: <Gauge size={14} />,
+  files: <FolderTree size={14} />,
 }
 
 /** ⌘1/⌘3/⌘4, declared panel-first because that is the direction the keycaps read
  *  it: the tab bar renders `⌘${PANEL_KEY[p]}` inside its own map rather than
  *  carrying a second hardcoded copy of the numbering.
+ *
+ *  ORDER MATTERS: this is the dock's tab order, left to right, and the values
+ *  ascend — so "the tabs read 1, 3, 4 from left to right" is structurally true
+ *  rather than two literals in two tables agreeing by luck.
  *
  *  ⌘2 is deliberately absent and handled beside ⌘, and ⌘0 instead: the terminal
  *  kept its key but stopped being a panel, so the numbering already learned is
@@ -89,6 +93,15 @@ export default function App(): React.JSX.Element {
   const railOpen = useStore((s) => s.appearance.railOpen)
   const [panel, setPanel] = useState<Panel | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+  /* Which pane Settings opens on, for the palette's `Prune worktrees…`. Seeded
+     into Settings at mount and never pushed again — and cleared by ⌘, and by the
+     header button, so "open Settings" keeps meaning the first pane rather than
+     wherever the last palette entry pointed. */
+  const [settingsCat, setSettingsCat] = useState<SettingsCategory | undefined>(undefined)
+  const openSettings = useCallback((v: boolean | ((cur: boolean) => boolean)): void => {
+    setSettingsCat(undefined)
+    setShowSettings(v)
+  }, [])
   const [showPalette, setShowPalette] = useState(false)
   // App-local like Settings and the palette, NOT in the store like `editor`.
   // The file modal is in the store because a tree row, a diff row, a tool card
@@ -199,7 +212,10 @@ export default function App(): React.JSX.Element {
   const paletteActions = useMemo<PaletteActions>(
     () => ({
       showPanel: setPanel,
-      showSettings: () => setShowSettings(true),
+      showSettings: (category) => {
+        setSettingsCat(category)
+        setShowSettings(true)
+      },
       showTerminal: () => setShowTerminal(true),
     }),
     [],
@@ -221,7 +237,7 @@ export default function App(): React.JSX.Element {
         // The standard macOS Preferences key. Free: the app installs no Menu,
         // and Electron's default template has no Preferences role.
         e.preventDefault()
-        setShowSettings((v) => !v)
+        openSettings((v) => !v)
       } else if (e.key === 'n') {
         // ⌘N reuses the current project, and falls through to the directory
         // picker when there is none. ⇧⌘N used to open the project chooser; both
@@ -244,7 +260,7 @@ export default function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [newSession, toggle, setAppearance, railOpen])
+  }, [newSession, toggle, setAppearance, railOpen, openSettings])
 
   return (
     <div className="app" data-panel={panel ?? undefined} data-rail={railOpen ? undefined : 'closed'}>
@@ -315,7 +331,7 @@ export default function App(): React.JSX.Element {
             aria-pressed={showSettings}
             aria-label="Settings"
             {...hk('Settings', '⌘,')}
-            onClick={() => setShowSettings((v) => !v)}
+            onClick={() => openSettings((v) => !v)}
           >
             <SlidersHorizontal size={ICON} />
           </button>
@@ -369,18 +385,18 @@ export default function App(): React.JSX.Element {
               Terminal
             </button>
             <button
-              {...hk("This project's tree", `⌘${PANEL_KEY.files}`)}
-              onClick={() => toggle('files')}
-            >
-              <FolderTree size={ICON} />
-              Files
-            </button>
-            <button
               {...hk('Context window, cost, MCP servers, skills', `⌘${PANEL_KEY.session}`)}
               onClick={() => toggle('session')}
             >
               <Gauge size={ICON} />
               Session
+            </button>
+            <button
+              {...hk("This project's tree", `⌘${PANEL_KEY.files}`)}
+              onClick={() => toggle('files')}
+            >
+              <FolderTree size={ICON} />
+              Files
             </button>
           </div>
         )}
@@ -394,8 +410,13 @@ export default function App(): React.JSX.Element {
             of a conversation, and it says so. */}
         {session ? (
           <>
-            <TodoStrip sessionId={session.id} />
+            {/* The checklist sits WITH THE COMPOSER, below the transcript, the
+                way the CLI prints it. `.pane` is a flex column with
+                `.convo{flex:1}` and `.composer{flex:0 0 auto}`, so opening it
+                here takes its height out of the transcript and the composer
+                never moves — above, it pushed the whole conversation down. */}
             <Conversation sessionId={session.id} />
+            <TodoStrip sessionId={session.id} />
             <Composer session={session} />
           </>
         ) : (
@@ -425,7 +446,7 @@ export default function App(): React.JSX.Element {
             tabs here; they open from the entry list instead. */}
         <header className="pane-head drag">
           <div className="dock-tabs no-drag">
-            {(Object.keys(PANEL_LABEL) as Panel[]).map((p) => (
+            {(Object.keys(PANEL_KEY) as Panel[]).map((p) => (
               <button
                 key={p}
                 data-active={panel === p}
@@ -522,7 +543,11 @@ export default function App(): React.JSX.Element {
           renders last so its z-index:70 and its DOM order agree about painting
           over both scrims. */}
       {settingsAt.mounted && (
-        <Settings data-state={settingsAt.state} onClose={() => setShowSettings(false)} />
+        <Settings
+          data-state={settingsAt.state}
+          initial={settingsCat}
+          onClose={() => setShowSettings(false)}
+        />
       )}
       {paletteAt.mounted && (
         <CommandPalette

@@ -8,6 +8,7 @@ import {
   type McpStatus,
   type PermissionAnswer,
   type WorktreeInfo,
+  type WorktreeReport,
 } from '../shared/types'
 
 function on(channel: string, cb: (payload: any) => void): () => void {
@@ -140,6 +141,22 @@ const api = {
   ): Promise<CheckoutResult> =>
     ipcRenderer.invoke(IPC.gitCheckout, { sessionId, cwd, name, remote }),
 
+  // worktrees. Annotated for the same reason the branch calls above are: the
+  // panel refuses removals on what comes back, so a payload arriving as `any`
+  // would let a shape change disable a safety check silently.
+  listWorktrees: (cwd: string): Promise<WorktreeReport> =>
+    ipcRenderer.invoke(IPC.worktreeList, { cwd }),
+  pruneWorktrees: (cwd: string): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke(IPC.worktreePrune, { cwd }),
+  /** Named for what it can actually remove. A REGISTERED worktree goes with the
+   *  session that owns it, through closeSession; this only deletes a leftover
+   *  directory git no longer has an entry for. */
+  removeOrphanWorktree: (
+    cwd: string,
+    path: string,
+  ): Promise<{ removed: boolean; reason?: string }> =>
+    ipcRenderer.invoke(IPC.worktreeRemove, { cwd, path }),
+
   // editor files
   readFile: (cwd: string, path: string) => ipcRenderer.invoke(IPC.fileRead, { cwd, path }),
   writeFile: (
@@ -196,6 +213,10 @@ const api = {
     lifetime: 'persist' | 'stop'
     idleMinutes: number
     notifications: boolean
+    /** 0 for "no cap". Main needs its own copy for the hosts it starts without
+     *  a renderer call behind them — see `rehome`. */
+    maxBudgetUsd: number
+    maxTurns: number
   }) => ipcRenderer.invoke(IPC.agentPolicy, policy),
 
   // events
@@ -204,6 +225,7 @@ const api = {
   onMeta: (cb: (p: any) => void) => on(IPC.evtMeta, cb),
   onRemoved: (cb: (p: any) => void) => on(IPC.evtRemoved, cb),
   onHibernated: (cb: (p: any) => void) => on(IPC.evtHibernated, cb),
+  onRehomed: (cb: (p: any) => void) => on(IPC.evtRehomed, cb),
   onQueue: (cb: (p: any) => void) => on(IPC.evtQueue, cb),
   onPermissionRequest: (cb: (p: any) => void) => on(IPC.permRequest, cb),
   onPermissionResolved: (cb: (p: any) => void) => on(IPC.permResolved, cb),

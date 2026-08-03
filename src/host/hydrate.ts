@@ -22,7 +22,17 @@ export async function hydrateInto(
   sessionId: string,
 ): Promise<void> {
   try {
-    const msgs = await getSessionMessages(sdkSessionId, { dir: cwd, limit: TRANSCRIPT_LIMIT })
+    let msgs = await getSessionMessages(sdkSessionId, { dir: cwd, limit: TRANSCRIPT_LIMIT })
+    // A SCOPED READ THAT COMES BACK EMPTY IS NOT PROOF THERE IS NOTHING TO READ.
+    // `dir` names the project directory the transcript is filed under, and a
+    // re-homed session is by definition running somewhere other than where its
+    // conversation was recorded — its worktree is gone. With no `dir` the SDK
+    // scans every project directory, so this finds a transcript that exists at
+    // all, wherever it was written. Cheap, because it only runs when the first
+    // read found nothing.
+    if (msgs.length === 0) {
+      msgs = await getSessionMessages(sdkSessionId, { limit: TRANSCRIPT_LIMIT })
+    }
     for (const item of normaliseTranscript(msgs as unknown as StoredMessage[])) {
       send(IPC.evtItem, { sessionId, item })
     }

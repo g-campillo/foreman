@@ -23,17 +23,30 @@ const TICK_MS = 1000
  * `Working`, where they existed only while a turn was running and scrolled away
  * with it. Here they are always on screen — and the tip carries the running cost,
  * which the app has never shown outside the context card.
+ *
+ * Renders NOTHING until the first message is sent, because until then there is
+ * no duration to report — see meterElapsed and SessionMeta.firstMessageAt.
  */
-export default function SessionMeter({ session }: { session: SessionMeta }): React.JSX.Element {
+export default function SessionMeter({ session }: { session: SessionMeta }): React.JSX.Element | null {
   const [now, setNow] = useState(() => Date.now())
+  // Armed only once there is a clock to move, the same shape as Turn's guard in
+  // Conversation.tsx. `now` is re-read here rather than left at its mount value:
+  // this component is mounted for the whole life of the pane, so by the time the
+  // first message lands the state seeded at mount can be minutes stale — and
+  // the first tick is a second away, which is a second of a visibly wrong figure.
+  const armed = session.firstMessageAt !== null
   useEffect(() => {
+    if (!armed) return
+    setNow(Date.now())
     const id = setInterval(() => setNow(Date.now()), TICK_MS)
     return () => clearInterval(id)
-  }, [])
+  }, [armed])
 
   const running = session.turnStartedAt !== null
   const out = sessionTokens(session)
-  const elapsed = hms(meterElapsed(session, now))
+  const ms = meterElapsed(session, now)
+  if (ms === null) return null
+  const elapsed = hms(ms)
 
   return (
     <span

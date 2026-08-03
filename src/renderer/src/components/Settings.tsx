@@ -4,6 +4,7 @@ import {
   Bot,
   Columns3,
   Gauge,
+  GitBranch,
   MessageSquarePlus,
   Monitor,
   Palette,
@@ -24,6 +25,7 @@ import type {
 import { useStore } from '../store'
 import type { PresenceState } from '../usePresence'
 import LspServers from './LspServers'
+import Worktrees from './Worktrees'
 import type { MenuItem } from './Menu'
 import Picker from './Picker'
 import { SettingRow, SettingToggle } from './SettingRow'
@@ -79,17 +81,19 @@ const LIFETIMES: Choice<AgentLifetime>[] = [
   { value: 'stop', label: 'Stop agents' },
 ]
 
-type Category = 'new' | 'agents' | 'limits' | 'appearance' | 'lsp'
+export type Category = 'new' | 'agents' | 'limits' | 'appearance' | 'lsp' | 'worktrees'
 
-/** Order is the nav's order. Language servers is last because it is the only
- *  category about the PROJECT rather than the app — and, until it got a category
- *  of its own, it was over half the scroll height of this whole modal. */
+/** Order is the nav's order. The last TWO are the categories about the PROJECT
+ *  rather than the app, kept together at the bottom for that reason — language
+ *  servers was the first, and, until it got a category of its own, it was over
+ *  half the scroll height of this whole modal. */
 const CATEGORIES: { id: Category; label: string; icon: React.ReactNode }[] = [
   { id: 'new', label: 'New conversations', icon: <MessageSquarePlus size={14} /> },
   { id: 'agents', label: 'Agents', icon: <Bot size={14} /> },
   { id: 'limits', label: 'Limits & alerts', icon: <Wallet size={14} /> },
   { id: 'appearance', label: 'Appearance', icon: <Palette size={14} /> },
   { id: 'lsp', label: 'Language servers', icon: <Server size={14} /> },
+  { id: 'worktrees', label: 'Worktrees', icon: <GitBranch size={14} /> },
 ]
 
 /**
@@ -193,9 +197,14 @@ function ChoiceRow<T extends string | number>({
  */
 export default function Settings({
   onClose,
+  initial,
   'data-state': state,
 }: {
   onClose: () => void
+  /** Which category to open on. Absent means the first one, which is the right
+   *  default for ⌘, — the palette passes one so `Prune worktrees…` lands on the
+   *  panel it names rather than four clicks away from it. */
+  initial?: Category
   /** From usePresence in App — see `.plan-scrim[data-state='closed']`. */
   'data-state': PresenceState
 }): React.JSX.Element {
@@ -207,8 +216,10 @@ export default function Settings({
   const models = useStore((s) => s.models)
   const modelRows = useMemo(() => modelLabels(models), [models])
   /* Local, and not in the persisted store: a category is where you are, not a
-     preference, and re-opening on the first one is the right default. */
-  const [cat, setCat] = useState<Category>('new')
+     preference, and re-opening on the first one is the right default. Seeded
+     rather than kept in sync with `initial`, so clicking the nav still wins for
+     as long as this modal is up — and it is unmounted on close. */
+  const [cat, setCat] = useState<Category>(initial ?? 'new')
 
   const modes: Choice<PermissionMode>[] = MODES.map((m) => ({
     value: m.value,
@@ -415,6 +426,7 @@ export default function Settings({
             )}
 
             {cat === 'lsp' && <LspServers />}
+            {cat === 'worktrees' && <Worktrees />}
           </div>
         </div>
       </div>

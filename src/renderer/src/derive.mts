@@ -70,6 +70,14 @@ export function activityOf(
 
 export type TodoStatus = 'pending' | 'in_progress' | 'completed'
 export interface Todo {
+  /**
+   * The key `latestTodos` files this row under — the task id, or `w<n>` for a
+   * TodoWrite row. Carried out to the strip because the strip renders a WINDOW
+   * over the list now: an index into the visible slice names a different step
+   * every time the window slides, and React would then reuse the DOM of one
+   * step for another as the plan progresses.
+   */
+  id: string
   content: string
   status: TodoStatus
   /** Present-tense form the agent writes for the in-flight item. */
@@ -106,10 +114,10 @@ function createdId(result: string | undefined): string | null {
 }
 
 /** A TodoWrite call carries the whole list and replaces whatever came before. */
-function parseTodoWrite(input: Record<string, unknown> | null): Todo[] | null {
+function parseTodoWrite(input: Record<string, unknown> | null): Omit<Todo, 'id'>[] | null {
   const raw = input?.todos
   if (!Array.isArray(raw)) return null
-  const todos = raw.flatMap((entry): Todo[] => {
+  const todos = raw.flatMap((entry): Omit<Todo, 'id'>[] => {
     const o = entry as Record<string, unknown> | null
     if (!o || typeof o.content !== 'string') return []
     return [
@@ -346,7 +354,7 @@ export function latestTodos(items: readonly ChatItem[]): Todo[] | null {
       bySubject.clear()
       created = 0
       list.forEach((t, i) => {
-        byId.set(`w${i}`, t)
+        byId.set(`w${i}`, { ...t, id: `w${i}` })
         const subject = subjectKey(t.content)
         if (!bySubject.has(subject)) bySubject.set(subject, `w${i}`)
       })
@@ -368,6 +376,7 @@ export function latestTodos(items: readonly ChatItem[]): Todo[] | null {
       // observed are 1-based in creation order, so the counter matches.
       const key = createdId(item.result) ?? String(created)
       byId.set(key, {
+        id: key,
         content: input.subject,
         status: 'pending',
         activeForm: typeof input.activeForm === 'string' ? input.activeForm : undefined,
@@ -400,6 +409,80 @@ export function latestTodos(items: readonly ChatItem[]): Todo[] | null {
 
   const todos = [...byId.values()]
   return todos.length ? todos : null
+}
+
+/** Rows the strip shows at once. Five, because the strip sits above the composer
+ *  now and a twenty-step plan opened there would push the transcript off screen
+ *  to say what its one-line head already says. */
+export const TODO_WINDOW = 5
+
+export interface TodoView {
+  visible: Todo[]
+  /** Index of `visible[0]` in the full list, for the `<ol start>`. */
+  start: number
+  hidden: number
+  /** `2 completed, 4 pending`, or null when the whole plan is visible. Finished
+   *  prose rather than a before/after split, because the strip renders it as one
+   *  line — the same reason RunSummary hands back presentation-ready pieces. */
+  summary: string | null
+}
+
+/**
+ * Which slice of a long plan the strip shows.
+ *
+ * A WINDOW, not a head or a tail. The interesting part of a checklist is the
+ * frontier between what is done and what is not, and it walks down the list as
+ * the agent works — a `slice(0, 5)` shows five ticked boxes by the end, and a
+ * `slice(-5)` shows five pending ones at the start.
+ *
+ * THE CLAMP ORDER IS THE PRIORITY ORDER, and each step overrides the one above:
+ *
+ *  1. Open at the first unfinished step, which is where the work is.
+ *  2. Never scroll past the end (`cap`): `c c c c c c c i` would otherwise put
+ *     one row at the top of five rows of nothing.
+ *  3. Never drop the last in-progress step (`floor`), overriding both. Agents
+ *     work out of order, and nothing anywhere enforces a single `in_progress` —
+ *     main/agent/plan.ts spawns parallel implementers that each mark their own,
+ *     so `p c c c c c i` is an ordinary shape rather than a corrupt one.
+ *
+ * `max` is a parameter so the check can drive it without importing a constant it
+ * would then be asserting against itself.
+ */
+export function todoWindow(todos: readonly Todo[], max = TODO_WINDOW): TodoView {
+  if (todos.length <= max) {
+    return { visible: [...todos], start: 0, hidden: 0, summary: null }
+  }
+  const cap = Math.max(0, todos.length - max)
+  let firstLive = todos.length
+  let lastActive = -1
+  for (let i = 0; i < todos.length; i++) {
+    const status = todos[i]!.status
+    if (status !== 'completed' && firstLive === todos.length) firstLive = i
+    if (status === 'in_progress') lastActive = i
+  }
+  const floor = lastActive < 0 ? 0 : Math.max(0, lastActive - max + 1)
+  const start = Math.max(floor, Math.min(firstLive, cap))
+  const visible = todos.slice(start, start + max)
+
+  // Counted over everything NOT on screen, both sides at once: the strip has one
+  // line for this, and "3 above, 2 below" is a fact about a scroll position
+  // rather than about the plan.
+  const counts = { completed: 0, in_progress: 0, pending: 0 }
+  for (let i = 0; i < todos.length; i++) {
+    if (i >= start && i < start + max) continue
+    counts[todos[i]!.status] += 1
+  }
+  const hidden = todos.length - visible.length
+  // Lifecycle order, and `in progress` in English rather than the wire value —
+  // this is a sentence, not a status attribute.
+  const parts: string[] = []
+  if (counts.completed) parts.push(`${counts.completed} completed`)
+  if (counts.in_progress) parts.push(`${counts.in_progress} in progress`)
+  if (counts.pending) parts.push(`${counts.pending} pending`)
+  // null rather than an empty string, so the strip never grows a row that reads
+  // `0 pending`. Unreachable while `hidden > 0`, and that is the point: the two
+  // are the same fact and the caller may test either.
+  return { visible, start, hidden, summary: parts.length ? parts.join(', ') : null }
 }
 
 // ------------------------------------------------------------ context usage
@@ -1937,19 +2020,25 @@ export function sessionTokens(m: Pick<SessionMeta, 'outputTokens' | 'turnTokens'
 
 /**
  * What the pane-header clock is measuring: the turn while one is running, the
- * session's age when none is.
+ * time since the first message when none is.
  *
  * Both readings answer "how long has this been going" at the only scale that is
  * meaningful at the time — mid-turn nobody cares how old the conversation is,
  * and between turns a frozen turn timer is a number that has stopped meaning
  * anything. `now` is passed in rather than read here so the whole thing stays
  * checkable under bare node.
+ *
+ * `createdAt` is deliberately NOT a fallback: it is stamped when the host
+ * starts, so the clock used to be running before a single message was sent and
+ * a resumed conversation opened at "4h". `null` rather than `0` for "nothing to
+ * show" — 0 is a real reading, the frame the first message lands on.
  */
 export function meterElapsed(
-  m: Pick<SessionMeta, 'turnStartedAt' | 'createdAt'>,
+  m: Pick<SessionMeta, 'turnStartedAt' | 'firstMessageAt'>,
   now: number,
-): number {
-  return Math.max(0, now - (m.turnStartedAt ?? m.createdAt))
+): number | null {
+  const from = m.turnStartedAt ?? m.firstMessageAt
+  return from === null ? null : Math.max(0, now - from)
 }
 
 // -------------------------------------------------------------------- projects
@@ -1969,6 +2058,39 @@ export function meterElapsed(
 export function projectKey(path: string): string {
   return path.replace(/\/+$/, '').toLowerCase()
 }
+
+/**
+ * The project a path belongs to: `/repo/.worktrees/add-tests` → `/repo`.
+ *
+ * A PURE STRING RULE, for exactly the reason `projectKey` above is one — the
+ * renderer has no fs and no git, and this has to work for a preview stub read
+ * off disk that has never had a host to ask.
+ *
+ * It fixes the duplicate project in the rail, and the cause was never the
+ * worktree machinery: ⌘N, the rail's "New conversation" and the palette all
+ * create a session rooted at the ACTIVE session's cwd with no branch, so from
+ * inside a worktree they mint an ordinary session standing in the checkout, with
+ * no `worktree` field for `?? s.cwd` to fall back past. `sleepingMeta` has no
+ * `worktree` either, so previewing a past worktree conversation did the same
+ * thing permanently.
+ *
+ * The LAST `/.worktrees/` segment, not the first: a worktree of a repo that
+ * itself sits inside another repo's `.worktrees/` is nested, and the nearer
+ * marker is the one that names the project this path is a checkout of.
+ */
+export function projectRoot(path: string): string {
+  const at = path.lastIndexOf(WORKTREE_MARK)
+  return at === -1 ? path : path.slice(0, at)
+}
+
+/** `WORKTREE_DIR` from main/agent/policy.mts, as a path segment.
+ *
+ *  DUPLICATED RATHER THAN IMPORTED, for the same reason policy.mts keeps its own
+ *  copy of ImageMediaType: nothing in the renderer may import from main, and
+ *  this module in particular is loaded by bare node for `check:derive`. The two
+ *  can only drift if someone renames the directory, which relocates every
+ *  existing checkout and is therefore not a silent change. */
+const WORKTREE_MARK = '/.worktrees/'
 
 /**
  * A file path shown against the session's working directory.
@@ -2086,12 +2208,17 @@ export function recentProjects(
 
   // The worktree path is a scratch checkout; repoRoot is the project the user
   // thinks in — and opening the scratch dir would start an agent inside it.
+  // `projectRoot` is the fallback for the sessions that have no `worktree` to
+  // read but still stand in a checkout: ⌘N from a worktree session, and every
+  // preview stub. See projectRoot.
   //
   // Newest first, to agree with groupSessions. Home renders that one directly
   // above this one, so leaving this in store insertion order would put two
   // orderings of the same projects on screen at once, pointing opposite ways.
-  for (const s of [...sessions].sort(byNewest)) push(s.worktree?.repoRoot ?? s.cwd, true)
-  for (const p of past) if (p.cwd) push(p.cwd, false)
+  for (const s of [...sessions].sort(byNewest)) {
+    push(s.worktree?.repoRoot ?? projectRoot(s.cwd), true)
+  }
+  for (const p of past) if (p.cwd) push(projectRoot(p.cwd), false)
   return out
 }
 
@@ -2116,7 +2243,11 @@ export function groupSessions(
 ): { root: string; sessions: SessionMeta[] }[] {
   const by = new Map<string, { root: string; sessions: SessionMeta[] }>()
   for (const s of sessions) {
-    const root = s.worktree?.repoRoot ?? s.cwd
+    // `?? projectRoot(s.cwd)` and not `?? s.cwd`: a session created from inside
+    // a worktree has no `worktree` field of its own (⌘N does not ask for one),
+    // and neither has a preview stub — both used to mint a second project headed
+    // with the CHECKOUT's directory name. See projectRoot.
+    const root = s.worktree?.repoRoot ?? projectRoot(s.cwd)
     const key = projectKey(root)
     const g = by.get(key) ?? { root, sessions: [] }
     g.sessions.push(s)

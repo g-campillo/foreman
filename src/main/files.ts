@@ -56,6 +56,12 @@ export const TREE_LIMIT = 20000
  */
 const SKIP_DIRS = new Set([
   '.git',
+  // Foreman's own worktree checkouts, each a full copy of this repository — so
+  // an unfiltered walk would list every file in the project once per live agent.
+  // NOT redundant with the `info/exclude` entry ensureExcluded writes: that one
+  // covers the `git ls-files --exclude-standard` path, and this walk is the
+  // fallback for a directory git knows nothing about. Neither covers the other.
+  '.worktrees',
   'node_modules',
   'target', // maven, cargo
   'build', // gradle, cmake

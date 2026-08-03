@@ -158,7 +158,26 @@ export default function ScrollDown({
     // Passive: this never calls preventDefault, and saying so keeps the handler
     // off the compositor's critical path during a flick.
     el.addEventListener('scroll', onScroll, { passive: true })
-    return () => el.removeEventListener('scroll', onScroll)
+    /* THE SCROLLPORT ITSELF CAN CHANGE SIZE WITH NO SCROLL EVENT AND NO RENDER
+       OF CONVERSATION, and that is not hypothetical: opening the checklist
+       takes ~120px out of `.convo`'s flex height, and the fold lives in
+       `todoFold`, which only TodoStrip subscribes to. So the effect below never
+       runs, `pinned` stays a stale true, the reader is left 120px off the
+       bottom and the arrow that would take them back does not appear. On a
+       running session the next delta heals it; ON AN IDLE ONE IT NEVER DOES.
+
+       Reads the pin rather than re-measuring it: a shorter viewport moves the
+       bottom, it does not mean the user scrolled. Net observer count across the
+       app is unchanged — TodoStrip's `--todos-h` one went away with the move. */
+    const ro = new ResizeObserver(() => {
+      if (pinned.current) el.scrollTop = el.scrollHeight
+      else setShow(!atBottom(el))
+    })
+    ro.observe(el)
+    return () => {
+      el.removeEventListener('scroll', onScroll)
+      ro.disconnect()
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps -- refs, stable for life
   }, [])
 

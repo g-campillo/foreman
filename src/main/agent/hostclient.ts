@@ -36,6 +36,17 @@ export const policy = {
   lifetime: 'persist' as 'persist' | 'stop',
   idleMinutes: 30,
   notifications: true,
+  /**
+   * The spend and turn caps from Settings, 0 for "no cap".
+   *
+   * Here as well as on each SessionInit because MAIN sometimes starts a host on
+   * its own — `rehome` restarts one mid-send, with no renderer call to carry the
+   * caps in on. Without them a re-homed session would silently drop back to the
+   * FOREMAN_MAX_* env defaults, which is a policy change nobody asked for and
+   * nothing on screen to say so.
+   */
+  maxBudgetUsd: 0,
+  maxTurns: 0,
 }
 
 /** Where all hosts live. Lazy: `app.getPath` throws before ready. */

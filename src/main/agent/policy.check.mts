@@ -15,6 +15,7 @@ import {
   resultText,
   notifyBody,
   normaliseSend,
+  underWorktrees,
   uniqueBranch,
   within,
 } from './policy.mts'
@@ -46,6 +47,33 @@ assert.equal(
 // A directory named '..' at the end is a traversal; one merely starting with
 // dots is an ordinary hidden file and stays in.
 assert.equal(within('/repo', '/repo/..config/a'), true, 'a dotted name is not a traversal')
+
+// -------------------------------------------------------------- underWorktrees
+
+assert.equal(underWorktrees('/repo', '/repo/.worktrees/add-tests'), true, 'a linked checkout')
+assert.equal(underWorktrees('/repo', '/repo/.worktrees/add-tests/src/a.ts'), true, 'a file inside one')
+assert.equal(underWorktrees('/repo', '/repo/.worktrees'), true, 'the directory itself')
+
+// THE PREFIX TRAP, one directory over from within()'s: a plain startsWith on
+// `${root}/.worktrees` calls this true, and the session standing in it would
+// then be invisible to sessionsUnder — so a checkout in the main tree would be
+// allowed to run underneath a live agent.
+assert.equal(underWorktrees('/repo', '/repo/.worktreesX/a'), false, 'a sibling sharing the prefix')
+assert.equal(underWorktrees('/repo', '/repo/.worktreesX'), false, 'and the sibling itself')
+
+assert.equal(underWorktrees('/repo', '/repo/src/a.ts'), false, 'an ordinary file in the tree')
+assert.equal(underWorktrees('/repo', '/repo'), false, 'the root is not under its own worktree dir')
+assert.equal(underWorktrees('/repo', '/other/.worktrees/x'), false, 'another repo entirely')
+// Only at the ROOT. A directory of that name nested in the tree is the user's,
+// and a session in it is an ordinary session in this project.
+assert.equal(underWorktrees('/repo', '/repo/pkg/.worktrees/x'), false, 'nested, so not ours')
+// The legacy location, still on disk for existing checkouts, is outside the
+// repo entirely — so it fails the `within` half rather than this one.
+assert.equal(
+  underWorktrees('/repo', '/Users/x/Library/Application Support/foreman/worktrees/repo-x'),
+  false,
+  'the pre-move location is not under the repo at all',
+)
 
 // ------------------------------------------------------------------------ cap
 

@@ -1,8 +1,8 @@
 import { ipcMain } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { readFileSync, realpathSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import {
   forkSession,
   getSessionMessages,
@@ -27,10 +27,21 @@ import {
   type SessionMeta,
   type TranscriptSearchHit,
   type WorktreeInfo,
+  type WorktreeReport,
+  type WorktreeRow,
 } from '../../shared/types'
-import { createWorktree, removeWorktree, repoRoot } from './worktrees'
+import {
+  createWorktree,
+  listWorktrees,
+  mainRoot,
+  orphanedCheckouts,
+  pruneWorktrees,
+  removeOrphan,
+  removeWorktree,
+  repoRoot,
+} from './worktrees'
 import { checkoutBranch, listBranches } from './branches'
-import { within } from './policy.mts'
+import { underWorktrees, within } from './policy.mts'
 import {
   normaliseTranscript,
   searchTranscript,
@@ -121,17 +132,40 @@ function get(id: string): HostClient | undefined {
 }
 
 /**
- * Every live session standing on a repository, for an operation that rewrites
- * the working directory under all of them at once.
+ * Every live session standing on a repository's MAIN working tree, for an
+ * operation that rewrites the working directory under all of them at once.
  *
  * Containment, not equality: a session opened on `<repo>/src` is affected by a
- * checkout exactly as much as one opened on the root. Worktree sessions live
- * under `userData`, so they correctly fall OUTSIDE their own repo root and are
- * neither blocked by nor refreshed for a checkout on the main tree — which is
- * the whole point of a worktree.
+ * checkout exactly as much as one opened on the root.
+ *
+ * ...and the `underWorktrees` half is what keeps that true now that worktrees
+ * live INSIDE the repo. A linked checkout at `<repo>/.worktrees/x` passes
+ * `within` — honestly, it is under the repo — but a checkout on the main tree
+ * cannot touch it, because it is a separate working tree with its own HEAD. It
+ * used to fall outside for free, by living under `userData`. Without the
+ * exclusion, `gitCheckout` refuses to switch branch in the main tree whenever
+ * ANY worktree agent is mid-turn, which is precisely the thing worktrees exist
+ * to make safe.
  */
 function sessionsUnder(root: string): HostClient[] {
-  return [...sessions.values()].filter((h) => within(root, h.meta.cwd))
+  return [...sessions.values()].filter(
+    (h) => within(root, h.meta.cwd) && !underWorktrees(root, h.meta.cwd),
+  )
+}
+
+/**
+ * The live session standing in exactly this directory, if there is one.
+ *
+ * ONE FUNCTION for the two places that ask, because they used to disagree and
+ * the looser of the two was the one that DELETES: the panel's report compared
+ * canonically while the removal handler compared raw strings, so a worktree
+ * registered as `/tmp/x` and running as `/private/tmp/x` was shown as in use and
+ * removed anyway. `meta.cwd` is realpath'd at create time and git prints the
+ * path as it was registered, so the two spellings genuinely differ on macOS.
+ */
+function sessionIn(path: string): HostClient | undefined {
+  const real = canonical(path) ?? path
+  return [...sessions.values()].find((h) => h.meta.cwd === path || h.meta.cwd === real)
 }
 
 /**
@@ -187,14 +221,26 @@ export async function createSession(
   }
 
   let cwd = base
-  try {
+  if (worktreeBranch) {
+    // git just reported creating this directory, so a miss here is a half-failed
+    // create rather than "the path may not exist yet" — and swallowing it starts
+    // the agent in an un-canonicalised path whose every diff renders as
+    // `../../private/...`, or in a directory that is not there at all.
+    if (!existsSync(base)) throw new Error(`Worktree was not created at ${base}`)
     cwd = realpathSync(base)
-  } catch {
-    /* path may not exist yet; fall back to as-given */
+  } else {
+    try {
+      cwd = realpathSync(base)
+    } catch {
+      /* path may not exist yet; fall back to as-given */
+    }
   }
   // The worktree's own path must be canonical too, or `git worktree remove`
-  // is handed a path git doesn't recognise as the one it registered.
-  if (worktree) worktree = { ...worktree, path: cwd }
+  // is handed a path git doesn't recognise as the one it registered. So must
+  // `repoRoot`: projectKey in the renderer deliberately does NOT realpath (it
+  // has no fs), so `/tmp/repo` and `/private/tmp/repo` split one project into
+  // two groups in the rail.
+  if (worktree) worktree = { ...worktree, path: cwd, repoRoot: canonical(worktree.repoRoot) ?? worktree.repoRoot }
 
   // The session id is minted HERE rather than inside Session, because it names
   // the host's directory and the client has to know it before the host exists.
@@ -286,6 +332,172 @@ export async function closeSession(
   if (!worktree) return {}
   const { removed, reason } = await removeWorktree(worktree)
   return removed ? {} : { notice: reason }
+}
+
+/**
+ * The transcript file for an SDK session id, wherever it was written.
+ *
+ * `~/.claude/projects/<mangled-cwd>/<uuid>.jsonl` — the same shape the SDK's own
+ * dir-less locator scans, and the scan is why this exists: the mangling is of
+ * the ORIGINAL cwd, which for a stranded session is a worktree that no longer
+ * exists, so it cannot be reconstructed from anything we still hold.
+ *
+ * Returns null rather than throwing on a missing `~/.claude/projects`, which is
+ * an ordinary state for a machine that has never run the CLI outside Foreman.
+ */
+function transcriptFileFor(sdkSessionId: string): string | null {
+  const root = join(homedir(), '.claude', 'projects')
+  let dirs: string[]
+  try {
+    dirs = readdirSync(root, { withFileTypes: true })
+      .filter((e) => e.isDirectory())
+      .map((e) => e.name)
+  } catch {
+    return null
+  }
+  for (const d of dirs) {
+    const file = join(root, d, `${sdkSessionId}.jsonl`)
+    if (existsSync(file)) return file
+  }
+  return null
+}
+
+/**
+ * The nearest ancestor of `path` that still exists, preferring a repository.
+ *
+ * Two passes rather than one, because "the nearest directory that is there" and
+ * "the project this conversation was about" are different answers and the second
+ * is the one worth having: a worktree at `<repo>/.worktrees/x` that was removed
+ * leaves `<repo>/.worktrees` behind quite often, and landing the session there
+ * would give it a cwd with no git, no files and no meaning.
+ */
+function nearestLiveDir(path: string): string | null {
+  const climb = (test: (dir: string) => boolean): string | null => {
+    let dir = path
+    for (;;) {
+      if (existsSync(dir) && test(dir)) return dir
+      const up = dirname(dir)
+      if (up === dir) return null
+      dir = up
+    }
+  }
+  return climb((d) => existsSync(join(d, '.git'))) ?? climb(() => true)
+}
+
+/**
+ * Restart a session whose working directory has gone away, somewhere that has
+ * not.
+ *
+ * THE REPORTED FAILURE: an agent working in its own worktree merged its branch
+ * and removed the checkout it was standing in — so the next message came back as
+ * `Path "…/worktrees/foreman-…-msdce2wf" does not exist`. Prune does the same
+ * thing deliberately.
+ *
+ * `SessionMeta.cwd` IS IMMUTABLE, which is what makes this a restart rather than
+ * a patch: the `claude` subprocess's cwd is fixed at spawn, and makeDiffHook and
+ * makeDiagnosticsHook capture theirs in closures — so a session that merely
+ * rewrote the field would keep running in the deleted directory and reporting
+ * diffs against it. The host goes and a new one starts UNDER THE SAME SESSION
+ * ID, so unlike `wake` (which has to rekey eight renderer slices) nothing keyed
+ * by the id moves at all.
+ *
+ * Resumed by FILE, not by uuid — see SessionInit.resumeFile. `--resume <uuid>`
+ * resolves against the cwd's project directory and then against `git worktree
+ * list`, and once the worktree is unregistered both miss: re-homing by uuid
+ * would trade `Path … does not exist` for `No conversation found with session
+ * ID`. The `worktree` field goes with the checkout, because there is no longer
+ * one to point the branch badge or the diff panel at.
+ *
+ * Returns the note to show, or null when nothing needed doing — which is the
+ * overwhelmingly common case, and costs one `existsSync` per send.
+ */
+export async function rehome(id: string): Promise<string | null> {
+  // A restart takes about a second, and during it this session has NO entry in
+  // the map — so a second message arriving in that window would find no host and
+  // be dropped without a word. Joining the in-flight restart is the whole fix:
+  // by the time it resolves, the new host is registered. Same shape as the
+  // in-flight map in branches.ts, and deliberately not a cache: the entry is
+  // removed the moment the restart settles.
+  const running = rehoming.get(id)
+  if (running) return running
+
+  const h = sessions.get(id)
+  if (!h) return null
+  const old = h.meta
+  if (existsSync(old.cwd)) return null
+
+  const p = restartElsewhere(id, old).finally(() => rehoming.delete(id))
+  rehoming.set(id, p)
+  return p
+}
+
+/** Restarts in flight, by session id — see rehome. */
+const rehoming = new Map<string, Promise<string | null>>()
+
+/** rehome's body, split out only so the in-flight entry above can be registered
+ *  before the first `await` rather than after it. */
+async function restartElsewhere(id: string, old: SessionMeta): Promise<string | null> {
+  // The repo the worktree belonged to is the honest destination and the one the
+  // user thinks in. The climb is for a session with no worktree at all — a
+  // project directory that was moved or deleted out from under it.
+  const home =
+    (old.worktree?.repoRoot && existsSync(old.worktree.repoRoot) ? old.worktree.repoRoot : null) ??
+    nearestLiveDir(old.cwd) ??
+    homedir()
+
+  const resume = old.sdkSessionId ?? undefined
+  const resumeFile = resume ? (transcriptFileFor(resume) ?? undefined) : undefined
+
+  await sessions.get(id)?.shutdown().catch(() => undefined)
+  sessions.delete(id)
+  killPty(id)
+
+  let restarted: HostClient
+  try {
+    restarted = await HostClient.start(
+      {
+        cwd: home,
+        title: old.title,
+        ...(resume ? { resume } : {}),
+        ...(resumeFile ? { resumeFile } : {}),
+        permissionMode: old.permissionMode,
+        ...(old.model ? { model: old.model } : {}),
+        ...(old.effort ? { effort: old.effort } : {}),
+        // From main's own copy of the policy, because there is no renderer call
+        // behind this one to carry them — see hostclient's `policy`.
+        ...(policy.maxBudgetUsd > 0 ? { maxBudgetUsd: policy.maxBudgetUsd } : {}),
+        ...(policy.maxTurns > 0 ? { maxTurns: policy.maxTurns } : {}),
+      },
+      id,
+    )
+    restarted.onLost = hostLost
+    sessions.set(id, restarted)
+  } catch (err) {
+    // THE SESSION IS ALREADY OUT OF THE MAP AND ITS HOST DIRECTORY IS ALREADY
+    // REAPED by the shutdown above, so a rejection here leaves a rail row with
+    // nothing behind it and nothing that will ever say so: `adoptHosts` cannot
+    // find it at next launch either, because the directory is gone. Both of
+    // HostClient.start's failure modes are real — sockPathProblem, and attach's
+    // 5s connect timeout.
+    //
+    // So say exactly what hostLost says, and for the same reason: a conversation
+    // whose host went away is ASLEEP, which is honest and recoverable — the
+    // transcript is on disk and sending wakes it. Rethrown so the send path has
+    // something to report rather than dropping the message into the `callOr`
+    // fallback in silence.
+    console.warn(`[hosts] could not restart ${id} in ${home}:`, err)
+    send(IPC.evtHibernated, { sessionId: id })
+    throw err
+  }
+
+  const note = old.worktree
+    ? `The worktree for ${old.worktree.branch} is gone. This conversation is now running in ${home}.`
+    : `${old.cwd} is gone. This conversation is now running in ${home}.`
+  send(IPC.evtRehomed, { sessionId: id, meta: restarted.meta, note })
+  // Or the branch label and the diff badge go on reporting the worktree that no
+  // longer exists, which is the same lie in a smaller place.
+  void emitStats(id, home).catch(() => undefined)
+  return note
 }
 
 /**
@@ -459,7 +671,16 @@ export function registerSessionIpc(): void {
 
   ipcMain.handle(
     IPC.agentPolicy,
-    (_e, next: { lifetime: 'persist' | 'stop'; idleMinutes: number; notifications: boolean }) => {
+    (
+      _e,
+      next: {
+        lifetime: 'persist' | 'stop'
+        idleMinutes: number
+        notifications: boolean
+        maxBudgetUsd: number
+        maxTurns: number
+      },
+    ) => {
       Object.assign(policy, next)
       return true
     },
@@ -589,9 +810,90 @@ export function registerSessionIpc(): void {
     },
   )
 
-  ipcMain.handle(IPC.sessionResume, (_e, init: SessionInit & { resume: string }) =>
-    createSession(init),
-  )
+  /**
+   * Everything the Worktrees panel shows, in one call.
+   *
+   * `inUse` is the reason it is one call rather than three: the panel has to be
+   * able to refuse a removal under a live agent, AND to say — before Prune runs
+   * — what pruning will do to the conversations standing in these directories.
+   * Prune is what unregisters the entries the CLI's own `--resume` fallback
+   * scans, so a session pruned out from under gets re-homed on its next message
+   * rather than resuming where it was. That is recoverable, and it is still not
+   * something to do to someone without telling them.
+   *
+   * `mainRoot`, NEVER `repoRoot`, in all three of these handlers: the panel is
+   * handed the active session's own directory, and the ⌘N-from-a-worktree
+   * session that E1 exists to fix has no `worktree` field to resolve past — so
+   * `cwd` is routinely a linked checkout, whose `--show-toplevel` is itself.
+   */
+  ipcMain.handle(IPC.worktreeList, async (_e, { cwd }: { cwd: string }): Promise<WorktreeReport> => {
+    const root = await mainRoot(cwd)
+    if (!root) return { root: null, rows: [] }
+    const [entries, orphans] = await Promise.all([listWorktrees(root), orphanedCheckouts(root)])
+    const inUse = (path: string): boolean => sessionIn(path) !== undefined
+
+    const rows: WorktreeRow[] = entries.map((w, i) => ({
+      path: w.path,
+      branch: w.branch,
+      // git lists the MAIN worktree first, always — it is the repository, and
+      // there is no flag on the record that says so.
+      main: i === 0,
+      prunable: w.prunable,
+      orphan: false,
+      inUse: inUse(w.path),
+    }))
+    for (const path of orphans) {
+      rows.push({ path, branch: null, main: false, prunable: false, orphan: true, inUse: inUse(path) })
+    }
+    return { root, rows }
+  })
+
+  ipcMain.handle(IPC.worktreePrune, async (_e, { cwd }: { cwd: string }) => {
+    const root = await mainRoot(cwd)
+    if (!root) return { ok: false, error: 'Not a git repository.' }
+    return pruneWorktrees(root)
+  })
+
+  /**
+   * Delete a leftover checkout.
+   *
+   * Refused under a live agent HERE as well as in the panel: the panel's copy is
+   * the explanation, this one is the rule — through the SAME `sessionIn`, so the
+   * rule cannot end up looser than the explanation. Everything else this can
+   * refuse — membership of the orphan list, containment, uncommitted work — is
+   * `removeOrphan`'s, which re-derives all of it rather than trusting the path
+   * that came over the wire.
+   */
+  ipcMain.handle(IPC.worktreeRemove, async (_e, { cwd, path }: { cwd: string; path: string }) => {
+    const root = await mainRoot(cwd)
+    if (!root) return { removed: false, reason: 'Not a git repository.' }
+    const busy = sessionIn(path)
+    if (busy) return { removed: false, reason: `${busy.meta.title} is running in that directory.` }
+    return removeOrphan(root, path)
+  })
+
+  /**
+   * The DEAD-HOST half of re-homing. `rehome` restarts a host it can still see;
+   * a hibernated worktree session has none, and the row's `cwd` is a directory
+   * that may have gone away while the app was closed.
+   *
+   * Resolved BEFORE createSession rather than after, because createSession
+   * spawns into that cwd — there is nothing to repair afterwards. `worktree` is
+   * dropped with the checkout for the reason `rehome` gives, and `resumeFile`
+   * takes over from the uuid because the CLI's own lookup scans a project
+   * directory named after a cwd that no longer exists.
+   */
+  ipcMain.handle(IPC.sessionResume, (_e, init: SessionInit & { resume: string }) => {
+    if (existsSync(init.cwd)) return createSession(init)
+    const { worktree, ...rest } = init
+    const cwd =
+      (worktree?.repoRoot && existsSync(worktree.repoRoot) ? worktree.repoRoot : null) ??
+      nearestLiveDir(init.cwd) ??
+      homedir()
+    const resumeFile = transcriptFileFor(init.resume)
+    console.warn(`[hosts] ${init.cwd} is gone; resuming ${init.resume} in ${cwd}`)
+    return createSession({ ...rest, cwd, ...(resumeFile ? { resumeFile } : {}) })
+  })
 
   // `worktree` rides along from the renderer's row, because a hibernated
   // session's checkout is otherwise unnameable — main dropped its meta when the
@@ -623,8 +925,19 @@ export function registerSessionIpc(): void {
 
   ipcMain.handle(
     IPC.sessionSend,
-    (_e, { sessionId, content }: { sessionId: string; content: SendContent }) => {
-      void callOr(sessionId, undefined, 'send', content)
+    async (_e, { sessionId, content }: { sessionId: string; content: SendContent }) => {
+      // ON THE SEND PATH, because that is where the failure was observed and the
+      // only place it matters: a cwd that has gone away is harmless right up
+      // until something has to run in it. One existsSync per message, and
+      // `rehome` returns immediately when the directory is there.
+      //
+      // AWAITED, AND ITS REJECTION IS NOT SWALLOWED. A failed restart leaves no
+      // host, so `callOr` would fall straight through to its `undefined`
+      // fallback and the user's message would vanish with nothing on screen —
+      // and every send after it would do the same. Rejecting the invoke is what
+      // puts it in front of them; see store.send.
+      await rehome(sessionId)
+      await callOr(sessionId, undefined, 'send', content)
     },
   )
 
@@ -790,13 +1103,47 @@ export function registerSessionIpc(): void {
     ) => callOr(sessionId, undefined, 'setMcpPermissionOverride', name, mode),
   )
 
+  /**
+   * History, scoped to a project.
+   *
+   * THE SCOPE IS NOW THE REPO ROOT, not the session's cwd — see SessionRail —
+   * and a conversation held in a worktree is filed under the WORKTREE's path,
+   * because that is the cwd the CLI recorded it against. So a single scoped
+   * `listSessions` misses every worktree conversation the project ever had.
+   * Each registered checkout is queried too and the results deduped by
+   * sessionId, which is what puts them back in scoped History.
+   *
+   * Only the REGISTERED ones: an unregistered checkout is one whose conversation
+   * has already been re-homed, or one git never knew about. The global list (no
+   * `dir`) is one toggle away and still finds those.
+   */
   ipcMain.handle(IPC.sessionPastList, async (_e, { dir }: { dir?: string }): Promise<PastSession[]> => {
-    try {
-      return (await listSessions({ dir, limit: 40 })).map((x) => toPastSession(x, dir))
-    } catch (err) {
-      console.warn('[sessions] listSessions failed:', err)
-      return []
+    const read = async (d?: string): Promise<PastSession[]> => {
+      try {
+        return (await listSessions({ dir: d, limit: 40 })).map((x) => toPastSession(x, d))
+      } catch (err) {
+        console.warn('[sessions] listSessions failed:', err)
+        return []
+      }
     }
+    if (!dir) return read(undefined)
+
+    const trees = await listWorktrees(dir).catch(() => [])
+    const dirs = [dir, ...trees.map((w) => w.path).filter((p) => p && p !== dir)]
+    const lists = await Promise.all(dirs.map(read))
+    const seen = new Set<string>()
+    const out: PastSession[] = []
+    for (const row of lists.flat()) {
+      if (seen.has(row.sessionId)) continue
+      seen.add(row.sessionId)
+      out.push(row)
+    }
+    // Newest first across the union — each list is sorted on its own, and
+    // concatenating them would interleave two orderings. `?? 0` because the SDK
+    // leaves lastModified off a row it could not stat; those sort to the end
+    // rather than throwing the comparator.
+    out.sort((a, b) => (b.lastModified ?? 0) - (a.lastModified ?? 0))
+    return out.slice(0, 40)
   })
 
   // Transcript of a stored session. `sessionId` here is the SDK's id, which is

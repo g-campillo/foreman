@@ -214,6 +214,33 @@ export function within(dir: string, path: string): boolean {
   return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel))
 }
 
+/** Directory name worktrees are created under, relative to the repo root. Here
+ *  rather than in worktrees.ts so `underWorktrees` and the ignore entry cannot
+ *  drift apart — and so this module keeps its no-Electron property. */
+export const WORKTREE_DIR = '.worktrees'
+
+/**
+ * True when `path` is inside `root`'s worktree directory.
+ *
+ * THE EXCEPTION TO `within`, and it exists because worktrees moved INTO the
+ * repository. A linked checkout at `/repo/.worktrees/x` is `within('/repo', …)`
+ * by every honest reading of the word, and that is exactly what must not be
+ * true for the questions `within` is asked: "which sessions is this checkout
+ * shared with", which decides whether `gitCheckout` refuses to switch branch in
+ * the main tree. Without this, one worktree agent mid-turn blocks a checkout in
+ * the main working tree — which is the one thing worktrees exist to make safe.
+ *
+ * Its own function rather than a `path.startsWith` at the call site, because the
+ * prefix trap `within` documents applies here too and one directory over:
+ * `/repo/.worktreesX` shares a prefix with `/repo/.worktrees` and is an ordinary
+ * directory in the user's tree.
+ */
+export function underWorktrees(root: string, path: string): boolean {
+  const rel = relative(root, path)
+  if (rel === '' || isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) return false
+  return rel === WORKTREE_DIR || rel.startsWith(`${WORKTREE_DIR}${sep}`)
+}
+
 /**
  * Body for a desktop notification on a status change, or null when the
  * transition isn't worth interrupting someone for.

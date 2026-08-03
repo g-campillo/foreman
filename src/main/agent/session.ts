@@ -60,6 +60,22 @@ export interface SessionInit {
   sessionId?: string
   title?: string
   resume?: string
+  /**
+   * Absolute path of the transcript `.jsonl` to resume from, INSTEAD of letting
+   * the CLI find it by id.
+   *
+   * `--resume <uuid>` resolves the transcript against the CWD's project
+   * directory, falling back to scanning `git worktree list`. Both of those miss
+   * once the worktree has been unregistered — which is exactly what happens when
+   * an agent removes its own worktree, and exactly what Prune does — and the
+   * conversation comes back as "No conversation found with session ID". The CLI
+   * accepts an absolute path ending in `.jsonl` here as well, and that resolves
+   * against nothing at all, so it is the only form that survives.
+   *
+   * `sdkSessionId` still carries the uuid: this changes where the transcript is
+   * read from, not which conversation it is.
+   */
+  resumeFile?: string
   permissionMode?: PermissionMode
   effort?: EffortLevel
   /** Model alias to start on, from the user's configured default. Absent or ''
@@ -194,7 +210,19 @@ export class Session {
     // press send as the instant before — and a gauge that empties on send reads
     // as a bug. It is replaced wholesale by the next assistant message.
     this.turnUsage.clear()
-    this.patchMeta({ turnStartedAt: Date.now(), turnTokens: 0 })
+    // One `now` for both stamps, so the first turn's meter reads exactly 0s
+    // rather than the millisecond or two between two Date.now() calls.
+    //
+    // THE CONDITION IS LOAD-BEARING: firstMessageAt is when work on this run
+    // began, not when the current turn did — that is turnStartedAt, right
+    // beside it. Written unconditionally it would restart the session clock on
+    // every message, which is the exact bug the field exists to fix.
+    const now = Date.now()
+    this.patchMeta({
+      turnStartedAt: now,
+      turnTokens: 0,
+      ...(this.meta.firstMessageAt === null ? { firstMessageAt: now } : {}),
+    })
     this.setStatus('running')
   })
   private readonly abort = new AbortController()
@@ -287,6 +315,9 @@ export class Session {
       inputTokens: prior.inputTokens,
       outputTokens: prior.outputTokens,
       turnStartedAt: null,
+      // Null even on resume — see SessionMeta. The meter is hidden until the
+      // first message of THIS run leaves the queue.
+      firstMessageAt: null,
       turnTokens: 0,
       // Unknown until the first request reports one. Not restored from the
       // sidecar with cost and tokens above: those are cumulative facts about the
@@ -318,7 +349,15 @@ export class Session {
         // CLI rejects --session-id alongside --resume unless --fork-session is
         // set, so on resume we let the SDK keep the original id. Our meta.id
         // stays the internal routing handle either way.
-        ...(init.resume ? { resume: init.resume } : { sessionId: this.meta.id }),
+        //
+        // `resumeFile` wins over `resume` where it is set, and only ever one of
+        // them goes on the wire — see SessionInit.resumeFile for why an absolute
+        // path is the only form that survives a worktree being unregistered.
+        ...(init.resumeFile
+          ? { resume: init.resumeFile }
+          : init.resume
+            ? { resume: init.resume }
+            : { sessionId: this.meta.id }),
         permissionMode: this.meta.permissionMode,
         includePartialMessages: true,
         allowDangerouslySkipPermissions: true, // lets the mode switcher offer bypass

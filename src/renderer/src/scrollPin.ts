@@ -40,3 +40,29 @@ export const scrollPin = { current: false }
 export const pinToBottom = (): void => {
   scrollPin.current = true
 }
+
+/**
+ * The same latch for SWITCHING conversations: which session still owes a scroll
+ * to its newest message.
+ *
+ * A module latch for the reason above, and a second one rather than a second
+ * setter of `scrollPin` because the two are spent on different conditions.
+ * `scrollPin` is a single frame's worth of "you just sent something"; this one
+ * is owed until a write actually moves the scroller, which can be several
+ * frames — an asleep session's transcript arrives as `items: []` and is
+ * replaced wholesale a round-trip later, and `content-visibility: auto` makes
+ * `scrollHeight` an ESTIMATE on the switch frame, so the first write lands
+ * short of the real bottom.
+ *
+ * A SESSION ID, not a boolean: Conversation is rendered unkeyed, so on the
+ * switch frame its effect can still be running for the session being left. The
+ * id makes the debt name its creditor.
+ *
+ * NOT ONE-SHOT for the same reason it is not a boolean — see Conversation's
+ * settle loop, which is what clears it.
+ */
+export const switchPin = { current: null as string | null }
+
+export const pinNewest = (sessionId: string | null): void => {
+  switchPin.current = sessionId
+}

@@ -3,6 +3,7 @@ import type { PermissionMode } from '../../../shared/types'
 import { useStore } from '../store'
 import { filterEntries, tildePath } from '../derive.mts'
 import type { PresenceState } from '../usePresence'
+import type { Category as SettingsCategory } from './Settings'
 import { MODES } from './Composer'
 
 interface Entry {
@@ -17,7 +18,9 @@ export interface PaletteActions {
   /** Opens the side panel. Deliberately not a toggle — "Show diff" from the
    *  palette must never close a diff that's already open. */
   showPanel(panel: 'diff' | 'session' | 'files'): void
-  showSettings(): void
+  /** `category` lands Settings on one of its panes. Undefined is ⌘,'s own
+   *  behaviour: open where it always opens. */
+  showSettings(category?: SettingsCategory): void
   /** Its own action, not a `showPanel` case: the terminal is a window-level
    *  modal now rather than one of the side pane's tabs. */
   showTerminal(): void
@@ -26,9 +29,9 @@ export interface PaletteActions {
 /**
  * ⌘P. Replaces the ⌘K session-cycling placeholder.
  *
- * Everything here is an action that does something today. Files are deliberately
- * absent: there's no editor to open one in, so they only become useful in batch
- * 4, where @-mentions give them both a data source and a destination.
+ * Everything here is an action that does something today. INDIVIDUAL files are
+ * deliberately absent — that is a fuzzy-open over the whole tree, which is a
+ * different picker — but the file PANEL is here, like every other panel.
  */
 export default function CommandPalette({
   actions,
@@ -79,10 +82,20 @@ export default function CommandPalette({
         group: 'Session',
         run: () => void openProject(),
       },
-      { id: 'settings', label: 'Settings', hint: '⌘,', group: 'View', run: actions.showSettings },
+      { id: 'settings', label: 'Settings', hint: '⌘,', group: 'View', run: () => actions.showSettings() },
+      // Its own entry rather than a line in the Settings one, because the panel
+      // is the only place prune exists — see Worktrees for why it is never
+      // automatic. `…` because it opens something rather than doing it.
+      {
+        id: 'worktrees',
+        label: 'Prune worktrees…',
+        group: 'View',
+        run: () => actions.showSettings('worktrees'),
+      },
       { id: 'diff', label: 'Show diff', hint: '⌘1', group: 'View', run: () => actions.showPanel('diff') },
       { id: 'term', label: 'Show terminal', hint: '⌘2', group: 'View', run: actions.showTerminal },
       { id: 'sess', label: 'Show session info', hint: '⌘3', group: 'View', run: () => actions.showPanel('session') },
+      { id: 'files', label: 'Show files', hint: '⌘4', group: 'View', run: () => actions.showPanel('files') },
     )
 
     if (activeId) {

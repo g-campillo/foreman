@@ -15,7 +15,7 @@ import type {
   WorktreeInfo,
 } from '../../shared/types'
 import { newestSession, projectKey } from './derive.mts'
-import { pinToBottom } from './scrollPin'
+import { pinNewest, pinToBottom } from './scrollPin'
 
 /** What the composer holds for one session while another is on screen. */
 export interface ComposerDraft {
@@ -23,6 +23,10 @@ export interface ComposerDraft {
   attachments: Attachment[]
   caret: number
 }
+
+/** How far a session's checklist is unfolded. The closed state is the ABSENCE
+ *  of a key rather than a third member — see `todoFold`. */
+export type TodoFold = 'window' | 'full'
 
 interface State {
   sessions: SessionMeta[]
@@ -172,6 +176,28 @@ interface State {
   drafts: Record<string, ComposerDraft>
   saveDraft(sessionId: string, draft: ComposerDraft): void
   dropDraft(sessionId: string): void
+
+  /**
+   * How far the checklist is unfolded, per session. ABSENT MEANS CLOSED, and
+   * closed is the default — the head line already says `3/8` and names the live
+   * step, so the rows are what you open when you want them.
+   *
+   * IN THE STORE rather than a module Map beside `scrollPin`, and that is not
+   * the usual "it should be state" reflex: a fold is RENDERED, so a module map
+   * needs a local mirror for React to read, and the mirror has to be reset when
+   * the session prop changes — which is precisely the `forSession`/`overridden`
+   * during-render dance this replaced. The objection that keeps `drafts` text
+   * out of the store does not apply either: this writes once per click, not once
+   * per keystroke.
+   *
+   * NOT PERSISTED. loadAppearance/loadPrefs are narrow key-by-key whitelists so
+   * that a retired key cannot live forever in localStorage; a record keyed by
+   * session id is unbounded in KEYS with no retirement path, because
+   * `forgetSession` runs in memory.
+   */
+  todoFold: Record<string, TodoFold>
+  /** `null` drops the key, the same shape as saveDraft/dropDraft. */
+  setTodoFold(sessionId: string, fold: TodoFold | null): void
 
   select(id: string): void
   /** Resolves to the new session, or null when creating it failed — which is an
@@ -355,6 +381,11 @@ function pushPolicy(p: Prefs): void {
     lifetime: p.agentLifetime,
     idleMinutes: p.agentIdleMinutes,
     notifications: p.notifications,
+    // The caps ride along too, even though sessionPrefs already puts them on
+    // every SessionInit: main starts a host of its own when it re-homes a
+    // stranded session, and there is no renderer call there to carry them.
+    maxBudgetUsd: p.maxBudgetUsd,
+    maxTurns: p.maxTurns,
   })
 }
 
@@ -544,6 +575,7 @@ function sleepingMeta(sdkSessionId: string, cwd: string, title: string): Session
     inputTokens: 0,
     outputTokens: 0,
     turnStartedAt: null,
+    firstMessageAt: null,
     turnTokens: 0,
     contextTokens: null,
     permissionMode: 'default',
@@ -598,6 +630,9 @@ function forgetSession(s: State, id: string): Partial<State> {
   const { [id]: _diff, ...diffCounts } = s.diffCounts
   const { [id]: _branch, ...branches } = s.branches
   const { [id]: _hydrating, ...hydrating } = s.hydrating
+  // The checklist's fold, for the same reason: a future session reusing this id
+  // would open with a strip someone else unfolded.
+  const { [id]: _fold, ...todoFold } = s.todoFold
   return {
     sessions,
     items,
@@ -606,6 +641,7 @@ function forgetSession(s: State, id: string): Partial<State> {
     diffCounts,
     branches,
     hydrating,
+    todoFold,
     activeId: s.activeId === id ? (newestSession(sessions)?.id ?? null) : s.activeId,
   }
 }
@@ -633,6 +669,7 @@ export const useStore = create<State>((set, get) => ({
   focusItemId: null,
   composerDirty: false,
   drafts: {},
+  todoFold: {},
 
   saveDraft(sessionId, draft) {
     set((s) => {
@@ -657,6 +694,17 @@ export const useStore = create<State>((set, get) => ({
       if (!(sessionId in s.drafts)) return s
       const { [sessionId]: _drop, ...drafts } = s.drafts
       return { drafts }
+    })
+  },
+
+  setTodoFold(sessionId, fold) {
+    set((s) => {
+      if (fold === null) {
+        if (!(sessionId in s.todoFold)) return s
+        const { [sessionId]: _drop, ...todoFold } = s.todoFold
+        return { todoFold }
+      }
+      return { todoFold: { ...s.todoFold, [sessionId]: fold } }
     })
   },
 
@@ -755,7 +803,15 @@ export const useStore = create<State>((set, get) => ({
       return null
     }
     // every entry point into "new conversation" funnels through.
-    set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id, notice: null }))
+    //
+    // WHERE THE BASE GETS SURFACED, and the notice strip is the whole of the
+    // cost: a worktree is no longer cut from whatever the main checkout happened
+    // to be sitting on (see chooseBase), so the one thing worth saying is which
+    // branch this agent starts from. Dismissible, and it replaces the `null`
+    // this line already wrote.
+    const cut =
+      meta.worktree?.base && `Working in ${meta.worktree.branch}, cut from ${meta.worktree.base}.`
+    set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id, notice: cut || null }))
     get().select(meta.id)
     return meta
   },
@@ -767,7 +823,13 @@ export const useStore = create<State>((set, get) => ({
    * wrong answer to "new conversation".
    */
   async newSession(worktreeBranch) {
-    const cwd = activeSession(get())?.cwd
+    // THE PROJECT, never the active session's cwd. From a worktree session that
+    // cwd is the CHECKOUT, so ⌘N used to start a plain session standing inside
+    // `.worktrees/x` with no `worktree` field — which the rail then grouped as a
+    // second project headed with the checkout's directory name. The same
+    // expression Composer and App's dock heading already use.
+    const active = activeSession(get())
+    const cwd = active?.worktree?.repoRoot ?? active?.cwd
     // `await`, not `return`: openPath resolves to the new session now, and this
     // one is declared as void — only the composer's worktree hop needs the meta.
     if (cwd) await get().openPath(cwd, worktreeBranch)
@@ -910,10 +972,19 @@ export const useStore = create<State>((set, get) => ({
       const { [id]: diff, ...diffCounts } = s.diffCounts
       const { [id]: branch, ...branches } = s.branches
       const { [id]: _hydrating, ...hydrating } = s.hydrating
+      // DROPPED, NOT CARRIED — and not because there is nothing to carry. A
+      // preview stub really can hold a fold: `preview()` puts the row up,
+      // `select()` reads its transcript in, TodoStrip renders off `items`, and
+      // clicking its head writes `todoFold[stub.id]`. It is dropped because it
+      // would have to be MOVED, and re-collapsing is the cheaper default of the
+      // two: opening a plan again is one click, while a strip that reopens
+      // itself on a wake is the auto-expand this slice exists to delete.
+      const { [id]: _fold, ...todoFold } = s.todoFold
       return {
         sessions: s.sessions.map((x) => (x.id === id ? meta : x)),
         items: { ...items, [meta.id]: carried ?? [] },
         drafts,
+        todoFold,
         ...(diff ? { diffCounts: { ...diffCounts, [meta.id]: diff } } : {}),
         ...(branch !== undefined ? { branches: { ...branches, [meta.id]: branch } } : {}),
         activeId: s.activeId === id ? meta.id : s.activeId,
@@ -1072,7 +1143,16 @@ export const useStore = create<State>((set, get) => ({
     // no text is still worth sending.
     if (typeof content === 'string' && !content.trim()) return
     if (Array.isArray(content) && content.length === 0) return
-    await window.foreman.sendMessage(id, content)
+    try {
+      await window.foreman.sendMessage(id, content)
+    } catch (err) {
+      // The same posture checkoutBranch documents above, and it earns its keep
+      // here for one specific failure: main re-homes a session whose directory
+      // has gone away BEFORE forwarding the message, and a restart that cannot
+      // come up leaves nothing to forward to. A send that quietly did nothing is
+      // the worst possible answer to that — the composer has already cleared.
+      set({ notice: ipcMessage(err) })
+    }
   },
 
   setAppearance(patch) {
@@ -1202,6 +1282,35 @@ export const useStore = create<State>((set, get) => ({
         }
       })
     })
+
+    /**
+     * A session's working directory went away and main restarted it elsewhere.
+     *
+     * A WHOLE-OBJECT REPLACE of the row, not a `{...x, ...patch}` merge, and
+     * that is the reason this is its own event rather than an `evtMeta`: the
+     * point of a re-home is that `worktree` is GONE, and a merge cannot delete a
+     * key — `JSON.stringify` drops undefined on the way over the bridge, so the
+     * old worktree would survive and go on pointing the branch badge and the
+     * diff panel at a directory that no longer exists.
+     *
+     * `items[sessionId]` is KEPT. The id is unchanged, and the new host replays
+     * the same transcript under the same deterministic item ids (see
+     * normaliseTranscript), so the upsert merges rather than doubling — the same
+     * reasoning wake() records about carrying its transcript across the rekey.
+     *
+     * The note goes to the NOTICE STRIP and nowhere else. A ChatItem would be
+     * wrong in kind: the union has no neutral one-liner, `kind: 'error'` renders
+     * red, and a red error for a recovery that worked reads as a failure.
+     */
+    window.foreman.onRehomed(
+      ({ sessionId, meta, note }: { sessionId: string; meta: SessionMeta; note: string }) => {
+        flushDeltas()
+        set((s) => ({
+          sessions: s.sessions.map((x) => (x.id === sessionId ? meta : x)),
+          notice: note,
+        }))
+      },
+    )
 
     window.foreman.onQueue(
       ({
@@ -1413,6 +1522,21 @@ export const useStore = create<State>((set, get) => ({
  */
 useStore.subscribe((s, prev) => {
   if (s.activeId !== prev.activeId) void window.foreman.setActiveSession(s.activeId)
+})
+
+/**
+ * A conversation came on screen; it owes a scroll to its newest message.
+ *
+ * A SECOND SUBSCRIPTION rather than a line inside `select()`, for exactly the
+ * reason the one above gives: select is not the only writer of `activeId`.
+ * `forgetSession` repoints it when the active session is closed or removed from
+ * main's side, and that path never calls select — so closing the session you
+ * were reading would land the next one at whatever offset the DOM node it
+ * inherits happens to be at. Subscribing to the value covers the rail, the
+ * palette, resume, wake, openPath and both forget paths with one line.
+ */
+useStore.subscribe((s, prev) => {
+  if (s.activeId !== prev.activeId) pinNewest(s.activeId)
 })
 
 // Follow the OS while the theme is 'auto'. Registered here, once, rather than

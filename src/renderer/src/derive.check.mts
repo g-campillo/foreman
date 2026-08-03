@@ -7,8 +7,8 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem, SessionMeta } from '../../shared/types'
-import type { Row } from './derive.mts'
-import { activityOf, answeredQuestions, ANSWER_PREFIX, armedApproval, branchLabel, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, contextView, swatch, level, triggerAt, askQuestions, projectKey, relPath, tildePath, baseName, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, VERB_STRIDE, sessionTokens, meterElapsed, buildTree, focusTarget, authorEdits, resolveAnchors, mcpName, titleCase, summarise, editStat, toolFailed, groupRuns, runSummary } from './derive.mts'
+import type { Row, Todo, TodoStatus } from './derive.mts'
+import { activityOf, answeredQuestions, ANSWER_PREFIX, armedApproval, branchLabel, fmt, hms, latestTodos, todoWindow, score, filterEntries, schemaFields, contextBreakdown, contextView, swatch, level, triggerAt, askQuestions, projectKey, projectRoot, relPath, tildePath, baseName, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, VERB_STRIDE, sessionTokens, meterElapsed, buildTree, focusTarget, authorEdits, resolveAnchors, mcpName, titleCase, summarise, editStat, toolFailed, groupRuns, runSummary } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -688,6 +688,122 @@ assert.equal(latestTodos([tool('TodoWrite', { todos: 'nope' })]), null)
 assert.equal(latestTodos([tool('TodoWrite', null)]), null)
 assert.equal(latestTodos([tool('TodoWrite', { todos: [] })]), null)
 assert.equal(latestTodos([tool('TaskCreate', { description: 'no subject' })]), null)
+
+// ----------------------------------------------------------------- todoWindow
+
+// Shapes are written as strings of `c`/`i`/`p` — the eye has to be able to see
+// the frontier the window is supposed to open at, and eight object literals per
+// case hide it completely.
+const STATUS: Record<string, TodoStatus> = {
+  c: 'completed',
+  i: 'in_progress',
+  p: 'pending',
+}
+const plan = (shape: string): Todo[] =>
+  [...shape].map((ch, i) => ({ id: `t${i}`, content: `step ${i}`, status: STATUS[ch]! }))
+/** The visible slice back as a shape string, so a failure prints legibly. */
+const shapeOf = (todos: readonly Todo[]): string =>
+  todos.map((t) => t.status[0] === 'i' ? 'i' : t.status[0] === 'c' ? 'c' : 'p').join('')
+
+{
+  // Nothing hidden: the whole plan, no summary row, and start at the top.
+  const all = todoWindow(plan('cip'))
+  assert.deepEqual(shapeOf(all.visible), 'cip', 'a plan that fits is shown whole')
+  assert.equal(all.start, 0)
+  assert.equal(all.hidden, 0)
+  assert.equal(all.summary, null, 'no summary line when there is nothing behind it')
+  // Exactly at the cap is still "fits" — the boundary, because an off-by-one
+  // here would show four rows and a "1 pending" line for a five-step plan.
+  assert.equal(todoWindow(plan('ccipp')).summary, null, 'max rows exactly is not a window')
+
+  // The ordinary case: three done, the window opens at the frontier.
+  const mid = todoWindow(plan('cccipppp'))
+  assert.equal(mid.start, 3, 'opens at the first unfinished step')
+  assert.deepEqual(shapeOf(mid.visible), 'ipppp')
+  assert.equal(mid.hidden, 3)
+  assert.equal(mid.summary, '3 completed', 'only the hidden rows are counted')
+
+  // Nothing started yet: the frontier is row 0, so this is a plain head.
+  const fresh = todoWindow(plan('pppppppp'))
+  assert.equal(fresh.start, 0)
+  assert.equal(fresh.summary, '3 pending')
+
+  // THE END CLAMP. The frontier is the last row, and opening there would render
+  // one step above four rows of nothing.
+  const tail = todoWindow(plan('ccccccci'))
+  assert.equal(tail.start, 3, 'never scrolls past the end')
+  assert.deepEqual(shapeOf(tail.visible), 'cccci')
+  assert.equal(tail.summary, '3 completed')
+
+  // THE LIVE STEP WINS. The first unfinished row is 0 (pending), but the step
+  // actually being worked on is the last — agents work out of order, and nothing
+  // enforces one in_progress, so the window follows the work rather than the
+  // first gap.
+  const live = todoWindow(plan('pccccci'))
+  assert.equal(live.start, 2, 'the last in-progress step is never dropped')
+  assert.deepEqual(shapeOf(live.visible), 'cccci')
+  assert.equal(live.summary, '1 completed, 1 pending')
+
+  // Parallel implementers, each marking its own step in progress. Three live
+  // rows and the window still holds all of them plus the frontier.
+  const par = todoWindow(plan('cciiippp'))
+  assert.equal(par.start, 2)
+  assert.deepEqual(shapeOf(par.visible), 'iiipp')
+  assert.equal(par.summary, '2 completed, 1 pending')
+
+  // `max` is a parameter, so the sweep below can drive it.
+  const small = todoWindow(plan('ccipp'), 2)
+  assert.deepEqual(shapeOf(small.visible), 'ip')
+  assert.equal(small.hidden, 3)
+  assert.equal(small.summary, '2 completed, 1 pending')
+}
+
+// THE SWEEP. Every shape a seven-step plan can take, against the four
+// invariants — because the clamps interact, and a case-by-case table proves
+// only the cases someone thought of.
+{
+  const MAX = 3
+  const chars = ['c', 'i', 'p']
+  let seen = 0
+  const walk = (shape: string): void => {
+    if (shape.length === 7) {
+      seen += 1
+      const todos = plan(shape)
+      const win = todoWindow(todos, MAX)
+      assert.ok(win.visible.length <= MAX, `${shape}: never more than max rows`)
+      // CONTIGUOUS, and identity-equal to the source rows: a window assembled
+      // out of the interesting rows would renumber the plan and read as a
+      // different list every time one completed.
+      assert.deepEqual(
+        win.visible,
+        todos.slice(win.start, win.start + win.visible.length),
+        `${shape}: the window is a contiguous slice starting at start`,
+      )
+      const lastActive = shape.lastIndexOf('i')
+      if (lastActive >= 0) {
+        assert.ok(
+          lastActive >= win.start && lastActive < win.start + win.visible.length,
+          `${shape}: the last in-progress step is always on screen`,
+        )
+      }
+      assert.equal(
+        win.hidden,
+        todos.length - win.visible.length,
+        `${shape}: hidden accounts for exactly what is missing`,
+      )
+      // ...and the summary counts the same rows `hidden` does.
+      const counted = (win.summary ?? '')
+        .split(', ')
+        .filter(Boolean)
+        .reduce((n, part) => n + Number(part.split(' ')[0]), 0)
+      assert.equal(counted, win.hidden, `${shape}: the summary adds up to hidden`)
+      return
+    }
+    for (const ch of chars) walk(shape + ch)
+  }
+  walk('')
+  assert.equal(seen, 3 ** 7, 'every seven-step shape was swept')
+}
 
 // ---------------------------------------------------------- contextBreakdown
 
@@ -2023,15 +2139,35 @@ assert.equal(fmt(1_500_000), '1.5M')
 }
 
 {
-  const age = (turnStartedAt: number | null): Pick<SessionMeta, 'turnStartedAt' | 'createdAt'> => ({
+  const age = (
+    turnStartedAt: number | null,
+    firstMessageAt: number | null = 1_000,
+  ): Pick<SessionMeta, 'turnStartedAt' | 'firstMessageAt'> => ({
     turnStartedAt,
-    createdAt: 1_000,
+    firstMessageAt,
   })
-  assert.equal(meterElapsed(age(null), 61_000), 60_000, 'session age while idle')
+  assert.equal(
+    meterElapsed(age(null, null), 61_000),
+    null,
+    'nothing sent yet means nothing to report — null, not 0, because 0 is the real reading the frame the first message lands',
+  )
+  assert.equal(meterElapsed(age(null), 61_000), 60_000, 'time since the first message while idle')
   assert.equal(meterElapsed(age(50_000), 61_000), 11_000, 'turn elapsed while running')
   // Same clock-skew floor hms has: a negative here would print as a jump to 0s
   // anyway, but the two must not disagree about which of them clamps.
   assert.equal(meterElapsed(age(70_000), 61_000), 0, 'clock skew clamps at zero')
+
+  // THE REGRESSION THIS EXISTS FOR: the meter used to fall back to createdAt,
+  // which is stamped when the host starts — so a conversation resumed from a
+  // week ago opened with the clock already at 4h. Bound to a variable because
+  // an object literal passed straight in would be rejected for the excess
+  // property rather than reaching the assertion.
+  const withCreatedAt = { turnStartedAt: null, firstMessageAt: null, createdAt: 1_000 }
+  assert.equal(
+    meterElapsed(withCreatedAt, 61_000),
+    null,
+    'createdAt is NOT a fallback — a resumed session shows no clock until you send',
+  )
 }
 
 // ------------------------------------------------------- projects and usage
@@ -2205,7 +2341,45 @@ assert.equal(baseName(''), '')
   assert.deepEqual(tied[0].sessions.map((n) => n.id), ['x', 'y'], 'stable on equal createdAt')
 
   assert.deepEqual(groupSessions([]), [], 'empty in, empty out')
+
+  // THE REPORTED BUG, and the case the block above misses because every one of
+  // its worktree sessions has `worktree` set. ⌘N from a worktree session creates
+  // a PLAIN session standing in the checkout — no branch was asked for, so there
+  // is no `worktree` field — and `?? s.cwd` then minted a second project headed
+  // with the checkout's directory name. A preview stub does the same thing,
+  // permanently, because sleepingMeta has no worktree either.
+  const bare = groupSessions([
+    s('a', '/repo', 10),
+    s('b', '/repo/.worktrees/add-tests', 20),
+  ])
+  assert.equal(bare.length, 1, 'a session inside .worktrees is not a second project')
+  assert.equal(bare[0].root, '/repo', 'and the group is headed with the repo, not the checkout')
 }
+
+// ---------------------------------------------------------------- projectRoot
+
+assert.equal(projectRoot('/repo/.worktrees/add-tests'), '/repo', 'a checkout folds to its repo')
+assert.equal(
+  projectRoot('/repo/.worktrees/add-tests/src/a.ts'),
+  '/repo',
+  'and so does anything inside one',
+)
+assert.equal(projectRoot('/repo'), '/repo', 'an ordinary project is left alone')
+assert.equal(projectRoot('/repo/src'), '/repo/src', 'and so is a subdirectory of one')
+// The LAST marker, not the first: a worktree of a repo that itself sits inside
+// another repo's .worktrees is nested, and the nearer one names this checkout's
+// project.
+assert.equal(
+  projectRoot('/a/.worktrees/b/.worktrees/c'),
+  '/a/.worktrees/b',
+  'the nearest marker wins',
+)
+// The prefix trap, one directory over: `.worktreesX` is the user's own.
+assert.equal(projectRoot('/repo/.worktreesX/a'), '/repo/.worktreesX/a', 'a sibling name is not ours')
+// Only as a full segment. A file literally named `.worktrees` is not a
+// directory of checkouts.
+assert.equal(projectRoot('/repo/my.worktrees/a'), '/repo/my.worktrees/a', 'not a segment boundary')
+assert.equal(projectRoot(''), '', 'empty in, empty out')
 
 // ------------------------------------------------------------- newestSession
 

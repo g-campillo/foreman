@@ -25,7 +25,9 @@
     "check:shellpath": "node src/shared/shellpath.check.mts",
     "check:numstat": "node src/main/agent/numstat.check.mts",
     "check:refs": "node src/main/agent/refs.check.mts",
-    "check": "npm run check:derive && npm run check:diff && npm run check:highlight && npm run check:hostsock && npm run check:lsp && npm run check:lspstatus && npm run check:lspwire && npm run check:numstat && npm run check:policy && npm run check:porcelain && npm run check:refs && npm run check:rules && npm run check:shellpath && npm run check:transcript",
+    "check:worktreebase": "node src/main/agent/worktreebase.check.mts",
+    "check:worktreelist": "node src/main/agent/worktreelist.check.mts",
+    "check": "npm run check:derive && npm run check:diff && npm run check:highlight && npm run check:hostsock && npm run check:lsp && npm run check:lspstatus && npm run check:lspwire && npm run check:numstat && npm run check:policy && npm run check:porcelain && npm run check:refs && npm run check:rules && npm run check:shellpath && npm run check:transcript && npm run check:worktreebase && npm run check:worktreelist",
     "notarize:dmg": "bash scripts/notarize-dmg.sh",
     "check:diff": "node src/shared/diff.check.mts"
   },

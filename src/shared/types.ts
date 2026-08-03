@@ -125,6 +125,16 @@ export interface WorktreeInfo {
   path: string
   branch: string
   repoRoot: string
+  /**
+   * What the branch was cut from, as a label — `origin/main`, `main`, or "the
+   * current HEAD". For display only; nothing resolves it back to a ref.
+   *
+   * Optional because it is not knowable for a worktree created before this
+   * existed, and because a session resumed from disk carries the WorktreeInfo
+   * the renderer stored rather than a fresh one from git. A row without it says
+   * nothing about its base, which is what it used to do for all of them.
+   */
+  base?: string
 }
 
 export interface SessionMeta {
@@ -144,6 +154,22 @@ export interface SessionMeta {
    * survives a tab switch would otherwise keep timing the old session's turn.
    */
   turnStartedAt: number | null
+  /**
+   * Wall-clock stamp of the first message SENT in this run; null until one is.
+   *
+   * Deliberately NOT `createdAt`, and deliberately not a rename of it.
+   * `createdAt` is stamped fresh every time a host starts, resume included,
+   * because the rail sorts on it (see newestSession/groupSessions in
+   * derive.mts) — so it answers "when did this row appear", which is the wrong
+   * question for a clock. This one answers "how long have you been working",
+   * and until you send, the answer is that you have not.
+   *
+   * Not persisted to the sidecar: the clock measures THIS working session, so a
+   * resumed conversation hides its meter until you send and then counts from
+   * there. Cost and tokens still carry over, because those are cumulative facts
+   * about the conversation rather than a reading of the current run.
+   */
+  firstMessageAt: number | null
   /**
    * Output tokens seen so far in the in-flight turn, subagents included. Zero
    * between turns.
@@ -463,6 +489,34 @@ export interface BranchList {
   /** Short sha of a detached HEAD, else null. */
   detachedAt: string | null
   branches: BranchInfo[]
+}
+
+/** One row in the Worktrees panel: a checkout git has registered, or a leftover
+ *  directory it has not. */
+export interface WorktreeRow {
+  path: string
+  /** Short branch name, or null for a detached or bare checkout. */
+  branch: string | null
+  /** The main working tree. Never removable, never prunable — it is the repo. */
+  main: boolean
+  /** git says the directory is gone, so `worktree prune` would drop the entry. */
+  prunable: boolean
+  /** No entry in git's admin dir at all: an interrupted create, or a checkout
+   *  removed with `rm -rf`. Prune cannot collect these; removeOrphan does. */
+  orphan: boolean
+  /** A live session is standing in it. Its conversation has to be re-homed
+   *  before this row can be pruned or removed. */
+  inUse: boolean
+}
+
+/**
+ * What the Worktrees panel reads. One call, because every question it asks is
+ * about the same instant of the same repository.
+ */
+export interface WorktreeReport {
+  /** The main worktree's root — what every git call here runs against. */
+  root: string | null
+  rows: WorktreeRow[]
 }
 
 export interface CheckoutResult {
@@ -978,6 +1032,18 @@ export const IPC = {
   sessionActive: 'session:active',
   /** A queued user message left the queue: 'started' (now running) or 'dropped'. */
   evtQueue: 'session:queue',
+  /**
+   * A session whose working directory no longer exists was restarted somewhere
+   * that does — see `rehome` in the manager.
+   *
+   * Its own event rather than an `evtMeta` patch, because the row is REPLACED
+   * whole: a merge cannot delete `worktree`, since JSON.stringify drops
+   * undefined keys on the way over the bridge, and a re-homed session that still
+   * claims a worktree keeps pointing the diff panel and the branch badge at a
+   * directory that is gone. The sessionId is UNCHANGED — the host restarts under
+   * the same id — so nothing keyed by it needs moving.
+   */
+  evtRehomed: 'session:rehomed',
 
   // permissions
   permRequest: 'permission:request',
@@ -999,6 +1065,18 @@ export const IPC = {
    *  answered in main, no session state. */
   gitBranches: 'git:branches',
   gitCheckout: 'git:checkout',
+
+  /** Worktrees for the Settings panel: what git has registered, what is left
+   *  over, and which of them a live agent is standing in. Beside the git
+   *  channels for the same reason those are here — read git against a cwd,
+   *  answered in main, no session state. */
+  worktreeList: 'worktree:list',
+  /** Drop admin entries whose directories are gone. NEVER automatic: prune is
+   *  what unregisters the entries the CLI's own `--resume` fallback scans, so
+   *  running it under a live worktree session is what strands it. */
+  worktreePrune: 'worktree:prune',
+  /** Delete a leftover checkout git no longer knows about. */
+  worktreeRemove: 'worktree:remove',
 
   // editor file I/O. No event channel: reconciliation reuses evtDiffChanged,
   // which the PostToolUse hook already fires on every agent write.
