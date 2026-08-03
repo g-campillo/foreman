@@ -9,7 +9,7 @@ import {
   Undo2,
   X,
 } from 'lucide-react'
-import type { ChatItem, EffortLevel, SessionMeta } from '../../../shared/types'
+import type { ChatItem, SessionMeta } from '../../../shared/types'
 import { useStore } from '../store'
 import { scrollPin } from '../scrollPin'
 import ToolLine from './ToolLine'
@@ -23,7 +23,6 @@ import {
   answeredQuestions,
   armedApproval,
   askQuestions,
-  fmt,
   groupRuns,
   groupTurns,
   hms,
@@ -36,7 +35,6 @@ import {
 } from '../derive.mts'
 import type { Row, Turn as TurnShape, WorkNode } from '../derive.mts'
 import Markdown from './Markdown'
-import { EFFORTS } from './Composer'
 
 /** How long each fun verb stays up. Slow enough to read, quick enough to notice. */
 const VERB_MS = 2500
@@ -55,6 +53,8 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
   // returns an existing object, not a new one, so its identity is stable.
   const session = useStore((s) => s.sessions.find((x) => x.id === sessionId))
   const status = session?.status
+  /** Transcript still on its way in — see the `.empty` node below. */
+  const hydrating = useStore((s) => s.hydrating[sessionId] === true)
   const allApprovals = useStore((s) => s.approvals)
   const approvals = useMemo(
     () => allApprovals.filter((a) => a.sessionId === sessionId),
@@ -115,8 +115,9 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
   const pinned = useRef(true)
 
   // Only autoscroll when the user is already at the bottom, so reading history
-  // isn't yanked away mid-stream — or when the user just said something, which
-  // is what `scrollPin` carries over from the composer.
+  // isn't yanked away mid-stream — or when the user's own message has just
+  // entered this transcript, which is what `scrollPin` carries over from the
+  // store's queue handler.
   //
   // Next frame, not in the effect body: reading scrollHeight and writing
   // scrollTop forces a synchronous layout, and doing that inside React's commit
@@ -206,9 +207,17 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
     <div className="convo" ref={scroller}>
       {/* `.empty` is flex:1 and centred on both axes already; it beats
           `.convo > * { flex-shrink: 0 }` on source order at equal specificity,
-          which is what lets it fill the scroller. The 'starting' guard covers
-          resume: the session appears and select()s before hydrate()'s async
-          transcript read prepends, so items is [] for at least one frame. */}
+          which is what lets it fill the scroller.
+
+          The guard is `hydrating`, not `status !== 'starting'`. It was written
+          for resume — a resumed session is selected and painted before its
+          transcript replays, so `items` is [] for a frame or two and the centred
+          layout would flash over it. But a FRESH session is created with
+          `status: 'starting'` too, so that test also suppressed `.empty` on the
+          first paint of every new conversation: the composer rendered pinned to
+          the bottom and then SNAPPED to the middle milliseconds later when the
+          status flipped to idle. The store's `hydrating` says the thing that was
+          actually meant, and only for the case it was meant for. */}
       {/* Deliberately empty. The hard-hat mark, the project name and the three
           read-only chips (branch · model · mode) all lived here; Cursor's
           new-agent screen has no hero at all, just the pickers, the composer and
@@ -220,7 +229,7 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
           The element itself stays: `.pane-fill:has(> .convo > .empty)` is what
           pulls the composer up to the middle of the pane, and it is the presence
           of this node, not its contents, that triggers it. */}
-      {items.length === 0 && status !== 'starting' && <div className="empty" />}
+      {items.length === 0 && !hydrating && <div className="empty" />}
       {/* The Provider paints nothing, so every wrapper below it is still a
           direct `.convo` child — which is what the content-visibility and
           flex rules key off. */}
@@ -491,25 +500,25 @@ function parentOf(item: ChatItem): string | undefined {
   return 'parentId' in item ? item.parentId : undefined
 }
 
-/** null means the SDK's own default is in force — a level this session never
- *  chose. Omitted rather than rendered as "auto", which would assert one. */
-const effortLabel = (e: EffortLevel | null): string | null =>
-  e ? (EFFORTS.find((x) => x.value === e)?.label.toLowerCase() ?? e) : null
-
 /**
- * The status line: a rotating verb, plus this turn's elapsed time, output tokens
- * and reasoning effort — the shape the CLI uses.
+ * "The agent is alive": bouncing dots and a rotating verb, and nothing else.
+ *
+ * The elapsed time, the token count and the effort label used to ride on the
+ * right of this line. All three moved: the clock and the tokens to SessionMeter
+ * in the pane header, where they are on screen whether or not the transcript is
+ * scrolled to the bottom, and the effort nowhere — the composer's model picker
+ * already renders it as a suffix on the model name, four pixels away.
  *
  * Still its own component so the tick repaints one line rather than the whole
  * transcript. Re-rendering a child never re-renders its parent, so the interval
  * stays contained here even though it now runs 2.5x more often than the verb
- * rotation needed.
+ * rotation needs.
  */
 function Working({ session }: { session: SessionMeta }): React.JSX.Element {
   const [now, setNow] = useState(() => Date.now())
   // Opt-out in Settings: the verbs are purely for fun, and the dots already say
-  // everything functional. The stats are information rather than decoration, so
-  // they are deliberately NOT gated by it — and the clock has to tick either way.
+  // everything functional. The clock still has to tick, because it is what
+  // drives the rotation.
   const verbs = useStore((s) => s.prefs.workingVerbs)
   useEffect(() => {
     const id = setInterval(() => setNow(Date.now()), TICK_MS)
@@ -520,11 +529,6 @@ function Working({ session }: { session: SessionMeta }): React.JSX.Element {
   // component is not remounted per session: Conversation is rendered unkeyed, so
   // a Working that survived a tab switch would still be timing the old turn.
   const elapsed = session.turnStartedAt === null ? 0 : Math.max(0, now - session.turnStartedAt)
-  const stats = [
-    hms(elapsed),
-    session.turnTokens ? `↓ ${fmt(session.turnTokens)}` : null,
-    effortLabel(session.effort),
-  ].filter(Boolean)
 
   return (
     <div className="working">
@@ -537,8 +541,6 @@ function Working({ session }: { session: SessionMeta }): React.JSX.Element {
           cadence alternates 2s/3s rather than a flat 2.5s. Indistinguishable,
           and it buys one timer instead of two. */}
       {verbs ? workingVerb(session.id, Math.floor(elapsed / VERB_MS)) : 'Working'}
-      <span className="spacer" />
-      <span className="working-stats">{stats.join(' · ')}</span>
     </div>
   )
 }
@@ -621,7 +623,12 @@ function Item({
         // message is a hairline card that spans the conversation column with its
         // controls tucked inside the right edge — the asymmetry that used to
         // come from `align-self: flex-end` comes from the card itself instead.
-        <div className="msg-user" data-queued={item.queued ? '' : undefined}>
+        /* The `data-queued` variant and its cancel button lived here. A queued
+           message never reaches this component now — it is held in the store's
+           `queued` slice and rendered by QueueTray above the composer, which is
+           what stops it closing the running turn. So everything below is a
+           message that has genuinely been sent. */
+        <div className="msg-user">
           <div className="msg-user-body">
             {item.images?.map((src, i) => (
               <img key={i} className="msg-image" src={src} alt="attachment" />
@@ -630,40 +637,29 @@ function Item({
                 live while you type. `thinking` and `error` stay literal. */}
             <Markdown text={item.text} />
           </div>
-          {item.queued ? (
-            <button
-              className="queued-cancel"
-              data-tip="Cancel this queued message — it has not reached the agent yet"
-              onClick={() => void window.foreman.cancelQueued(sessionId, item.id)}
-            >
-              <X size={12} />
-              queued
-            </button>
-          ) : (
-            item.uuid && (
-              // Inside the card, icon-only, and no longer absolutely positioned:
-              // they used to hang below it at opacity 0 so they would not reserve
-              // a blank line. In the right edge they cost nothing to leave
-              // visible, which is what Cursor does with its restore glyph.
-              <span className="msg-actions">
-                <button
-                  className="msg-action"
-                  aria-label="Branch a new conversation from this point"
-                  data-tip="Branch a new conversation from this point"
-                  onClick={() => void useStore.getState().fork(item.uuid)}
-                >
-                  <GitBranch size={12} />
-                </button>
-                <button
-                  className="msg-action"
-                  aria-label="Restore files to their state at this message"
-                  data-tip="Restore files to their state at this message"
-                  onClick={() => void useStore.getState().rewind(item.uuid!)}
-                >
-                  <RotateCcw size={12} />
-                </button>
-              </span>
-            )
+          {item.uuid && (
+            // Inside the card, icon-only, and no longer absolutely positioned:
+            // they used to hang below it at opacity 0 so they would not reserve
+            // a blank line. In the right edge they cost nothing to leave
+            // visible, which is what Cursor does with its restore glyph.
+            <span className="msg-actions">
+              <button
+                className="msg-action"
+                aria-label="Branch a new conversation from this point"
+                data-tip="Branch a new conversation from this point"
+                onClick={() => void useStore.getState().fork(item.uuid)}
+              >
+                <GitBranch size={12} />
+              </button>
+              <button
+                className="msg-action"
+                aria-label="Restore files to their state at this message"
+                data-tip="Restore files to their state at this message"
+                onClick={() => void useStore.getState().rewind(item.uuid!)}
+              >
+                <RotateCcw size={12} />
+              </button>
+            </span>
           )}
         </div>
       )

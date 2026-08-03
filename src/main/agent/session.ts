@@ -10,6 +10,7 @@ import {
   type ChatItem,
   type ContextUsage,
   type EffortLevel,
+  type ImageMediaType,
   type LspStatus,
   type McpActionResult,
   type McpServerInfo,
@@ -18,6 +19,7 @@ import {
   type RateWindow,
   type RewindResult,
   type SessionMeta,
+  type SendBlock,
   type SendContent,
   type SessionStatus,
   type SkillInfo,
@@ -102,6 +104,37 @@ function inputTokensOf(u: {
 }
 
 /**
+ * The rendered form of an outgoing message: text for the transcript, data: URLs
+ * for whatever was attached.
+ *
+ * Extracted because `send` and `editQueued` must produce the SAME item for the
+ * same content — an edit re-emits the whole item under its original id, and
+ * `upsert` in the renderer merges only tool cards, so a user item is replaced
+ * wholesale and any field this forgot would be dropped rather than kept.
+ */
+function userItem(id: string, content: SendContent): Extract<ChatItem, { kind: 'user' }> {
+  const text =
+    typeof content === 'string'
+      ? content
+      : content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('\n')
+  const images =
+    typeof content === 'string'
+      ? []
+      : content.flatMap((b) =>
+          b.type === 'image' ? [`data:${b.source.media_type};base64,${b.source.data}`] : [],
+        )
+  return {
+    id,
+    kind: 'user',
+    text,
+    // Same value as `id` by construction — see queue.push. Carried explicitly
+    // so consumers don't have to know that coincidence.
+    uuid: id,
+    ...(images.length ? { images } : {}),
+  }
+}
+
+/**
  * Everything learned about one task from the SDK's edge stream.
  *
  * A SIDE TABLE, keyed by task_id, and the shape of it is the fix. The tray used
@@ -160,6 +193,7 @@ export class Session {
     // per-turn counter — the window is exactly as full the instant after you
     // press send as the instant before — and a gauge that empties on send reads
     // as a bug. It is replaced wholesale by the next assistant message.
+    this.turnUsage.clear()
     this.patchMeta({ turnStartedAt: Date.now(), turnTokens: 0 })
     this.setStatus('running')
   })
@@ -177,6 +211,23 @@ export class Session {
   private readonly streamingThinking = new Map<string, string>()
   /** tool_use_id -> ChatItem id, so tool_result can update the right card. */
   private readonly toolItems = new Map<string, string>()
+  /**
+   * This turn's output tokens, keyed by `message.id` and OVERWRITTEN per key.
+   *
+   * The SDK emits several assistant messages per API turn sharing one
+   * `message.id`, and every one of them carries the same COMPLETE usage object
+   * rather than a delta. The old `turnTokens + out` accumulator therefore
+   * counted each API turn once per message it arrived in — measured on a real
+   * transcript as 11,197 against a true 2,397, a 4.7x inflation on the one
+   * number the status line exists to report. Last write per id wins; the total
+   * is the sum of the values.
+   *
+   * Subagents are counted here, unlike `contextTokens` below: their output is
+   * billed to this turn and shows up in the authoritative `result` usage, so
+   * leaving them out made the live figure walk backwards against the total it
+   * was supposed to converge on.
+   */
+  private readonly turnUsage = new Map<string, number>()
   /**
    * The task side table, and the tray's membership, kept apart on purpose — see
    * TaskInfo above.
@@ -696,13 +747,18 @@ export class Session {
           // usage, by contrast, IS per-turn, so these do accumulate.
           inputTokens: this.meta.inputTokens + inputTokensOf(r.usage),
           outputTokens: this.meta.outputTokens + (r.usage?.output_tokens ?? 0),
-          // The turn is over: stop the clock, and let the authoritative figure
-          // replace the running estimate. `r.usage` is already per-turn, so this
-          // is a set rather than an add. Falls back to the estimate if the SDK
-          // sent no usage at all.
+          // The turn is over: stop the clock, and ZERO the running estimate.
+          //
+          // Not `r.usage.output_tokens` any more, and that is a fix rather than
+          // a simplification. `outputTokens` two lines up has just absorbed the
+          // authoritative figure — which does include subagents — and the
+          // renderer's session readout is `outputTokens + turnTokens` while a
+          // turn is in flight. Leaving the estimate populated between turns
+          // would count the whole turn twice.
           turnStartedAt: null,
-          turnTokens: r.usage?.output_tokens ?? this.meta.turnTokens,
+          turnTokens: 0,
         })
+        this.turnUsage.clear()
         // The sidecar write that used to sit here is gone: the patchMeta above
         // carries 'costUsd', which is what now triggers persistSidecar(). Same
         // single call per turn, byte-for-byte the same cadence.
@@ -878,23 +934,34 @@ export class Session {
       this.patchMeta({ model })
     }
 
-    // Main thread only, for the same reason as the model above: a subagent's
-    // output is billed to this turn, but counting it here makes the running
-    // total jump as subagents interleave — and a subagent has its own context
-    // window, so its occupancy is not this conversation's. Their tokens still
-    // land in the authoritative `result` totals.
+    // The two figures part company here, and the split is deliberate.
     //
-    // One patch for both figures, and it costs no extra IPC: `turnTokens`
-    // already sends one here, so the live window level rides along for free.
-    // `contextTokens` is a SET rather than an add — input is the whole
-    // conversation re-sent, so this request's input plus what it just produced
-    // IS the occupancy the next request will start from.
+    // `turnTokens` counts SUBAGENTS TOO. Their output is billed to this turn and
+    // lands in the authoritative `result` usage, so excluding it left the live
+    // readout stuck while a delegation did all the work. It is a de-duplicating
+    // MAP write rather than an add — see turnUsage for the 4.7x over-count that
+    // fixes.
+    //
+    // `contextTokens` stays main-thread only. It is a LEVEL, not a counter: a
+    // subagent has its own context window, so its occupancy is not this
+    // conversation's. A SET rather than an add for the same reason — input is
+    // the whole conversation re-sent, so this request's input plus what it just
+    // produced IS the occupancy the next request starts from.
+    //
+    // One patch for both, which costs no extra IPC over the one turnTokens
+    // already sends.
     const u = msg.message?.usage
     const out = u?.output_tokens
-    if (!msg.parent_tool_use_id && typeof out === 'number') {
+    if (typeof out === 'number') {
+      // `msg.uuid` is the fallback for a message the SDK sent without an id;
+      // it is unique per message, so at worst that one is counted on its own
+      // rather than de-duplicated against its siblings.
+      this.turnUsage.set(msg.message?.id ?? msg.uuid, out)
+      let turnTokens = 0
+      for (const n of this.turnUsage.values()) turnTokens += n
       this.patchMeta({
-        turnTokens: this.meta.turnTokens + out,
-        contextTokens: inputTokensOf(u) + out,
+        turnTokens,
+        ...(msg.parent_tool_use_id ? {} : { contextTokens: inputTokensOf(u) + out }),
       })
     }
 
@@ -958,35 +1025,24 @@ export class Session {
    * appears when there is actually something attached.
    *
    * The item is emitted immediately and marked `queued`, so a message typed
-   * during a run shows up straight away and stays cancellable until the SDK
-   * actually pulls it off the queue.
+   * during a run is acknowledged straight away and stays cancellable — and now
+   * editable — until the SDK actually pulls it off the queue.
+   *
+   * `queued` is what routes it, not just what dims it. The renderer holds these
+   * OUT of the transcript entirely and renders them in a tray above the composer
+   * until the matching evtQueue 'started' arrives: a user item landing in `items`
+   * mid-turn closes the running turn, which auto-folds it and throws away the
+   * reader's scroll position. So a queued message shows up in the tray, and
+   * reaches the conversation only when the agent does.
    */
   send(raw: SendContent): void {
     const content = normaliseSend(raw)
     if (content === null) return
     const id = randomUUID()
-    const text =
-      typeof content === 'string'
-        ? content
-        : content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join('\n')
-    const images =
-      typeof content === 'string'
-        ? []
-        : content.flatMap((b) =>
-            b.type === 'image' ? [`data:${b.source.media_type};base64,${b.source.data}`] : [],
-          )
 
+    const item = userItem(id, content)
     const busy = this.meta.status === 'running' || this.meta.status === 'awaiting-approval'
-    this.emit({
-      id,
-      kind: 'user',
-      text,
-      // Same value as `id` by construction — see queue.push. Carried explicitly
-      // so consumers don't have to know that coincidence.
-      uuid: id,
-      ...(images.length ? { images } : {}),
-      ...(busy ? { queued: true } : {}),
-    })
+    this.emit({ ...item, ...(busy ? { queued: true } : {}) })
     // No setStatus here: pushing is enough. If the gate is open the generator
     // picks it up immediately and onDequeue flips the status, which is the same
     // signal for a first message and a released one.
@@ -994,7 +1050,71 @@ export class Session {
 
     // Name the conversation off its opening message. Fire-and-forget and
     // deliberately not awaited — the turn must not wait on a title.
-    if (text.trim()) void this.autoTitle(text)
+    if (item.text.trim()) void this.autoTitle(item.text)
+  }
+
+  /**
+   * Rewrite a message that is still waiting in the queue.
+   *
+   * A round trip rather than cancel-and-re-send from the renderer, because the
+   * queue is an ORDER: re-pushing an edited message would move it behind
+   * anything queued after it. `queue.replace` keeps the slot; this re-emits the
+   * ChatItem under the same id so the tray row updates through the ordinary
+   * upsert path.
+   *
+   * Returns false when the message has already left the queue — the turn ended
+   * between the pencil and the save — which the tray uses to close its editor
+   * and say so rather than silently discarding the edit.
+   */
+  editQueued(itemId: string, raw: SendContent): boolean {
+    const edited = normaliseSend(raw)
+    if (edited === null) return false
+    // IMAGES SURVIVE THE EDIT, and they have to be re-attached here rather than
+    // sent back by the renderer. The tray's editor is a plain textarea, so what
+    // comes over the wire is text and only text — replacing the queued content
+    // with it would silently drop a pasted screenshot from both the wire and the
+    // row. Re-attached from the queue rather than round-tripped through IPC,
+    // because a megabyte of base64 crossing the bridge twice to rewrite a
+    // sentence is a real cost for no gain.
+    const images = this.queuedImages(itemId)
+    const content: SendContent = images.length
+      ? [...images, ...(typeof edited === 'string' ? [{ type: 'text', text: edited } as const] : edited)]
+      : edited
+    if (!this.queue.replace(itemId, content)) return false
+    // `queued: true` still set: it has not moved, and the renderer routes on
+    // exactly this flag to decide the item belongs in the tray rather than the
+    // transcript. The whole item is re-emitted, not a patch — upsert merges only
+    // tool cards, so a user item is replaced wholesale and every field it keeps
+    // has to be present here.
+    this.emit({ ...userItem(itemId, content), queued: true })
+    return true
+  }
+
+  /**
+   * The image blocks currently queued under an item, in OUR block shape.
+   *
+   * The cast on `media_type` is safe by construction rather than by hope:
+   * everything in this queue went through `normaliseSend`, which is the trust
+   * boundary that drops anything outside the four types the API accepts. Empty
+   * for a message that is plain text, and for one that has already been sent.
+   */
+  private queuedImages(itemId: string): SendBlock[] {
+    const queued = this.queue.peek(itemId)
+    if (queued === null || typeof queued === 'string') return []
+    return queued.flatMap((b): SendBlock[] =>
+      b.type === 'image' && b.source.type === 'base64'
+        ? [
+            {
+              type: 'image',
+              source: {
+                type: 'base64',
+                media_type: b.source.media_type as ImageMediaType,
+                data: b.source.data,
+              },
+            },
+          ]
+        : [],
+    )
   }
 
   setTitle(title: string): void {

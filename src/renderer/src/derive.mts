@@ -118,8 +118,12 @@ function parseTodoWrite(input: Record<string, unknown> | null): Todo[] | null {
  * the renderer as `unknown`, so malformed entries drop out rather than throwing
  * inside a render.
  *
- * Returns null once every task is completed — a finished plan is noise in a
- * header strip, and the transcript still has it.
+ * A COMPLETED PLAN STILL COMES BACK, and only an empty one returns null. This
+ * used to hide itself the moment the last task landed, which is the single
+ * frame the user is most likely to be looking at — the strip vanishing on
+ * success reads as the feature breaking rather than as the work finishing. The
+ * finished state (`6/6`, every row struck through) is the reward; TodoStrip
+ * collapses it on its own.
  */
 export function latestTodos(items: readonly ChatItem[]): Todo[] | null {
   const byId = new Map<string, Todo>()
@@ -127,6 +131,11 @@ export function latestTodos(items: readonly ChatItem[]): Todo[] | null {
 
   for (const item of items) {
     if (item.kind !== 'tool') continue
+    // Subagent tasks are the subagent's own plan, under ids that collide with
+    // the parent's — both are 1-based and monotonic within their own process —
+    // so folding them in here would overwrite the list the user is watching
+    // with rows from a delegation they cannot see.
+    if (item.parentId) continue
     const input = (item.input ?? null) as Record<string, unknown> | null
 
     if (item.name === 'TodoWrite') {
@@ -152,14 +161,21 @@ export function latestTodos(items: readonly ChatItem[]): Todo[] | null {
       // An update for a task we never saw created is dropped: inventing a row
       // for it would show a plan entry with no text.
       if (prev && key !== null && input && 'status' in input) {
-        byId.set(key, { ...prev, status: normaliseStatus(input.status) })
+        // 'deleted' is a REMOVAL, not a status — TodoStatus has nowhere to put
+        // it, so it used to degrade to 'pending' and pin a dead row forever.
+        // Observed live, including a session that deleted its entire six-task
+        // plan and left six rows nobody could clear.
+        if (typeof input.status === 'string' && input.status.toLowerCase() === 'deleted') {
+          byId.delete(key)
+        } else {
+          byId.set(key, { ...prev, status: normaliseStatus(input.status) })
+        }
       }
     }
   }
 
   const todos = [...byId.values()]
-  if (!todos.length) return null
-  return todos.every((t) => t.status === 'completed') ? null : todos
+  return todos.length ? todos : null
 }
 
 // ------------------------------------------------------------ context usage
@@ -1098,8 +1114,11 @@ export interface Turn {
  * reading a conversation and reading a log.
  *
  * A turn is bounded by user messages rather than by result items, because a
- * transcript resumed from disk can begin mid-turn with no result to anchor on,
- * and because queued messages produce two user items before either turn ends.
+ * transcript resumed from disk can begin mid-turn with no result to anchor on.
+ * (It used to have to survive two user items inside one turn as well, from a
+ * queued message; those are held out of `items` entirely now — see the store's
+ * `queued` slice, which exists because closing the running turn under a queued
+ * message auto-folded it and threw the scroll position away.)
  *
  * The split between `work` and `tail` is the trailing run of assistant blocks —
  * streaming emits several per turn, and all of them belong to the answer. Result
@@ -1327,6 +1346,13 @@ function nounFor(name: string): readonly [singular: string, plural: string] {
  * Rotating status verbs. Purely for fun — the spinner already says everything
  * functional. Kept here rather than in the component so the list is data, and
  * so the picker can be checked.
+ *
+ * FIVE GROUPS OF EXACTLY 38, and the evenness is load-bearing rather than tidy:
+ * `workingVerb` strides across the array to keep consecutive verbs in different
+ * registers, and that argument only holds while the groups are the same size.
+ * Adding one verb means adding one to each group — the check file pins both the
+ * total and the stride's co-primality with it, so a lopsided addition fails
+ * `npm run check:derive` rather than quietly clumping.
  */
 export const WORKING_VERBS: readonly string[] = [
   // genz
@@ -1344,6 +1370,30 @@ export const WORKING_VERBS: readonly string[] = [
   'Yeeting',
   'Sigma grinding',
   'Understanding the assignment',
+  'Vibe checking',
+  'Gatekeeping',
+  'Gaslighting the cache',
+  'Girlbossing',
+  'Serving',
+  'Slaying',
+  'Eating and leaving no crumbs',
+  'Living rent free',
+  'Chasing clout',
+  'Going feral',
+  'Standing on business',
+  'Letting him cook',
+  'Being so real',
+  'Main charactering',
+  'Simping for the spec',
+  'Doing it for the plot',
+  'Sussing it out',
+  'Sending it',
+  'Hitting different',
+  'Farming engagement',
+  'Catching strays',
+  'Peak behaviour',
+  'Speedrunning it',
+  'Unlocking a new arc',
   // dev
   'Yak shaving',
   'Bikeshedding',
@@ -1358,6 +1408,31 @@ export const WORKING_VERBS: readonly string[] = [
   'Stashing',
   'Naming things',
   'Reticulating splines',
+  'Rebasing onto main',
+  'Cherry-picking',
+  'Squashing commits',
+  'Resolving conflicts',
+  'Bumping the lockfile',
+  'Reading the stack trace',
+  'Grepping blindly',
+  'Printf debugging',
+  'Commenting out the test',
+  'Widening the type',
+  'Casting to any',
+  'Deleting node_modules',
+  'Blowing away the build dir',
+  'Turning it off and on again',
+  'Reproducing locally',
+  'Failing to reproduce',
+  'Chasing a heisenbug',
+  'Bumping the timeout',
+  'Adding a retry',
+  'Sharding the tests',
+  'Golfing a regex',
+  'Escaping the backslashes',
+  'Silencing a warning',
+  'Refactoring in place',
+  'Writing the migration',
   // corporate
   'Circling back',
   'Putting a pin in it',
@@ -1373,7 +1448,128 @@ export const WORKING_VERBS: readonly string[] = [
   'Drinking from the firehose',
   'Parking-lotting it',
   'Leveraging synergies',
+  'Aligning on it',
+  'Touching base',
+  'Taking this async',
+  'Sharpening the pencil',
+  'Getting the ducks in a row',
+  'Moving the goalposts',
+  'Opening the kimono',
+  'Reaching out',
+  'Unpacking it',
+  'Ideating',
+  'Operationalising it',
+  'Actioning it',
+  'Right-sizing the scope',
+  'Deep-diving',
+  'Picking the low-hanging fruit',
+  'Closing the loop',
+  'Shifting it left',
+  'Escalating gently',
+  'Building the plane in flight',
+  'Swimlaning it',
+  'Workshopping it',
+  'Circling the wagons',
+  'Taking the temperature',
+  'Blue-sky thinking',
+  // absurd — deadpan nonsense in a technical shape
+  'Consulting the oracle',
+  'Bribing the linter',
+  'Negotiating with the type checker',
+  'Summoning a stack frame',
+  'Apologising to the parser',
+  'Feeding the daemon',
+  'Interrogating a semicolon',
+  'Aligning the runes',
+  'Waking the compiler',
+  'Whispering to the GPU',
+  'Untangling the spaghetti',
+  'Reversing the polarity',
+  'Consulting the entrails',
+  'Sacrificing a goat to CI',
+  'Rearranging the deck chairs',
+  'Polishing the yak',
+  'Counting angels on a pointer',
+  'Teaching the rocks to think',
+  'Herding the electrons',
+  'Persuading a boolean',
+  'Placating the scheduler',
+  'Warming the tubes',
+  'Reading the tea leaves',
+  'Divining the intent',
+  'Winding the mainspring',
+  'Oiling the gears',
+  'Inventing a new adjective',
+  'Rotating the mandelbrot',
+  'Chasing the white rabbit',
+  'Arguing with a rock',
+  'Draining the swamp of state',
+  'Convincing the mutex',
+  'Bargaining with entropy',
+  "Feeding Schrödinger's cat",
+  'Turning the crank',
+  'Losing the allen key',
+  'Waiting for Godot',
+  'Folding the map wrong',
+  // dark — gallows, never grim. Nothing here is about the user, and nothing
+  // here says anything that could be mistaken for a real status.
+  'Digging its own grave',
+  'Reading the postmortem',
+  'Blaming the intern',
+  'Deleting the evidence',
+  'Assuming the position',
+  'Preparing the apology',
+  'Rewriting history',
+  "Making it someone else's problem",
+  'Drafting the incident report',
+  'Paging the on-call',
+  'Burning the changelog',
+  'Losing the audit trail',
+  'Updating its résumé',
+  'Practising the excuse',
+  'Calling it a known issue',
+  'Marking it wontfix',
+  'Shipping it on a Friday',
+  'Pushing straight to main',
+  'Skipping the review',
+  'Silencing the alarm',
+  'Muting the pager',
+  'Rounding down the error rate',
+  'Declaring victory early',
+  'Filing it under technical debt',
+  'Testing in production',
+  'Blaming the previous maintainer',
+  'Sweeping it under the rug',
+  'Deprecating without warning',
+  'Losing the backup',
+  'Ignoring the warning signs',
+  'Digging deeper',
+  'Accepting the risk',
+  'Rolling the dice',
+  'Praying to the CI gods',
+  'Writing the eulogy',
+  'Signing the waiver',
+  'Letting it burn',
+  'Quietly reverting it',
 ]
+
+/**
+ * How far the picker jumps between ticks.
+ *
+ * Two properties, and both are checked:
+ *
+ *  - CO-PRIME with WORKING_VERBS.length (190 = 2·5·19), so a full cycle still
+ *    visits every entry exactly once and no verb repeats inside one.
+ *  - LARGER THAN A GROUP (38), so the group index always advances by at least
+ *    two. A stride below the group size — 37, say — leaves the group unchanged
+ *    whenever the index is a multiple of 38, which is the one case that reads as
+ *    the bug this replaces.
+ *
+ * The bug: `(seed + tick)` was a sequential walk, so the rotation read out one
+ * whole register at a time. At 41 verbs that was a few corporate ones in a row;
+ * at 190 it would be 38 consecutive dark-humour lines.
+ */
+export const VERB_STRIDE = 79
 
 /**
  * Verb for a given session and tick. Offset by the session id so two sessions
@@ -1382,7 +1578,7 @@ export const WORKING_VERBS: readonly string[] = [
 export function workingVerb(sessionId: string, tick: number): string {
   let seed = 0
   for (const ch of sessionId) seed = (seed + ch.charCodeAt(0)) % WORKING_VERBS.length
-  return WORKING_VERBS[(seed + tick) % WORKING_VERBS.length]
+  return WORKING_VERBS[(seed + tick * VERB_STRIDE) % WORKING_VERBS.length]
 }
 
 /**
@@ -1411,6 +1607,39 @@ export function fmt(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k` : String(n)
 }
 
+/**
+ * Output tokens for the whole session: every settled turn, plus the in-flight
+ * turn's live estimate.
+ *
+ * The two halves are kept apart in SessionMeta precisely so they can be added
+ * here — `outputTokens` is written once per turn from the authoritative `result`
+ * usage, `turnTokens` is the running estimate and is zeroed the moment that
+ * happens. Gated on `turnStartedAt` rather than on `turnTokens` being non-zero
+ * so the rule is legible: the estimate counts only while a turn owns it.
+ *
+ * No new SessionMeta field: everything this needs already crosses the bridge.
+ */
+export function sessionTokens(m: Pick<SessionMeta, 'outputTokens' | 'turnTokens' | 'turnStartedAt'>): number {
+  return m.outputTokens + (m.turnStartedAt !== null ? m.turnTokens : 0)
+}
+
+/**
+ * What the pane-header clock is measuring: the turn while one is running, the
+ * session's age when none is.
+ *
+ * Both readings answer "how long has this been going" at the only scale that is
+ * meaningful at the time — mid-turn nobody cares how old the conversation is,
+ * and between turns a frozen turn timer is a number that has stopped meaning
+ * anything. `now` is passed in rather than read here so the whole thing stays
+ * checkable under bare node.
+ */
+export function meterElapsed(
+  m: Pick<SessionMeta, 'turnStartedAt' | 'createdAt'>,
+  now: number,
+): number {
+  return Math.max(0, now - (m.turnStartedAt ?? m.createdAt))
+}
+
 // -------------------------------------------------------------------- projects
 
 /**
@@ -1433,10 +1662,10 @@ export function projectKey(path: string): string {
  * A file path shown against the session's working directory.
  *
  * Inside the cwd the prefix goes; anything else stays absolute, because a
- * `../../../` chain is less legible than the absolute path it replaced. There
- * is no `~` case: the renderer has no `os.homedir()` — the preload surface is
- * IPC only — and reaching for one would be a new IPC call for an avatar-sized
- * gain.
+ * `../../../` chain is less legible than the absolute path it replaced. A path
+ * outside the cwd stays absolute here rather than being tilde-shortened —
+ * `tildePath` below is for the places that show a DIRECTORY rather than a file,
+ * where there is no cwd to measure against in the first place.
  *
  * This is also what puts filenames back on screen. `.tool-arg` ellipsises the
  * TAIL, so a long absolute path rendered as `/Users/me/code/foreman/src/rend…`
@@ -1465,6 +1694,43 @@ export function relPath(path: string, cwd: string): string {
   // projectKey's (APFS default) while the returned string keeps its own casing.
   if (p.toLowerCase().startsWith(prefix.toLowerCase())) return p.slice(prefix.length)
   return path
+}
+
+/**
+ * `/Users/x/code/foreman` → `~/code/foreman`.
+ *
+ * Every place the app shows a working directory used to show all of it, and the
+ * `/Users/<name>/` head is the one part that is the same on every row. It cost
+ * real information: `.term-title` and `.plan-path` ellipsise the TAIL, so a
+ * terminal opened on this repo read `/Users/gabriel.campillo/code/for…` and hid
+ * the project name — the only part of the path anyone was reading.
+ *
+ * `home` is a parameter rather than something this reaches for, so it stays
+ * checkable under bare node. It comes from `window.foreman.homeDir`, which is a
+ * static string on the bridge (see preload) rather than an IPC call.
+ *
+ * EXACT SEGMENT MATCH ONLY. A plain `startsWith` would shorten `/Users/xavier`
+ * against a home of `/Users/x` and render it as `~avier`.
+ */
+export function tildePath(path: string, home: string): string {
+  if (!path || !home || !path.startsWith('/')) return path
+  const h = home.replace(/\/+$/, '')
+  if (!h) return path
+  if (path === h) return '~'
+  return path.startsWith(`${h}/`) ? `~${path.slice(h.length)}` : path
+}
+
+/**
+ * Last segment of a path: `/a/b/c` and `/a/b/c/` both give `c`.
+ *
+ * `X.split('/').filter(Boolean).pop()` was written out at six call sites — the
+ * pane header's `On <repo>`, the composer's project label, three rail rows and
+ * `recentProjects` below — each with its own fallback for the empty case.
+ * `filter(Boolean)` is what makes a trailing slash harmless, and it is the part
+ * an inline copy is most likely to be written without.
+ */
+export function baseName(path: string): string {
+  return path.split('/').filter(Boolean).pop() ?? ''
 }
 
 /** A project row on Home or in the chooser. */
@@ -1503,7 +1769,7 @@ export function recentProjects(
     if (seen.has(key)) return
     if (!open && hide.has(key)) return
     seen.add(key)
-    out.push({ label: path.split('/').filter(Boolean).pop() ?? path, hint: path, open })
+    out.push({ label: baseName(path) || path, hint: path, open })
   }
 
   // The worktree path is a scratch checkout; repoRoot is the project the user

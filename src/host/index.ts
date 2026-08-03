@@ -229,6 +229,7 @@ const METHODS: Record<string, (...a: never[]) => unknown> = {
   meta: () => session.meta,
   send: (content: never) => session.send(content),
   cancelQueued: (itemId: never) => session.cancelQueued(itemId),
+  editQueued: (itemId: never, content: never) => session.editQueued(itemId, content),
   interrupt: () => session.interrupt(),
   setPermissionMode: (mode: never) => session.setPermissionMode(mode),
   setModel: (model: never) => session.setModel(model),

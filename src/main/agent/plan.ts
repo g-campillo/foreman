@@ -30,21 +30,49 @@ export const ORCHESTRATION = `<foreman-orchestration>
 The user approved this plan with "Approve · subagents". Carry it out by
 delegating, not by editing files yourself.
 
-1. Spawn the \`implementer\` agent (Agent tool, subagent_type: "implementer") and
+1. Call TaskCreate once per step of the plan BEFORE you delegate anything, and
+   TaskUpdate each one to "in_progress" / "completed" as the work lands. You own
+   the checklist even for steps a subagent carries out — a subagent's own tasks
+   are not shown to the user.
+2. Spawn the \`implementer\` agent (Agent tool, subagent_type: "implementer") and
    give it the plan verbatim plus the absolute paths it names. Wait for it.
-2. Then spawn \`reviewer\` and \`tester\`. Issue both in the SAME message so they
+3. Then spawn \`reviewer\` and \`tester\`. Issue both in the SAME message so they
    run in parallel, and wait for both. Give the reviewer the plan text, so it has
    a spec to review against rather than an opinion.
-3. If either reports a problem, delegate the fix back to \`implementer\`, then
+4. If either reports a problem, delegate the fix back to \`implementer\`, then
    re-run \`tester\` once. Stop after that single repair round and report what is
    still outstanding rather than looping.
-4. Finish with a short summary: what changed, what the reviewer found, what the
+5. Finish with a short summary: what changed, what the reviewer found, what the
    tests did.
 
 Edit files directly only to unblock a subagent that cannot proceed. If the Agent
 tool is not available in this session, implement the plan yourself and say so in
 your first message.
 </foreman-orchestration>`
+
+/**
+ * Seeds the checklist strip above the transcript.
+ *
+ * Injected on EVERY plan approval, not only the delegating one, and that is the
+ * fix rather than a nicety. TodoStrip and `latestTodos` have folded TaskCreate /
+ * TaskUpdate into a plan strip since they were written, and across every project
+ * directory on this machine `TaskCreate` fires only when something asks for it —
+ * nothing in Foreman ever did. The feature was complete and invisible.
+ *
+ * Same delivery seam as ORCHESTRATION below it, for the same reason: a message
+ * pushed at approval time sits behind the queue gate until the turn ENDS, by
+ * which point the work is done and a checklist is an epitaph.
+ *
+ * `TodoWrite` is deliberately not mentioned: it does not exist in the installed
+ * SDK. Naming a tool the model cannot call spends a turn on the failure.
+ */
+export const CHECKLIST = `<foreman-checklist>
+Before doing any of the work, call TaskCreate once per step of the approved plan,
+in plan order, with the step's own wording as the subject. Then TaskUpdate each
+one to "in_progress" as you start it and "completed" as you finish it, so the
+user can watch the plan advance. Use TaskUpdate with status "deleted" for a step
+the plan turned out not to need.
+</foreman-checklist>`
 
 /**
  * The three roles, passed at construction because `agents` is a constructor-only
@@ -76,7 +104,21 @@ export const PLAN_AGENTS: Record<string, AgentDefinition> = {
       'Glob',
       'Grep',
       'Bash',
-      'TodoWrite',
+      // NO CHECKLIST TOOLS HERE, DELIBERATELY, and not by omission.
+      //
+      // `TodoWrite` used to be on this list and does not exist in the installed
+      // SDK. Replacing it with TaskCreate/TaskUpdate/TaskList looks like the fix
+      // and is not: `latestTodos` drops every task item carrying a `parentId`,
+      // because a subagent numbers its tasks from 1 exactly as the parent does
+      // and merging the two would overwrite the list the user is watching. So a
+      // task the implementer created could never reach the strip.
+      //
+      // The parent owns the checklist across the whole delegation — see step 1
+      // of ORCHESTRATION — which is the right model anyway: the user is watching
+      // the plan they approved, not the subagent's private breakdown of it. That
+      // leaves these three as schemas the model is shown and can never usefully
+      // call, and an unused tool schema is pure context cost on every request;
+      // title.ts measures the same trade at $0.038 -> $0.0037.
       ...READ_ONLY_TOOLS,
     ],
     prompt: [
@@ -143,11 +185,17 @@ export const PLAN_AGENTS: Record<string, AgentDefinition> = {
 }
 
 /**
- * The directive, delivered at the one moment it is useful.
+ * The directives, delivered at the one moment they are useful.
  *
  * Its own PostToolUse matcher rather than folding into the PostToolBatch
  * diagnostics hook: a separate event with a separate matcher, so there is no
  * question of two hooks on one event competing to be heard.
+ *
+ * CHECKLIST rides EVERY approval and ORCHESTRATION only the delegating one. The
+ * split is the point: seeding the plan strip is worth doing whichever Approve
+ * button was pressed, whereas "delegate this" is a choice the user made and must
+ * not be inherited by a plain approval later in the same session — which is what
+ * takeOrchestration's read-and-clear guarantees.
  */
 export function makePlanHook(sessionId: string): HookCallbackMatcher[] {
   return [
@@ -156,14 +204,12 @@ export function makePlanHook(sessionId: string): HookCallbackMatcher[] {
       hooks: [
         async (input) => {
           if (input.hook_event_name !== 'PostToolUse') return { continue: true }
-          // Read-and-clear: one approval, one directive. A plain approval later
-          // in the same session must not inherit this one's choice.
-          if (!takeOrchestration(sessionId)) return { continue: true }
+          const orchestrate = takeOrchestration(sessionId)
           return {
             continue: true,
             hookSpecificOutput: {
               hookEventName: 'PostToolUse',
-              additionalContext: ORCHESTRATION,
+              additionalContext: orchestrate ? `${CHECKLIST}\n\n${ORCHESTRATION}` : CHECKLIST,
             },
           }
         },

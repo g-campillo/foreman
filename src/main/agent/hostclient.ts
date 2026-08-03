@@ -86,6 +86,8 @@ export class HostClient {
   >()
   /** Buffered until the socket is up, so a call made during connect isn't lost. */
   private readonly outbox: string[] = []
+  /** Resolvers parked on the next `replayed` frame — see replay(). */
+  private replayWaiters: (() => void)[] = []
   private connected: Promise<void>
   private closed = false
 
@@ -193,6 +195,11 @@ export class HostClient {
             p.reject(new Error('host disconnected'))
             this.pending.delete(id)
           }
+          // RESOLVED, not rejected. A backlog that will never arrive is still a
+          // finished replay as far as the renderer is concerned — and leaving
+          // these parked would strand `hydrating`, which suppresses the empty
+          // state, so the composer would sit bottom-pinned over nothing forever.
+          for (const done of this.replayWaiters.splice(0)) done()
         })
       }
       tryOnce()
@@ -213,7 +220,18 @@ export class HostClient {
       onHello?.()
       return
     }
-    if (frame.t === 'replayed') return
+    // THE SEAM, and it is load-bearing rather than informational: the host's
+    // `replay` method returns the instant it has opened the log, so the ordinary
+    // reply frame says nothing about whether the backlog has arrived. This frame
+    // does. See replay() for who is waiting on it.
+    if (frame.t === 'replayed') {
+      // ONE waiter per frame, FIFO. The host writes exactly one of these per
+      // `replay` call, and two calls can be in flight at once — a resume racing
+      // bootstrap's re-adoption. Draining the whole queue would let the first
+      // seam answer for a backlog still streaming behind it.
+      this.replayWaiters.shift()?.()
+      return
+    }
     if (frame.t === 'reply') {
       const p = this.pending.get(frame.id)
       if (!p) return
@@ -255,6 +273,29 @@ export class HostClient {
       if (this.sock) this.sock.write(line)
       else this.outbox.push(line)
     })
+  }
+
+  /**
+   * Stream this host's backlog, and WAIT for it to land.
+   *
+   * `call('replay')` is not enough and the difference is a visible bug. The
+   * host's `replay` method opens the event log and returns `true` immediately;
+   * the file is then read asynchronously and the frames go out behind the reply.
+   * So a caller awaiting the call resolves while the transcript is still in
+   * flight — which is exactly what made the renderer's `hydrating` flag clear a
+   * round trip too early, and a resumed session paint the empty-state layout and
+   * then snap out of it.
+   *
+   * The `replayed` frame is the real end marker and always has been; nothing was
+   * listening to it. Registered BEFORE the call is written, because a host with
+   * no log at all emits `replayed` synchronously inside its own handler and
+   * therefore ahead of the reply.
+   */
+  async replay(): Promise<void> {
+    await this.connected
+    const landed = new Promise<void>((resolve) => this.replayWaiters.push(resolve))
+    await this.call('replay')
+    await landed
   }
 
   /**

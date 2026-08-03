@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem, SessionMeta } from '../../shared/types'
-import { activityOf, answeredQuestions, ANSWER_PREFIX, armedApproval, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, contextView, swatch, level, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, buildTree, focusTarget, authorEdits, resolveAnchors, mcpName, titleCase, summarise, editStat, toolFailed, groupRuns, runSummary } from './derive.mts'
+import { activityOf, answeredQuestions, ANSWER_PREFIX, armedApproval, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, contextView, swatch, level, triggerAt, askQuestions, projectKey, relPath, tildePath, baseName, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, VERB_STRIDE, sessionTokens, meterElapsed, buildTree, focusTarget, authorEdits, resolveAnchors, mcpName, titleCase, summarise, editStat, toolFailed, groupRuns, runSummary } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -121,14 +121,57 @@ assert.equal(latestTodos([create(1, 'a'), update(1, 'running')])?.[0].status, 'i
 // An update for a task never created must not invent a blank row.
 assert.equal(latestTodos([create(1, 'a'), update(9, 'completed')])?.length, 1)
 
-// A finished plan is not worth pinning to a header.
-assert.equal(
-  latestTodos([create(1, 'a'), create(2, 'b'), update(1, 'completed'), update(2, 'completed')]),
-  null,
-  'all-completed plan is hidden',
+// A FINISHED PLAN STILL RENDERS. This used to return null, which meant the strip
+// vanished on the one frame the user is most likely watching — success reading
+// as breakage. Only an empty list is nothing to show.
+assert.deepEqual(
+  latestTodos([
+    create(1, 'a'),
+    create(2, 'b'),
+    update(1, 'completed'),
+    update(2, 'completed'),
+  ])?.map((t) => t.status),
+  ['completed', 'completed'],
+  'a completed plan keeps its rows',
 )
-// ...but one straggler keeps the whole list visible.
+// ...and one straggler keeps the whole list visible too.
 assert.equal(latestTodos([create(1, 'a'), create(2, 'b'), update(1, 'completed')])?.length, 2)
+
+// 'deleted' is a removal, not a status. Degrading it to 'pending' pinned dead
+// rows forever, and a wholly-deleted plan could never clear itself.
+{
+  const got = latestTodos([
+    create(1, 'a'),
+    create(2, 'b'),
+    create(3, 'c'),
+    update(2, 'deleted'),
+  ])
+  assert.deepEqual(got?.map((t) => t.content), ['a', 'c'], 'a deleted task leaves the list')
+}
+assert.equal(
+  latestTodos([create(1, 'a'), update(1, 'deleted')]),
+  null,
+  'deleting every task empties the strip',
+)
+
+// Subagent tasks share the parent's 1-based numbering, so folding them in would
+// overwrite the list the user is actually watching.
+{
+  const child: ChatItem = {
+    id: 'c1',
+    kind: 'tool',
+    name: 'TaskCreate',
+    input: { subject: 'subagent step' },
+    status: 'done',
+    result: 'Task #1 created successfully: subagent step',
+    parentId: 'agent-card',
+  }
+  assert.deepEqual(
+    latestTodos([create(1, 'mine'), child])?.map((t) => t.content),
+    ['mine'],
+    'a subagent task never joins the parent plan',
+  )
+}
 
 // TodoWrite is still honoured, and being a whole-list rewrite it RESETS the fold.
 {
@@ -959,8 +1002,9 @@ assert.equal(
   assert.equal(turns[0].tail.length, 1)
 }
 
-// Two questions in a row — a queued message lands as a second user item before
-// the first turn has produced anything.
+// Two questions in a row. No longer reachable from a queued message — those are
+// held out of `items` now — but a transcript replayed from disk can still hold
+// two user items with nothing between them.
 {
   const turns = groupTurns(transcriptRows([
     { id: 'u1', kind: 'user', text: 'a' },
@@ -1300,6 +1344,40 @@ assert.ok(WORKING_VERBS.includes(workingVerb('', 0)), 'empty session id is still
 assert.ok(WORKING_VERBS.includes(workingVerb('abc', 99999)), 'tick wraps rather than overflowing')
 assert.notEqual(workingVerb('abc', 0), workingVerb('abc', 1), 'the verb actually rotates')
 
+{
+  // Five registers of 38. The evenness is what the stride's group argument rests
+  // on, so it is pinned rather than assumed.
+  assert.ok(WORKING_VERBS.length >= 190, `only ${WORKING_VERBS.length} verbs`)
+  assert.equal(WORKING_VERBS.length % 5, 0, 'five equal groups')
+  assert.equal(new Set(WORKING_VERBS).size, WORKING_VERBS.length, 'no duplicate verbs')
+  assert.ok(
+    WORKING_VERBS.every((v) => v.trim().length > 0),
+    'an empty verb renders as a blank status line',
+  )
+
+  // Co-primality is what makes a cycle a permutation. Without it the rotation
+  // visits a fraction of the list and repeats inside one cycle.
+  const gcd = (a: number, b: number): number => (b === 0 ? a : gcd(b, a % b))
+  assert.equal(gcd(VERB_STRIDE, WORKING_VERBS.length), 1, 'stride must be co-prime with the list')
+
+  // ...which is the same statement, made the way a user would notice it failing.
+  const seen = new Set<string>()
+  for (let t = 0; t < WORKING_VERBS.length; t++) seen.add(workingVerb('some-session-id', t))
+  assert.equal(seen.size, WORKING_VERBS.length, 'a full cycle visits every verb exactly once')
+
+  // THE CLUMPING FIX ITSELF: consecutive ticks must land in different registers,
+  // or 38 dark-humour lines play back-to-back.
+  const size = WORKING_VERBS.length / 5
+  const group = (v: string): number => Math.floor(WORKING_VERBS.indexOf(v) / size)
+  for (let t = 0; t < WORKING_VERBS.length; t++) {
+    assert.notEqual(
+      group(workingVerb('some-session-id', t)),
+      group(workingVerb('some-session-id', t + 1)),
+      `two verbs from one group at tick ${t}`,
+    )
+  }
+}
+
 // ----------------------------------------------------------------- hms / fmt
 
 // These reprint every second under a running turn, so a wrong branch is a
@@ -1322,6 +1400,46 @@ assert.equal(fmt(4210), '4.2k')
 assert.equal(fmt(42_100), '42k', 'no decimal past 10k — it is noise at 5 digits')
 assert.equal(fmt(1_000_000), '1M', 'not 1000k, and not 1.0M')
 assert.equal(fmt(1_500_000), '1.5M')
+
+// ------------------------------------------------- sessionTokens / meterElapsed
+
+{
+  const meter = (
+    outputTokens: number,
+    turnTokens: number,
+    turnStartedAt: number | null,
+  ): Pick<SessionMeta, 'outputTokens' | 'turnTokens' | 'turnStartedAt'> => ({
+    outputTokens,
+    turnTokens,
+    turnStartedAt,
+  })
+
+  assert.equal(sessionTokens(meter(0, 0, null)), 0, 'a fresh session reads zero')
+  assert.equal(sessionTokens(meter(2_397, 0, null)), 2_397, 'settled turns only')
+  assert.equal(sessionTokens(meter(2_397, 610, 1)), 3_007, 'the live turn rides on top')
+
+  // THE REGRESSION THIS EXISTS FOR: main zeroes turnTokens at turn end because
+  // outputTokens has just absorbed the same turn. A stale estimate left behind
+  // between turns must not be added a second time — the gate is turnStartedAt,
+  // not a non-zero counter.
+  assert.equal(
+    sessionTokens(meter(2_397, 610, null)),
+    2_397,
+    'no double count between turns',
+  )
+}
+
+{
+  const age = (turnStartedAt: number | null): Pick<SessionMeta, 'turnStartedAt' | 'createdAt'> => ({
+    turnStartedAt,
+    createdAt: 1_000,
+  })
+  assert.equal(meterElapsed(age(null), 61_000), 60_000, 'session age while idle')
+  assert.equal(meterElapsed(age(50_000), 61_000), 11_000, 'turn elapsed while running')
+  // Same clock-skew floor hms has: a negative here would print as a jump to 0s
+  // anyway, but the two must not disagree about which of them clamps.
+  assert.equal(meterElapsed(age(70_000), 61_000), 0, 'clock skew clamps at zero')
+}
 
 // ------------------------------------------------------- projects and usage
 
@@ -1426,6 +1544,41 @@ for (const [p, cwd] of [
 ] as const) {
   assert.equal(relPath(p, cwd), p, `passthrough: ${p || '(empty)'} against ${cwd || '(empty)'}`)
 }
+
+// ------------------------------------------------------------------ tildePath
+
+assert.equal(tildePath('/Users/x/code/foreman', '/Users/x'), '~/code/foreman')
+assert.equal(tildePath('/Users/x', '/Users/x'), '~', 'home itself is just ~')
+assert.equal(tildePath('/Users/x/', '/Users/x'), '~/', 'a trailing slash survives')
+assert.equal(tildePath('/Users/x/code', '/Users/x/'), '~/code', 'trailing slash on home')
+
+// THE PREFIX TRAP: a plain startsWith renders /Users/xavier as `~avier`.
+assert.equal(tildePath('/Users/xavier/code', '/Users/x'), '/Users/xavier/code')
+assert.equal(tildePath('/Users/xavier', '/Users/x'), '/Users/xavier')
+
+// Nothing to shorten, or nothing to shorten against.
+assert.equal(tildePath('/etc/hosts', '/Users/x'), '/etc/hosts')
+assert.equal(tildePath('/Users/x/code', ''), '/Users/x/code', 'no home is a passthrough')
+assert.equal(tildePath('', '/Users/x'), '')
+assert.equal(tildePath('relative/path', '/Users/x'), 'relative/path')
+// Case is NOT folded here, unlike relPath's: `~` is cosmetic, and a wrong guess
+// would rewrite a path the user can no longer recognise.
+assert.equal(tildePath('/users/x/code', '/Users/x'), '/users/x/code')
+
+// PlanCard's one-off regex, subsumed: it rewrote `^.*\/\.claude\/` to `~/.claude/`.
+assert.equal(
+  tildePath('/Users/x/.claude/plans/a.md', '/Users/x'),
+  '~/.claude/plans/a.md',
+  'the plan-path case the regex used to handle',
+)
+
+// ------------------------------------------------------------------- baseName
+
+assert.equal(baseName('/a/b/c'), 'c')
+assert.equal(baseName('/a/b/c/'), 'c', 'a trailing slash is not a segment')
+assert.equal(baseName('/a'), 'a')
+assert.equal(baseName('/'), '', 'the root has no name')
+assert.equal(baseName(''), '')
 
 {
   const s = (

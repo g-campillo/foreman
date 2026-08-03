@@ -145,14 +145,20 @@ export interface SessionMeta {
    */
   turnStartedAt: number | null
   /**
-   * Output tokens seen so far in the in-flight turn.
+   * Output tokens seen so far in the in-flight turn, subagents included. Zero
+   * between turns.
    *
    * Deliberately NOT folded into inputTokens/outputTokens: those are the
    * authoritative cumulative totals, written once from `result`, and mixing a
-   * running estimate into them would double-count when `r.usage` lands.
+   * running estimate into them would double-count when `r.usage` lands. For the
+   * same reason this is reset to 0 at turn end rather than left holding the
+   * final figure — `sessionTokens` in derive.mts adds the two, and the total is
+   * only correct if exactly one of them owns a given turn at a time.
    *
    * Advances per assistant message, which is the finest granularity available —
-   * usage rides the message, not the token deltas — so it steps in chunks.
+   * usage rides the message, not the token deltas — so it steps in chunks. It is
+   * de-duplicated by `message.id` in main, because several messages per API turn
+   * carry the same complete usage object; see Session.turnUsage.
    */
   turnTokens: number
   /**
@@ -219,6 +225,22 @@ export type SendBlock =
   | { type: 'image'; source: { type: 'base64'; media_type: ImageMediaType; data: string } }
 
 export type SendContent = string | SendBlock[]
+
+/**
+ * One image staged in the composer, before it becomes a SendBlock.
+ *
+ * Here rather than in Composer.tsx, which owned it, because the store now parks
+ * a per-session draft — and a store importing a shape out of a leaf component it
+ * is imported BY is a cycle waiting to be made runtime. `data` is base64 with no
+ * `data:` prefix, which is what the wire format wants; the `data:` URL form only
+ * exists for the `<img>` previews.
+ */
+export interface Attachment {
+  id: string
+  mediaType: ImageMediaType
+  data: string
+  name: string
+}
 
 export interface SlashCommandInfo {
   name: string
@@ -847,6 +869,10 @@ export const IPC = {
    *  Main can't read localStorage, and these decide what happens on quit. */
   agentPolicy: 'app:agentPolicy',
   sessionCancelQueued: 'session:cancelQueued',
+  /** Rewrite a queued message IN PLACE. Its own channel rather than a cancel
+   *  plus a send, because the queue is an order and re-pushing would move the
+   *  edited message behind anything queued after it. */
+  sessionEditQueued: 'session:editQueued',
 
   // time travel + actions
   sessionRewind: 'session:rewind',

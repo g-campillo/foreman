@@ -538,6 +538,20 @@ select {
   text-overflow: ellipsis;
 }
 
+/* The session clock and token count, at the right of the header strip.
+   tabular-nums is not cosmetic: this reprints every second, and proportional
+   digits make the readout twitch as the width changes.
+
+   `flex: none` so it never gives width to the title beside it, and a right
+   margin because `.dock-entries` is absolutely positioned immediately below the
+   far right of this strip — without the gap the two read as one column. */
+.meter {
+  flex: none;
+  margin-right: var(--sp-2);
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--text-faint));
+}
+
 /* -------------------------------------------------------------------- rail */
 
 .rail {
@@ -1333,12 +1347,9 @@ body[data-keys] .tip[data-show] {
   font-size: 12px;
   padding: 2px 0 6px;
 }
-/* tabular-nums is not cosmetic here: this line reprints every second, and
-   proportional digits make the whole readout twitch as the width changes. */
-.working-stats {
-  flex: 0 0 auto;
-  font-variant-numeric: tabular-nums;
-}
+/* .working-stats lived here — the elapsed time, token count and effort label on
+   the right of this line. They are `.meter` in the pane header now, which is on
+   screen whether or not the transcript is scrolled to the bottom. */
 .working-dots {
   display: inline-flex;
   gap: 3px;
@@ -2727,9 +2738,13 @@ button.tool-line:hover {
    Absolutely positioned inside .pane-fill, whose `contain: paint` makes it the
    containing block. Right-aligned text so the list reads as a column against
    the window edge rather than a floating menu. */
+/* `--todos-h` is published by TodoStrip, which measures itself — see the effect
+   there for why this cannot be a constant. It is absent for most sessions, so
+   the fallback is the real common case rather than a defensive one: with no
+   plan on screen this resolves to the bare titlebar offset it always had. */
 .dock-entries {
   position: absolute;
-  top: calc(var(--titlebar-h) + var(--sp-2));
+  top: calc(var(--titlebar-h) + var(--todos-h, 0px) + var(--sp-2));
   right: var(--sp-5);
   z-index: 2;
   display: flex;
@@ -3496,6 +3511,13 @@ button.diff-more:hover {
   color: rgb(var(--text-faint));
   flex-shrink: 0;
 }
+/* The whole plan landed. The count is the one part of the head that carries a
+   number, so it is the part that gets to say so — the rows below are already
+   struck through, and tinting the sentence too would be three signals for one
+   fact. */
+.todos[data-done] .todos-count {
+  color: rgb(var(--ok));
+}
 .todos-now {
   flex: 1;
   min-width: 0;
@@ -4213,25 +4235,10 @@ button.diff-more:hover {
   color: rgb(var(--danger));
 }
 
-/* A queued message is dimmed to read as not-yet-sent, and carries its own
-   cancel affordance because it is still withdrawable. */
-.msg-user[data-queued] {
-  opacity: 0.62;
-  /* Same --accent-fg inversion as the code fills above: dashed near-black on a
-     dark card was invisible, and the dash IS the "not sent yet" signal. */
-  border: 1px dashed rgb(var(--stroke-1));
-}
-.queued-cancel {
-  display: block;
-  margin-top: 4px;
-  font-size: 10px;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: rgb(var(--accent-fg) / 0.85);
-}
-.queued-cancel:hover {
-  color: rgb(var(--accent-fg));
-}
+/* `.msg-user[data-queued]` and `.queued-cancel` lived here — the dimmed,
+   dashed transcript row a queued message used to render as. Queued messages are
+   held out of the transcript entirely now; the dash and the dimming moved with
+   them to `.q-row` below. */
 .msg-image {
   display: block;
   max-width: 100%;
@@ -4377,6 +4384,7 @@ button.diff-more:hover {
   gap: 6px;
   margin-bottom: 7px;
 }
+
 /* A background task is a live feed, not a badge: description, then the rolling
    AI progress summary, then a clock and its token spend. Full width so the
    summary has somewhere to go — these are the only thing on their row.
@@ -4506,6 +4514,101 @@ button.diff-more:hover {
   flex: none;
   display: flex;
   gap: 2px;
+}
+
+/* ────────────────────────────────────────────────────── queued messages */
+
+/* The tray of things not sent yet, in the same slot as .bg-tray above and for
+   the same reason: status about the composer rather than part of the field.
+   Column rather than wrap — these are sentences, not chips. */
+.q-tray {
+  display: flex;
+  flex-direction: column;
+  gap: var(--sp-1);
+  margin-bottom: 7px;
+}
+.q-head {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: 11px;
+  color: rgb(var(--text-faint));
+}
+/* Dimmed and DASHED. The dash is already the app's "not sent yet" signal — it
+   is what `.msg-user[data-queued]` used before queued messages left the
+   transcript — so the row reads the same way in its new home. */
+.q-row {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  min-width: 0;
+  padding: 5px var(--sp-2);
+  border: 1px dashed rgb(var(--stroke-1));
+  border-radius: var(--r-sm);
+  font-size: 12px;
+  color: rgb(var(--text-dim));
+  opacity: 0.72;
+  /* Rows arrive with a short lift, so a queued message announces itself
+     somewhere other than where you were looking. Deliberately ENTER ONLY: a
+     leave animation needs the row to outlive its own state, and holding a sent
+     message in the tray for 140ms after it started running is exactly the lie
+     this whole change exists to stop telling. */
+  animation: q-in 140ms ease-out;
+}
+.q-row:hover {
+  opacity: 1;
+}
+.q-row[data-editing] {
+  opacity: 1;
+  padding: 0;
+  border-style: solid;
+}
+.q-text {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* `2` beside a paperclip-sized glyph, so an attachment stays visible on a row
+   whose editor can only ever show text. */
+.q-img {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--text-faint));
+}
+.q-act {
+  flex: none;
+  color: rgb(var(--text-faint));
+}
+.q-act:hover {
+  color: rgb(var(--text));
+}
+/* The X is the destructive one of the two, and matches `.chip button:hover`. */
+.q-act:last-child:hover {
+  color: rgb(var(--danger));
+}
+/* A plain textarea, so it needs the field styling the composer's editor gets
+   from CodeMirror. `resize: none` because the row grows with `rows`. */
+.q-edit {
+  flex: 1;
+  min-width: 0;
+  padding: 5px var(--sp-2);
+  border: 0;
+  background: transparent;
+  color: rgb(var(--text));
+  font: inherit;
+  resize: none;
+  outline: none;
+}
+@keyframes q-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
 }
 
 /* ───────────────────────────────────────────── AskUserQuestion card */
@@ -5326,8 +5429,12 @@ button.diff-more:hover {
 
 /* ─────────────────────────────────────────────────────────────────── icons */
 
-/* Must stay LAST in the file: these beat .queued-cancel, which sets
-   `display: block` earlier, at equal specificity.
+/* Must stay LAST in the file, and the reason is the block below rather than this
+   rule: `.btn`, `.tab`, `button.code-btn`, `.plan-close` and `.chip button` all
+   set `display: inline-flex` at single-class specificity to centre their glyph.
+   Anything earlier in the file giving one of those elements a different
+   `display` would win on source order, and the icon would drop back onto the
+   text baseline.
 
    One stroke weight app-wide. lucide writes stroke-width as a presentation
    attribute (specificity 0), so this single rule outranks all ~45 of them and
@@ -5370,10 +5477,10 @@ button.code-btn,
   vertical-align: -2px; /* ignored where the element is itself a flex item */
 }
 
-/* These two keep their original `display` and align their icon inline instead:
-   .queued-cancel is block so it gets its own line under the message, and
-   .session-branch's text-overflow: ellipsis only applies to a non-flex box. */
-.queued-cancel svg,
+/* Keeps its original `display` and aligns its icon inline instead:
+   .session-branch's text-overflow: ellipsis only applies to a non-flex box.
+   (.queued-cancel was the other half of this rule, and is gone with the
+   in-transcript queued row.) */
 .session-branch svg {
   vertical-align: -2px;
   margin-right: 3px;

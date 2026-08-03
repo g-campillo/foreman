@@ -16,7 +16,7 @@ import {
 } from 'lucide-react'
 import type { PastSession, SessionMeta, TranscriptSearchHit } from '../../../shared/types'
 import { useStore } from '../store'
-import { activityOf, groupSessions, type Activity } from '../derive.mts'
+import { activityOf, baseName, groupSessions, tildePath, type Activity } from '../derive.mts'
 import { hk } from '../hotkey'
 import LspStrip from './LspStrip'
 
@@ -254,7 +254,7 @@ export default function SessionRail(): React.JSX.Element {
             <div className="rail-group-head" title={g.root}>
               <FolderOpen size={14} />
               <span className="rail-group-name">
-                {g.root.split('/').filter(Boolean).pop() ?? g.root}
+                {baseName(g.root) || g.root}
               </span>
               <button
                 className="rail-section-act"
@@ -290,7 +290,7 @@ export default function SessionRail(): React.JSX.Element {
                     onAuxClick={(e) => {
                       if (e.button === 1) void close(s.id)
                     }}
-                    title={`${s.cwd}\nDouble-click to rename`}
+                    title={`${tildePath(s.cwd, window.foreman.homeDir)}\nDouble-click to rename`}
                   >
                     <ActivityIcon session={s} />
                     <span className="session-body">
@@ -366,7 +366,7 @@ export default function SessionRail(): React.JSX.Element {
                   <button
                     key={h.sessionId}
                     className="session"
-                    title={h.cwd}
+                    title={tildePath(h.cwd ?? '', window.foreman.homeDir)}
                     // Without a cwd the CLI searches the wrong project directory
                     // and reports "No conversation found", so don't offer it.
                     disabled={!h.cwd}
@@ -377,7 +377,7 @@ export default function SessionRail(): React.JSX.Element {
                       <span className="session-title">{h.summary}</span>
                       <span className="session-snippet">{h.snippet}</span>
                       <span className="session-sub">
-                        {!scope && h.cwd && `${h.cwd.split('/').filter(Boolean).pop()} · `}
+                        {!scope && h.cwd && `${baseName(h.cwd)} · `}
                         {h.matches} match{h.matches === 1 ? '' : 'es'} · {when(h.lastModified)}
                       </span>
                     </span>
@@ -387,7 +387,7 @@ export default function SessionRail(): React.JSX.Element {
                   <button
                     key={p.sessionId}
                     className="session"
-                    title={p.cwd}
+                    title={tildePath(p.cwd ?? '', window.foreman.homeDir)}
                     onClick={() => void resume(p.sessionId, p.cwd ?? '', p.summary.slice(0, 40))}
                     disabled={!p.cwd}
                   >
@@ -398,7 +398,7 @@ export default function SessionRail(): React.JSX.Element {
                         {/* Unscoped, the project is the thing that tells two
                             identically-named sessions apart — and scoped it is
                             redundant with the header. */}
-                        {!scope && p.cwd && `${p.cwd.split('/').filter(Boolean).pop()} · `}
+                        {!scope && p.cwd && `${baseName(p.cwd)} · `}
                         {when(p.lastModified)}
                         {p.gitBranch && ` · ${p.gitBranch}`}
                       </span>

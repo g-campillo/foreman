@@ -475,9 +475,11 @@ export function registerSessionIpc(): void {
    * is registered, which is the only moment it can safely receive a backlog.
    */
   ipcMain.handle(IPC.sessionReplay, async () => {
-    await Promise.all(
-      [...sessions.values()].map((h) => h.call('replay').catch(() => undefined)),
-    )
+    // `h.replay()`, not `h.call('replay')`: the call resolves as soon as the
+    // host has opened its log, while the frames are still on the way. The
+    // renderer awaits this to know when a resumed transcript has landed — see
+    // HostClient.replay and the store's `hydrating`.
+    await Promise.all([...sessions.values()].map((h) => h.replay().catch(() => undefined)))
     return true
   })
 
@@ -492,6 +494,17 @@ export function registerSessionIpc(): void {
     IPC.sessionCancelQueued,
     (_e, { sessionId, itemId }: { sessionId: string; itemId: string }) =>
       callOr(sessionId, false, 'cancelQueued', itemId),
+  )
+
+  // `false` as the fallback, like cancelQueued: a session that has gone away
+  // cannot be holding the message, and the tray reads the answer to decide
+  // whether to close its editor.
+  ipcMain.handle(
+    IPC.sessionEditQueued,
+    (
+      _e,
+      { sessionId, itemId, content }: { sessionId: string; itemId: string; content: SendContent },
+    ) => callOr(sessionId, false, 'editQueued', itemId, content),
   )
 
   ipcMain.handle(IPC.sessionCommands, (_e, { sessionId }: { sessionId: string }) =>

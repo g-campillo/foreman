@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { TriangleAlert, X } from 'lucide-react'
 import type { FileRead, SessionMeta } from '../../../shared/types'
 import type { ServerReport } from '../../../shared/types'
-import { authorEdits, relPath, resolveAnchors } from '../derive.mts'
+import { authorEdits, relPath, resolveAnchors, tildePath } from '../derive.mts'
 import { useStore } from '../store'
 import { loadedMonaco } from '../editor/monaco'
 import { startLsp } from '../editor/lsp'
@@ -378,7 +378,9 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
         )}
 
         <footer className="plan-actions">
-          <span className="plan-path">{session.cwd}</span>
+          <span className="plan-path" title={session.cwd}>
+            {tildePath(session.cwd, window.foreman.homeDir)}
+          </span>
           <div className="plan-buttons">
             <button
               className="btn"

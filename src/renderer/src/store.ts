@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type {
   Appearance,
+  Attachment,
   ChatItem,
   DiffChanged,
   DiffStats,
@@ -13,11 +14,49 @@ import type {
   SessionMeta,
 } from '../../shared/types'
 import { newestSession, projectKey } from './derive.mts'
+import { pinToBottom } from './scrollPin'
+
+/** What the composer holds for one session while another is on screen. */
+export interface ComposerDraft {
+  text: string
+  attachments: Attachment[]
+  caret: number
+}
 
 interface State {
   sessions: SessionMeta[]
   activeId: string | null
   items: Record<string, ChatItem[]>
+  /**
+   * Messages still sitting in main's input queue, HELD OUT of `items`.
+   *
+   * A separate slice rather than a flag on a transcript row, and the reason is a
+   * scroll bug rather than tidiness. `groupTurns` bounds a turn on every user
+   * message, so a message queued mid-turn closed the RUNNING turn: it stopped
+   * being `latest`, `Turn` auto-folded, and hundreds of tool rows unmounted in
+   * one commit. `scrollHeight` collapsed and the transcript rode upward under
+   * the user, mid-answer.
+   *
+   * Nothing that has not reached the agent belongs in the record of what was
+   * said to it anyway. They render in QueueTray above the composer, and move
+   * into `items` on the 'started' edge — see onQueue.
+   */
+  queued: Record<string, ChatItem[]>
+  /**
+   * Sessions whose stored transcript is still on its way in.
+   *
+   * The one thing `items.length === 0` cannot tell you: a resumed session is
+   * selected and painted BEFORE the host has replayed its event log, so for a
+   * frame or two it looks exactly like a brand-new conversation. Conversation
+   * used to guess at that from `status === 'starting'`, which is true of a
+   * genuinely fresh session too — so a new conversation rendered bottom-pinned
+   * for one frame and then SNAPPED to the centred layout when the status
+   * flipped. This says the thing that was actually meant.
+   *
+   * Cleared on the error path as well, or an empty resumed session waits
+   * forever for a transcript that is never coming.
+   */
+  hydrating: Record<string, boolean>
   approvals: PermissionRequest[]
   elicitations: ElicitationRequest[]
   /** Uncommitted files AND lines per session, from evtDiffChanged. The OBJECT
@@ -105,12 +144,33 @@ interface State {
    * effect mirrors it here — lifting `text` itself would put a store write on
    * every keystroke and notify every subscriber in the app.
    *
-   * Deliberately NOT keyed by session: App renders ONE unkeyed `<Composer>`, so
-   * a half-typed message survives a session switch, and a per-session map would
-   * be a fiction about state that does not exist.
+   * Still one bit and still not keyed by session, even now `drafts` below is:
+   * the question it answers is about the composer ON SCREEN, and there is only
+   * ever one of those.
    */
   composerDirty: boolean
   setComposerDirty(dirty: boolean): void
+
+  /**
+   * Half-typed messages, parked per session.
+   *
+   * WRITTEN ONLY ON A SESSION SWITCH, never per keystroke. The text lives in
+   * Composer's local state exactly as it always has — see `composerDirty` above
+   * for why lifting it would be a store write and an app-wide notify per
+   * character — and this is where the outgoing session's copy is left when
+   * another one takes the composer over.
+   *
+   * That is the bug it fixes: App renders ONE unkeyed `<Composer>`, so a draft
+   * used to follow you into whichever conversation you switched to, and could be
+   * sent to the wrong agent by muscle memory. `wantFor` in Composer is keyed by
+   * session id for exactly this reason and has been since it was written.
+   *
+   * `caret` rides along so coming back lands the cursor where you left it —
+   * MarkdownInput restores it from the same props it takes the text from.
+   */
+  drafts: Record<string, ComposerDraft>
+  saveDraft(sessionId: string, draft: ComposerDraft): void
+  dropDraft(sessionId: string): void
 
   select(id: string): void
   /** Resolves to the new session, or null when creating it failed — which is an
@@ -407,6 +467,8 @@ export const useStore = create<State>((set, get) => ({
   sessions: [],
   activeId: null,
   items: {},
+  queued: {},
+  hydrating: {},
   approvals: [],
   elicitations: [],
   rewindPreview: null,
@@ -423,6 +485,33 @@ export const useStore = create<State>((set, get) => ({
   editor: null,
   focusItemId: null,
   composerDirty: false,
+  drafts: {},
+
+  saveDraft(sessionId, draft) {
+    set((s) => {
+      // An empty draft is the absence of one. Storing it would leave a row per
+      // session visited, and `dropDraft` would then be the only way to tell
+      // "nothing typed" from "typed and cleared" — a distinction nothing needs.
+      if (!draft.text && draft.attachments.length === 0) {
+        if (!(sessionId in s.drafts)) return s
+        const { [sessionId]: _drop, ...drafts } = s.drafts
+        return { drafts }
+      }
+      // -1 is the composer's "close the autocomplete without touching the text"
+      // sentinel, not a position. Parked in a draft it becomes one, and
+      // MarkdownInput's restore bails on a negative offset — so returning to the
+      // session would drop the cursor at 0 rather than where you left it.
+      return { drafts: { ...s.drafts, [sessionId]: { ...draft, caret: Math.max(0, draft.caret) } } }
+    })
+  },
+
+  dropDraft(sessionId) {
+    set((s) => {
+      if (!(sessionId in s.drafts)) return s
+      const { [sessionId]: _drop, ...drafts } = s.drafts
+      return { drafts }
+    })
+  },
 
   setComposerDirty(composerDirty) {
     // Returns the state object UNCHANGED when nothing flipped, the same
@@ -534,12 +623,26 @@ export const useStore = create<State>((set, get) => ({
       title,
       ...sessionPrefs(get().prefs),
     })
-    set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id }))
+    // Raised BEFORE the session is on screen, which is the whole point: the
+    // first paint of a resumed conversation must not be the centred empty state
+    // it would briefly qualify for. See `hydrating`.
+    set((s) => ({
+      sessions: [...s.sessions, meta],
+      activeId: meta.id,
+      hydrating: { ...s.hydrating, [meta.id]: true },
+    }))
     get().select(meta.id)
-    // No hydrate() here: the host reads the stored transcript into its own
-    // event log at startup and streams it as ordinary items, so it arrives on
-    // the same channel as everything else.
-    await window.foreman.replaySessions()
+    try {
+      // No hydrate() here: the host reads the stored transcript into its own
+      // event log at startup and streams it as ordinary items, so it arrives on
+      // the same channel as everything else.
+      await window.foreman.replaySessions()
+    } finally {
+      set((s) => {
+        const { [meta.id]: _done, ...hydrating } = s.hydrating
+        return { hydrating }
+      })
+    }
   },
 
   /**
@@ -612,9 +715,15 @@ export const useStore = create<State>((set, get) => ({
     set((s) => {
       const sessions = s.sessions.filter((x) => x.id !== id)
       const { [id]: _drop, ...items } = s.items
+      const { [id]: _dropQueued, ...queued } = s.queued
+      // The draft goes with the conversation it belonged to. Left behind it
+      // would be resurrected by a future session that happened to reuse the id.
+      const { [id]: _dropDraft, ...drafts } = s.drafts
       return {
         sessions,
         items,
+        queued,
+        drafts,
         // newestSession, not sessions[0]: this array is in insertion order, so
         // its [0] is the OLDEST — which is the rail's bottom row now that the
         // rail draws newest-first. Closing a session would send the selection
@@ -692,6 +801,16 @@ export const useStore = create<State>((set, get) => ({
       // that tail — and then the next flush would append it a second time on top
       // of the complete text.
       flushDeltas()
+      // A message the agent has not been handed yet is not part of the
+      // conversation, and putting it there closes the running turn — see the
+      // `queued` slice. Re-emitted by editQueued under the same id, which upsert
+      // handles as a whole-item replace.
+      if (item.kind === 'user' && item.queued) {
+        set((s) => ({
+          queued: { ...s.queued, [sessionId]: upsert(s.queued[sessionId] ?? [], item) },
+        }))
+        return
+      }
       set((s) => ({ items: { ...s.items, [sessionId]: upsert(s.items[sessionId] ?? [], item) } }))
     })
 
@@ -751,14 +870,37 @@ export const useStore = create<State>((set, get) => ({
         state: 'started' | 'dropped'
       }) => {
         set((s) => {
-          const list = s.items[sessionId]
-          if (!list) return s
-          const next =
-            state === 'dropped'
-              ? list.filter((x) => x.id !== itemId)
-              : list.map((x) => (x.id === itemId && x.kind === 'user' ? { ...x, queued: false } : x))
-          return { items: { ...s.items, [sessionId]: next } }
+          const tray = s.queued[sessionId] ?? []
+          // Narrowed rather than trusted: only user items are ever routed into
+          // this slice, but `queued` exists on no other variant of ChatItem.
+          const item = tray.find(
+            (x): x is Extract<ChatItem, { kind: 'user' }> => x.id === itemId && x.kind === 'user',
+          )
+          // 'started' for a message that was never queued — sent while the
+          // session was idle, so it went straight into `items`. Nothing to move.
+          if (!item) return s
+          const rest = tray.filter((x) => x.id !== itemId)
+          if (state === 'dropped') return { queued: { ...s.queued, [sessionId]: rest } }
+          return {
+            queued: { ...s.queued, [sessionId]: rest },
+            items: {
+              ...s.items,
+              [sessionId]: upsert(s.items[sessionId] ?? [], { ...item, queued: false }),
+            },
+          }
         })
+        // THE PIN LIVES HERE, not on send — this is the frame something new
+        // actually appears at the bottom of the transcript. Queuing puts a row
+        // in the tray above the composer instead, and scrolling the transcript
+        // for it would yank the answer the user is reading out from under them.
+        //
+        // GATED ON THE ACTIVE SESSION, which the old call site in Composer.submit
+        // got for free by being a click on the visible composer. This is a global
+        // event handler, and `scrollPin` is a module-level latch spent by whichever
+        // Conversation is mounted — so an ungated pin would let a background
+        // agent dequeuing its own queued message yank you to the bottom of a
+        // transcript you were reading.
+        if (state === 'started' && get().activeId === sessionId) pinToBottom()
       },
     )
 
@@ -828,18 +970,40 @@ export const useStore = create<State>((set, get) => ({
       .listSessions()
       .then(async (live: SessionMeta[]) => {
         if (live?.length) {
-          set({ sessions: live })
+          // Every re-adopted session is mid-hydrate for the same reason a
+          // resumed one is: its transcript arrives from the replay below, not
+          // with its meta. Without this a reload flashes the centred empty
+          // layout over a session with a thousand messages in it.
+          // Merged rather than assigned, matching the scoped clear below: a
+          // wholesale replace would be a second writer of the whole record, and
+          // the two halves of one operation disagreeing about their scope is how
+          // the next flag added here quietly goes missing.
+          set((s) => ({
+            sessions: live,
+            hydrating: { ...s.hydrating, ...Object.fromEntries(live.map((x) => [x.id, true])) },
+          }))
           // main returns these in ITS insertion order (a Map spread), so live[0]
           // is the oldest — the rail's bottom row. Select what the rail actually
           // shows first instead. Non-null inside this `live?.length` guard.
           get().select(newestSession(live)!.id)
-          // Transcripts come from each host's event log, NOT from disk. The log
-          // carries the same ChatItem ids the live stream uses, so replaying it
-          // merges cleanly with anything already in flight — whereas re-reading
-          // the stored messages would duplicate every one of them under
-          // different ids. Called here, after onItem is registered above, which
-          // is the earliest moment a backlog can actually be received.
-          await window.foreman.replaySessions()
+          try {
+            // Transcripts come from each host's event log, NOT from disk. The log
+            // carries the same ChatItem ids the live stream uses, so replaying it
+            // merges cleanly with anything already in flight — whereas re-reading
+            // the stored messages would duplicate every one of them under
+            // different ids. Called here, after onItem is registered above, which
+            // is the earliest moment a backlog can actually be received.
+            await window.foreman.replaySessions()
+          } finally {
+            // Only the ids this raised. A `resume()` started while the replay
+            // was in flight has its own flag up, and a blanket reset would drop
+            // it and centre a session with a transcript still arriving.
+            set((s) => {
+              const hydrating = { ...s.hydrating }
+              for (const x of live) delete hydrating[x.id]
+              return { hydrating }
+            })
+          }
           return
         }
         // Still inside this .then, so it still loses the race above. Do not lift.

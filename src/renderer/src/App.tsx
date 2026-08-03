@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { FolderTree, GitCompare, Gauge, Plus, SlidersHorizontal, SquareTerminal, X } from 'lucide-react'
 import { activeSession, DEFAULT_APPEARANCE, useStore } from './store'
+import { baseName } from './derive.mts'
 import SessionRail from './components/SessionRail'
 import Conversation from './components/Conversation'
 import Composer from './components/Composer'
@@ -10,6 +11,7 @@ import FileTree from './components/FileTree'
 import FileModal from './components/FileModal'
 import Settings from './components/Settings'
 import TodoStrip from './components/TodoStrip'
+import SessionMeter from './components/SessionMeter'
 import SessionPanel from './components/SessionPanel'
 import CommandPalette, { type PaletteActions } from './components/CommandPalette'
 import Tooltip from './components/Tooltip'
@@ -254,6 +256,10 @@ export default function App(): React.JSX.Element {
         <header className="pane-head drag">
           <span className="pane-title">{session?.title ?? ''}</span>
           <span className="spacer" />
+          {/* Between the spacer and Settings, and no `no-drag`: it is text with a
+              `data-tip` and nothing else, so it keeps dragging the window. The
+              tick lives inside it — see SessionMeter. */}
+          {session && <SessionMeter session={session} />}
           <button
             className="tab no-drag"
             data-active={showSettings}
@@ -273,7 +279,7 @@ export default function App(): React.JSX.Element {
         {!panel && session && (
           <div className="dock-entries">
             <div className="dock-entries-head">
-              On {(session.worktree?.repoRoot ?? session.cwd).split('/').filter(Boolean).pop()}
+              On {baseName(session.worktree?.repoRoot ?? session.cwd)}
             </div>
             <button
               {...hk('Files this agent has changed', `⌘${PANEL_KEY.diff}`)}

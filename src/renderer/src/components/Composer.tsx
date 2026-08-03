@@ -17,6 +17,7 @@ import {
 } from 'lucide-react'
 import {
   PERMISSION_MODES,
+  type Attachment,
   type BranchInfo,
   type BranchList,
   type EffortLevel,
@@ -30,14 +31,14 @@ import {
 } from '../../../shared/types'
 import { useStore } from '../store'
 import { composerBox } from '../composerBox'
-import { pinToBottom } from '../scrollPin'
-import { filterEntries, recentProjects, triggerAt } from '../derive.mts'
+import { baseName, filterEntries, recentProjects, tildePath, triggerAt } from '../derive.mts'
 import Autocomplete, { type Suggestion } from './Autocomplete'
 import MarkdownInput from './MarkdownInput'
 import type { MenuItem } from './Menu'
 import Picker from './Picker'
 import { ContextCard, ContextRing } from './ContextRing'
 import { BackgroundTaskCard, BackgroundTaskTray } from './BackgroundTasks'
+import QueueTray from './QueueTray'
 import { useContextUsage } from '../useContextUsage'
 
 /* The CURRENT sentinel lived here — a fake <option> for "whatever the session is
@@ -220,14 +221,10 @@ const MODE_HINT: Partial<Record<PermissionMode, string>> = {
  */
 type Panel = { kind: 'context' } | { kind: 'task'; taskId: string } | null
 
-/** Only the four types the API accepts get this far — see ACCEPTED below. */
-interface Attachment {
-  id: string
-  mediaType: ImageMediaType
-  /** base64, no data: prefix — that's what the wire format wants. */
-  data: string
-  name: string
-}
+/* The `Attachment` interface lived here. It is in shared/types.ts now, because
+   the store parks it in a per-session draft and could not import it from a
+   component it is itself imported by. Only the four types the API accepts ever
+   become one — see ACCEPTED above. */
 
 export default function Composer({ session }: { session: SessionMeta }): React.JSX.Element {
   const send = useStore((s) => s.send)
@@ -291,6 +288,8 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
    */
   const [wantFor, setWantFor] = useState<string | null>(null)
   const setComposerDirty = useStore((s) => s.setComposerDirty)
+  const saveDraft = useStore((s) => s.saveDraft)
+  const dropDraft = useStore((s) => s.dropDraft)
 
   /** Ticked for THIS session, and it still has somewhere to go. */
   const wantWorktree = wantFor === session.id && fresh && !session.worktree
@@ -305,6 +304,38 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
      notify every subscriber in the app; this writes at most twice per message,
      because setComposerDirty short-circuits when nothing flipped. */
   useEffect(() => setComposerDirty(!empty), [empty, setComposerDirty])
+
+  /* PER-SESSION DRAFTS, without a store write per keystroke.
+
+     `text`, `attachments` and `caret` stay exactly where they were — local
+     state — and the store is touched only when the session under the composer
+     changes. This ref is what makes that possible: written during render, so the
+     effect below can read the OUTGOING session's contents without listing them
+     in its deps and re-running on every character.
+
+     Safe to write here because the session change does not touch `text`: the
+     render that first sees the new session still holds the old one's draft,
+     which is precisely what has to be filed away. */
+  const live = useRef({ text, attachments, caret })
+  live.current = { text, attachments, caret }
+  const shown = useRef(session.id)
+
+  useEffect(() => {
+    const prev = shown.current
+    if (prev === session.id) return
+    shown.current = session.id
+    // Not for a session that has gone away under us — which is exactly what the
+    // worktree hop does, closing the old conversation the moment the new one is
+    // open. Filing its draft would leave a row nothing can ever read again.
+    if (useStore.getState().sessions.some((x) => x.id === prev)) saveDraft(prev, live.current)
+    // getState rather than a subscription: this reads the map exactly once per
+    // switch, and subscribing would re-render the composer whenever any OTHER
+    // session's draft was filed.
+    const next = useStore.getState().drafts[session.id]
+    setText(next?.text ?? '')
+    setAttachments(next?.attachments ?? [])
+    setCaret(next?.caret ?? 0)
+  }, [session.id, saveDraft])
 
   // Commands are fixed for the session's lifetime, so once is enough.
   useEffect(() => {
@@ -398,10 +429,10 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     const t = text.trim()
     if (!t && attachments.length === 0) return
 
-    // Land at the bottom on the frame the message actually appears — see
-    // scrollPin. No branch for the busy case: this is the same function whether
-    // the agent is running, and a queued message renders as a real user item.
-    pinToBottom()
+    /* pinToBottom() used to fire here. It lives in the store's onQueue handler
+       now, on the 'started' edge — a queued message no longer enters the
+       transcript at all, so on the busy path there was nothing at the bottom to
+       scroll to and the pin only stole the reader's place in the answer. */
 
     // Stay a plain string unless there's actually something attached — the
     // block form is only needed for images.
@@ -426,10 +457,13 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     clearDraft()
   }
 
+  /** Empties the field AND the session's parked copy — a sent message must not
+   *  come back when you switch away and return. */
   const clearDraft = (): void => {
     setText('')
     setAttachments([])
     setCaret(0)
+    dropDraft(session.id)
   }
 
   /**
@@ -450,8 +484,9 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
    * already put git's reason in the rail notice.
    *
    * No id threading: `send` reads the store's activeId, which openPath has
-   * already repointed at the new session, and the composer is unkeyed so its
-   * text survives the swap.
+   * already repointed at the new session. The message itself is `content`,
+   * captured before any of this — it does NOT ride on the composer's text, which
+   * the per-session draft swap clears the moment the session changes under it.
    */
   const hopThenSend = async (content: SendContent): Promise<void> => {
     // Not a worktree yet, so cwd is the project directory — the right base. The
@@ -515,7 +550,7 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
      with nothing in it. The field grows to 140px as you type either way. */
 
   const root = session.worktree?.repoRoot ?? session.cwd
-  const projectName = root.split('/').filter(Boolean).pop() ?? 'project'
+  const projectName = baseName(root) || 'project'
   const stemPath = (p: string): string => (p.endsWith('/') ? p.slice(0, -1) : p)
 
   const recents = useMemo(
@@ -527,7 +562,10 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     ...recents.map((p) => ({
       id: p.hint,
       label: p.label,
-      hint: p.hint,
+      // `~/code/foreman`. The id and the checked test stay on the RAW path —
+      // this is a display string, and matching on it would compare a shortened
+      // path against an absolute `root`.
+      hint: tildePath(p.hint, window.foreman.homeDir),
       icon: <FolderOpen size={14} />,
       checked: stemPath(p.hint) === stemPath(root),
       onSelect: () => void openPath(p.hint),
@@ -755,6 +793,11 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
       )}
 
       {bgTray}
+
+      {/* Same slot, and for the same reason: what is queued is status about the
+          composer, not part of the field. Its own component so its editor state
+          cannot force a composer re-render. */}
+      <QueueTray sessionId={session.id} />
 
       {/* THE ONE CARD SLOT — see the Panel type. The `compact &&` gate is gone
           with it: the ring exists in both shapes now, so a card that could only

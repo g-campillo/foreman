@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
+import { homedir } from 'node:os'
 import {
   IPC,
   type BranchList,
@@ -55,6 +56,11 @@ const api = {
     ipcRenderer.invoke(IPC.sessionSend, { sessionId, content }),
   cancelQueued: (sessionId: string, itemId: string) =>
     ipcRenderer.invoke(IPC.sessionCancelQueued, { sessionId, itemId }),
+  /* Annotated, for the reason reconnectMcp gives above: false means the message
+     had already left the queue, and the tray has to surface that rather than
+     drop an edit the user made. */
+  editQueued: (sessionId: string, itemId: string, content: unknown): Promise<boolean> =>
+    ipcRenderer.invoke(IPC.sessionEditQueued, { sessionId, itemId, content }),
   supportedCommands: (sessionId: string) =>
     ipcRenderer.invoke(IPC.sessionCommands, { sessionId }),
   projectFiles: (sessionId: string) => ipcRenderer.invoke(IPC.sessionFiles, { sessionId }),
@@ -156,6 +162,19 @@ const api = {
   killPty: (sessionId: string) => ipcRenderer.invoke(IPC.ptyKill, { sessionId }),
 
   // misc
+  /**
+   * The user's home directory, as a plain string.
+   *
+   * A VALUE, not a channel — resolved once when this module loads and frozen
+   * into the bridge. It never changes for the life of the process, so an IPC
+   * round trip would be an async call and a loading state for a constant.
+   *
+   * Possible at all because `sandbox: false` in main/index.ts: preload has real
+   * Node here even with contextIsolation on. `relPath`'s docblock in derive.mts
+   * used to decline a `~` case on the grounds that "the preload surface is IPC
+   * only", which stopped being true.
+   */
+  homeDir: homedir(),
   pendingRequests: () => ipcRenderer.invoke(IPC.pendingList),
   pickDirectory: () => ipcRenderer.invoke(IPC.pickDirectory),
   initialProject: () => ipcRenderer.invoke('app:initialProject'),

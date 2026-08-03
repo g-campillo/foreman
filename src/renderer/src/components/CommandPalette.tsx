@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PermissionMode } from '../../../shared/types'
 import { useStore } from '../store'
-import { filterEntries } from '../derive.mts'
+import { filterEntries, tildePath } from '../derive.mts'
 import { MODES } from './Composer'
 
 interface Entry {
@@ -52,7 +52,7 @@ export default function CommandPalette({
       out.push({
         id: `session:${s.id}`,
         label: s.title,
-        hint: s.cwd,
+        hint: tildePath(s.cwd, window.foreman.homeDir),
         group: 'Sessions',
         run: () => select(s.id),
       })

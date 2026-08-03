@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Check, ChevronLeft, FileText, Pencil, SendHorizontal, Users, X, Zap } from 'lucide-react'
 import type { PermissionMode, PermissionRequest } from '../../../shared/types'
-import { PLAN_FEEDBACK_PREFIX, planTitle, type PlanProposal } from '../derive.mts'
+import { PLAN_FEEDBACK_PREFIX, planTitle, tildePath, type PlanProposal } from '../derive.mts'
 import { pinToBottom } from '../scrollPin'
 import Markdown from './Markdown'
 
@@ -136,9 +136,13 @@ export default function PlanCard({
                 </>
               ) : (
                 <>
+                  {/* The path was a one-off `^.*\/\.claude\/` rewrite, which
+                      only ever worked for a plan written under ~/.claude and
+                      silently did nothing for one written anywhere else.
+                      tildePath subsumes it and is right for both. */}
                   {plan.filePath && (
                     <span className="plan-path" title={plan.filePath}>
-                      {plan.filePath.replace(/^.*\/\.claude\//, '~/.claude/')}
+                      {tildePath(plan.filePath, window.foreman.homeDir)}
                     </span>
                   )}
                   <div className="plan-buttons">

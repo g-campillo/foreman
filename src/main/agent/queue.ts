@@ -7,6 +7,19 @@ export interface InputQueue extends AsyncIterable<SDKUserMessage> {
   push(content: Content, id: string): void
   /** True if the message was still queued and has now been dropped. */
   cancel(id: string): boolean
+  /**
+   * Rewrite a queued message's content IN PLACE, keeping its position.
+   *
+   * In place rather than cancel-and-re-push, and that is the whole reason this
+   * exists: two messages queued behind a long turn are a sequence the user
+   * chose, and editing the first must not send it after the second. False when
+   * the message has already been handed to the SDK, which is the race the tray's
+   * editor has to close on.
+   */
+  replace(id: string, content: Content): boolean
+  /** What is queued under `id` right now, or null once it has left. The edit
+   *  path reads it to carry the message's images across a text-only rewrite. */
+  peek(id: string): Content | null
   /** While closed, messages accumulate instead of being handed to the SDK. */
   setGate(open: boolean): void
   end(): void
@@ -63,6 +76,18 @@ export function createInputQueue(onDequeue?: (id: string) => void): InputQueue {
       if (i === -1) return false
       pending.splice(i, 1)
       return true
+    },
+    replace(id: string, content: Content) {
+      const entry = pending.find((p) => p.id === id)
+      if (!entry) return false
+      // The message object, not the entry: `uuid` is the id the renderer already
+      // drew and what interrupt()'s still_queued receipt lists, so it has to
+      // survive the edit untouched.
+      entry.msg = { ...entry.msg, message: { ...entry.msg.message, content } }
+      return true
+    },
+    peek(id: string) {
+      return pending.find((p) => p.id === id)?.msg.message.content ?? null
     },
     setGate(open: boolean) {
       gateOpen = open

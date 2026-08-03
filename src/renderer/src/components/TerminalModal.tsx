@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import type { SessionMeta } from '../../../shared/types'
+import { tildePath } from '../derive.mts'
 import TerminalPane from './TerminalPane'
 
 /**
@@ -54,8 +55,13 @@ export default function TerminalModal({
     <div className="plan-scrim term-scrim">
       <div className="plan-modal term-modal" role="dialog" aria-label="Terminal">
         <header className="plan-head term-head">
+          {/* `~/code/foreman`, not `/Users/…/code/foreman`. `.term-title`
+              ellipsises the TAIL, so the full path spent its width on the one
+              part that is identical for every project and then cut off the
+              project name — the only part worth reading. `title` keeps the
+              absolute path for anyone who wants it. */}
           <h2 className="plan-title term-title" title={session.cwd}>
-            {session.cwd}
+            {tildePath(session.cwd, window.foreman.homeDir)}
           </h2>
           <span className="spacer" />
           {/* The honest answer to "why didn't Escape close this", said before
