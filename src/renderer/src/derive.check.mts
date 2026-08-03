@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem, SessionMeta } from '../../shared/types'
-import { activityOf, answeredQuestions, ANSWER_PREFIX, armedApproval, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, swatch, level, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, buildTree, focusTarget, authorEdits, resolveAnchors } from './derive.mts'
+import { activityOf, answeredQuestions, ANSWER_PREFIX, armedApproval, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, swatch, level, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, buildTree, focusTarget, authorEdits, resolveAnchors, mcpName, titleCase, summarise, editStat, toolFailed, groupRuns, runSummary } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -16,6 +16,24 @@ const tool = (name: string, input: unknown, result?: string): ChatItem => ({
   name,
   input,
   status: 'done',
+  result,
+})
+/** The same, with the status left open. `tool()` hardcodes 'done', and the run
+ *  head is entirely about what is still in flight and what failed.
+ *
+ *  Returns the narrowed variant rather than ChatItem, because toolFailed takes
+ *  one — and a tool item is still a ChatItem everywhere else. */
+const toolAt = (
+  name: string,
+  status: 'pending' | 'error' | 'done',
+  input: unknown = {},
+  result?: string,
+): Extract<ChatItem, { kind: 'tool' }> => ({
+  id: `i${++seq}`,
+  kind: 'tool',
+  name,
+  input,
+  status,
   result,
 })
 const todo = (content: string, status: string): unknown => ({ content, status })
@@ -560,6 +578,25 @@ assert.equal(toolLabel('mcp__server'), 'MCP server', 'no tool segment')
 assert.equal(toolLabel('mcp__'), 'mcp__', 'no server segment either')
 assert.equal(toolLabel('mcp__s__a__b'), 'MCP s A B', 'extra __ belongs to the tool')
 
+// ------------------------------------------------------------------- mcpName
+
+// toolLabel is built on this now, so every degenerate shape has to agree with
+// the label the row above still prints — and the transcript renders the two
+// segments separately, behind the MCP mark, so an empty or wrong split shows up
+// as a glyph with nothing after it.
+assert.deepEqual(mcpName('mcp__brain__brain_get'), { server: 'brain', tool: 'brain_get' })
+assert.deepEqual(mcpName('mcp__server'), { server: 'server', tool: '' }, 'no tool segment is valid')
+assert.equal(mcpName('mcp__'), null, 'no server segment is not')
+assert.deepEqual(mcpName('mcp__s__a__b'), { server: 's', tool: 'a__b' }, 'extra __ is the tool')
+assert.equal(mcpName(''), null, 'an empty name must not throw')
+for (const name of ['Read', 'Bash', 'mcp', 'mcp_x__y'])
+  assert.equal(mcpName(name), null, `not MCP: ${name}`)
+
+// The server keeps its own casing and underscores; only the tool is prose.
+assert.equal(titleCase('get_file_content'), 'Get File Content')
+assert.equal(titleCase('query-docs'), 'Query Docs', 'hyphens separate words too')
+assert.equal(titleCase(''), '', 'degenerate segment must not throw')
+
 // ------------------------------------------------------------------- toolVerb
 
 // The transcript renders a call as a sentence, and the tense IS the running
@@ -589,6 +626,95 @@ assert.equal(toolVerb('SomeFutureTool', true), 'SomeFutureTool', 'no tense to of
 assert.equal(toolVerb('ExitPlanMode'), 'Plan')
 assert.equal(toolVerb(''), '', 'degenerate name must not throw')
 
+// ----------------------------------------------------------------- summarise
+
+// Checkable for the first time — it lived in ToolLine.tsx, which node cannot
+// load. Every branch below exists because its DEFAULT would put something
+// unreadable on the row: raw JSON, a whole plan, or a subagent's instructions.
+assert.equal(summarise('Bash', { command: 'ls -la' }), 'ls -la')
+assert.equal(summarise('Read', { file_path: '/a/b/c.ts' }, '/a/b'), 'c.ts', 'paths shorten to cwd')
+assert.equal(
+  summarise('Read', { file_path: '/a/b/c.ts' }),
+  '/a/b/c.ts',
+  'no cwd means absolute — ApprovalCard must not abbreviate a path you are being asked to trust',
+)
+assert.equal(summarise('Grep', { pattern: 'x', path: '/a' }), 'x')
+assert.equal(summarise('NotebookEdit', { notebook_path: '/a/n.ipynb' }, '/a'), 'n.ipynb')
+// The subagent tool under both of its names, and the whole reason it is not
+// left to the default branch: `prompt` is the subagent's entire instructions.
+for (const name of ['Agent', 'Task'])
+  assert.equal(
+    summarise(name, { description: 'find the bug', subagent_type: 'explore', prompt: 'x'.repeat(400) }),
+    'explore: find the bug',
+    `subagent: ${name}`,
+  )
+assert.equal(summarise('Agent', { description: 'just this' }), 'just this', 'either half alone')
+// The plan is tens of kilobytes; the default branch would JSON-escape the first
+// 120 characters of it into a one-line gist.
+assert.equal(summarise('ExitPlanMode', { plan: '# Ship it\n\nbody' }), 'Ship it')
+// MCP tools land in the default branch. Named fields first, then any short
+// string — this is most of what made a transcript of MCP calls unreadable.
+assert.equal(summarise('mcp__brain__brain_get', { path: '/a/b/n.md' }, '/a/b'), 'n.md')
+assert.equal(summarise('mcp__ctx__docs', { query: 'react hooks' }), 'react hooks')
+assert.equal(summarise('mcp__x__y', { whatever: 'short enough' }), 'short enough')
+assert.equal(summarise('mcp__x__y', { blob: 'x'.repeat(200) }), '', 'a long blob is not a gist')
+// Malformed input must return '' rather than throw inside a render.
+for (const bad of [null, undefined, 42, 'str', []])
+  for (const name of ['Bash', 'Read', 'Agent', 'ExitPlanMode', 'mcp__x__y'])
+    assert.doesNotThrow(() => summarise(name, bad), `${name} on ${JSON.stringify(bad)}`)
+
+// ------------------------------------------------------------------ editStat
+
+{
+  const edit = toolAt('Edit', 'done', {
+    file_path: '/a.ts',
+    old_string: 'a\nb',
+    new_string: 'a\nc',
+  })
+  assert.deepEqual(editStat(edit), { added: 1, removed: 1 })
+  // Non-edit tools cost nothing and report nothing.
+  assert.deepEqual(editStat(toolAt('Read', 'done', { file_path: '/a.ts' })), {
+    added: 0,
+    removed: 0,
+  })
+
+  // THE CACHE, which exists because the run head re-sums this on every streaming
+  // delta and the diff underneath is O(ND). Same object, same result — and
+  // literally the same object back, which is what proves it did not re-diff.
+  assert.equal(editStat(edit), editStat(edit), 'memoised on the item')
+
+  // Keyed on the ITEM, not on item.id. The store replaces the object when a call
+  // is patched, so a changed call has to miss — an id key would serve a stale
+  // `+N −M` forever with no way to notice.
+  const patched = toolAt('Edit', 'done', {
+    file_path: '/a.ts',
+    old_string: 'a\nb',
+    new_string: 'a\nc\nd',
+  })
+  patched.id = edit.id
+  assert.deepEqual(editStat(patched), { added: 2, removed: 1 }, 'a new object re-diffs')
+}
+
+// ---------------------------------------------------------------- toolFailed
+
+// The one place that decides a call failed, so the row's colour and the folded
+// run head's count cannot disagree.
+assert.equal(toolFailed(toolAt('Read', 'error')), true)
+assert.equal(toolFailed(toolAt('Read', 'done')), false)
+assert.equal(toolFailed(toolAt('Read', 'pending')), false)
+// THE CASE THIS EXISTS FOR: an answer travels on the deny channel, so the CLI
+// flags it is_error. It succeeded.
+assert.equal(
+  toolFailed(toolAt('AskUserQuestion', 'error', {}, `${ANSWER_PREFIX}\nq → a`)),
+  false,
+  'an answered question is not a failure',
+)
+// ...but a SKIP carries no answer payload and stays one.
+assert.equal(
+  toolFailed(toolAt('AskUserQuestion', 'error', {}, "The user doesn't want to proceed")),
+  true,
+)
+
 // -------------------------------------------------------------- groupTranscript
 
 {
@@ -611,7 +737,11 @@ assert.equal(toolVerb(''), '', 'degenerate name must not throw')
 
 // An empty transcript and an all-tools one are the boundary cases.
 assert.deepEqual(transcriptRows([]), [])
-assert.equal(transcriptRows([tool('Read', {}), tool('Read', {})]).length, 2, 'tools no longer fold')
+assert.equal(
+  transcriptRows([tool('Read', {}), tool('Read', {})]).length,
+  2,
+  'transcriptRows does not fold tool runs — groupRuns does, one layer up',
+)
 
 // Checklist events produce no row — TodoStrip renders the fold of them, and a
 // row per event would say nothing the strip doesn't say better. Critically,
@@ -707,6 +837,210 @@ assert.equal(transcriptRows([tool('Read', {}), tool('Read', {})]).length, 2, 'to
 }
 
 assert.deepEqual(groupTurns([]), [], 'empty transcript')
+
+// ------------------------------------------------------------- groupRuns
+
+{
+  const say = (id: string): ChatItem => ({ id, kind: 'assistant', text: 'x' })
+  const kinds = (rows: ChatItem[]): string[] =>
+    groupRuns(transcriptRows(rows)).map((n) => (n.kind === 'run' ? `run${n.rows.length}` : 'row'))
+
+  // THE DECISION THIS FILE EXISTS TO PIN: a lone tool call is a RUN of one, not
+  // a row. If it were a row that became a run when the second call landed,
+  // React would see a changed element type at the same key, unmount the subtree
+  // and destroy ToolLine's open/allLines state — so a diff the user had just
+  // opened would vanish under them as the agent kept working.
+  assert.deepEqual(kinds([tool('Read', {})]), ['run1'], 'one call still emits a run node')
+  assert.deepEqual(kinds([tool('Read', {}), tool('Bash', {})]), ['run2'])
+
+  // Everything that is not a mechanical step breaks the run — those sentences
+  // are what the fold exists to put back on screen.
+  assert.deepEqual(kinds([tool('Read', {}), say('a1'), tool('Bash', {})]), ['run1', 'row', 'run1'])
+  assert.deepEqual(
+    kinds([tool('Read', {}), { id: 't', kind: 'thinking', text: 'hm' }, tool('Bash', {})]),
+    ['run1', 'row', 'run1'],
+  )
+  assert.deepEqual(
+    kinds([tool('Read', {}), { id: 'u', kind: 'user', text: 'q' }, tool('Bash', {})]),
+    ['run1', 'row', 'run1'],
+  )
+  // A record row is a conversation with the user, not a step.
+  assert.deepEqual(
+    kinds([tool('Read', {}), tool('ExitPlanMode', { plan: '# x' }), tool('Bash', {})]),
+    ['run1', 'row', 'run1'],
+  )
+  // Subagents stay out under BOTH names: a delegation already carries a live
+  // second line and a whole nested transcript, so counting it as one of
+  // "12 steps" would hide the largest thing in the turn behind the smallest
+  // possible summary.
+  for (const name of ['Agent', 'Task'])
+    assert.deepEqual(
+      kinds([tool('Read', {}), tool(name, {}), tool('Bash', {})]),
+      ['run1', 'row', 'run1'],
+      `subagent breaks a run: ${name}`,
+    )
+
+  // THE INVARIANT, pinned as behaviour over a growing run rather than as one
+  // node's kind. Every prefix of the same appending run has to produce ONE node,
+  // of the SAME kind, under the SAME id, holding the same first row — because
+  // that id is the React key and that kind is the element type. A change in
+  // either is an unmount, and an unmount is ToolLine's open diff disappearing
+  // while the user reads it.
+  //
+  // This is only half the guarantee. The other half is not expressible here:
+  // a lone row renders with no head and therefore open, so the head it grows at
+  // n = 2 folds it. ToolRun answers that by HIDING its rows rather than dropping
+  // them — see the FoldedContext provider there. Keeping this node stable is
+  // what makes that hiding possible; it does not achieve it alone.
+  const first = tool('Read', {})
+  const appended: ChatItem[] = [first]
+  for (const next of [tool('Bash', {}), tool('Edit', {}), tool('Grep', {}), tool('Read', {})]) {
+    const nodes = groupRuns(transcriptRows(appended))
+    assert.equal(nodes.length, 1, `one node at n=${appended.length}`)
+    assert.equal(nodes[0]!.kind, 'run', `still a run at n=${appended.length}`)
+    assert.equal(
+      nodes[0]!.kind === 'run' && nodes[0].id,
+      first.id,
+      `run id unchanged at n=${appended.length}`,
+    )
+    assert.equal(
+      nodes[0]!.kind === 'run' && nodes[0].rows[0]!.item.id,
+      first.id,
+      `first row unchanged at n=${appended.length}`,
+    )
+    appended.push(next)
+  }
+
+  assert.deepEqual(groupRuns([]), [], 'empty work, empty nodes')
+}
+
+// ------------------------------------------------------------- runSummary
+
+{
+  const rows = (items: ChatItem[]) => transcriptRows(items)
+  const chips = (items: ChatItem[]): string[] =>
+    runSummary(rows(items)).groups.map((g) => `${g.n} ${g.label}`)
+
+  // Singular and plural come off a table for the same reason the verbs do:
+  // `1 reads` is the kind of wrong that makes the whole line look generated.
+  assert.deepEqual(chips([tool('Read', {})]), ['1 read'])
+  assert.deepEqual(chips([tool('Read', {}), tool('Read', {})]), ['2 reads'])
+  assert.deepEqual(chips([tool('Bash', {})]), ['1 command'])
+  assert.deepEqual(chips([tool('ToolSearch', {})]), ['1 tool load'])
+  // Coarser than the verbs: every edit tool is one noun, and Glob and Grep are
+  // both searches. The head counts kinds of work; the rows are the manifest.
+  assert.deepEqual(chips([tool('Edit', {}), tool('Write', {}), tool('NotebookEdit', {})]), [
+    '3 edits',
+  ])
+  assert.deepEqual(chips([tool('Glob', {}), tool('Grep', {})]), ['2 searches'])
+  // MCP groups by SERVER, spelled exactly as the user wrote it in their config.
+  assert.deepEqual(
+    chips([tool('mcp__brain__brain_get', {}), tool('mcp__brain__brain_add', {})]),
+    ['2 brain calls'],
+  )
+  assert.deepEqual(chips([tool('mcp__My_Server__x', {})]), ['1 My_Server call'], 'server verbatim')
+  // Unknown tools fall back to their own name rather than an invented noun —
+  // the same rule TOOL_VERB follows, for the same reason.
+  assert.deepEqual(chips([tool('SomeFutureTool', {})]), ['1 SomeFutureTool'])
+  // A server that happens to be called Read must not collide with the tool.
+  assert.deepEqual(chips([tool('Read', {}), tool('mcp__Read__x', {})]), ['1 read', '1 Read call'])
+
+  // ORDER IS ALWAYS FIRST APPEARANCE, whatever the counts are. A bigger group
+  // appearing later does NOT jump the queue.
+  assert.deepEqual(
+    chips([tool('Bash', {}), tool('Read', {}), tool('Read', {}), tool('Edit', {})]),
+    ['1 command', '2 reads', '1 edit'],
+  )
+
+  // THE REGRESSION THIS PINS. Ordering used to flip to count-descending whenever
+  // nothing was pending — which is the gap between EVERY tool result and the
+  // next call, not some end-of-run state. The chips re-sorted and snapped back
+  // several times a turn, on a line the user is reading. The same rows, one
+  // snapshot mid-call and one after it lands, must read identically.
+  const pendingSnap = [
+    tool('Bash', {}),
+    tool('Read', {}),
+    tool('Read', {}),
+    toolAt('Edit', 'pending'),
+  ]
+  const settledSnap = [tool('Bash', {}), tool('Read', {}), tool('Read', {}), tool('Edit', {})]
+  assert.deepEqual(chips(pendingSnap), chips(settledSnap), 'order does not depend on what is live')
+
+  // Selection is still by COUNT, and only the presentation is by appearance:
+  // past five kinds, the five biggest survive — in the order they first
+  // appeared. `air` (1) is the smallest and is the one that drops.
+  const six = [
+    tool('mcp__air__x', {}),
+    tool('Bash', {}),
+    tool('Bash', {}),
+    tool('Read', {}),
+    tool('Read', {}),
+    tool('Edit', {}),
+    tool('Edit', {}),
+    tool('Glob', {}),
+    tool('Glob', {}),
+    tool('Skill', {}),
+    tool('Skill', {}),
+  ]
+  assert.deepEqual(chips(six), ['2 commands', '2 reads', '2 edits', '2 searches', '2 skills'])
+  // ...and the remainder is what the head prints as `+N more`, counting CALLS.
+  {
+    const s = runSummary(rows(six))
+    assert.equal(s.steps - s.groups.reduce((n, g) => n + g.n, 0), 1, 'the dropped call is counted')
+  }
+
+  // The live row is the NEWEST pending one — several calls can be in flight and
+  // the one worth naming is the last thing the agent said it was doing.
+  const p1 = toolAt('Read', 'pending')
+  const p2 = toolAt('Bash', 'pending')
+  assert.equal(runSummary(rows([p1, p2])).live?.item.id, p2.id)
+  assert.equal(runSummary(rows([tool('Read', {})])).live, null, 'nothing pending, no live row')
+
+  // `failed` is toolFailed's, so the head and the rows under it cannot disagree
+  // — including about an answered question, which comes back is_error.
+  const answered = toolAt('AskUserQuestion', 'error', {}, `${ANSWER_PREFIX}\nq → a`)
+  assert.equal(runSummary(rows([toolAt('Read', 'error'), answered])).failed, 1)
+  assert.equal(runSummary(rows([tool('Read', {})])).failed, 0)
+
+  // The diff is summed across the run, so folding does not swallow the only
+  // colour the transcript has.
+  const edits = [
+    tool('Edit', { file_path: '/a.ts', old_string: 'a\nb', new_string: 'a\nc' }),
+    tool('Write', { file_path: '/b.ts', content: 'one\ntwo\n' }),
+  ]
+  const sum = runSummary(rows(edits))
+  assert.equal(sum.added, 3, '1 replaced line + 2 written lines')
+  assert.equal(sum.removed, 1)
+
+  // `steps` counts every call, groups are capped at five, and the difference is
+  // exactly the `+N more` remainder — or the arithmetic on the head stops adding
+  // up in front of the user.
+  const mixed = [
+    tool('Read', {}),
+    tool('Bash', {}),
+    tool('Edit', {}),
+    tool('Glob', {}),
+    tool('WebFetch', {}),
+    tool('Skill', {}),
+    tool('SomeFutureTool', {}),
+  ]
+  const many = runSummary(rows(mixed))
+  assert.equal(many.steps, 7)
+  assert.equal(many.groups.length, 5, 'never more than five chips')
+  assert.equal(many.groups.reduce((n, g) => n + g.n, 0), 5)
+  // Under the cap, the groups account for every call.
+  const few = runSummary(rows([tool('Read', {}), tool('Bash', {}), tool('Bash', {})]))
+  assert.equal(few.groups.reduce((n, g) => n + g.n, 0), few.steps)
+
+  assert.deepEqual(runSummary([]), {
+    steps: 0,
+    groups: [],
+    failed: 0,
+    added: 0,
+    removed: 0,
+    live: null,
+  })
+}
 
 // -------------------------------------------------------------- toolRender
 

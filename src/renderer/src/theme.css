@@ -1092,6 +1092,74 @@ select {
   contain-intrinsic-size: auto 120px;
 }
 
+/* A tool row is ONE LINE — about 24px, not 120. The guess only matters until a
+   row has been rendered once, and it is wrong by 5x for the most numerous row in
+   the transcript: twenty never-rendered tool rows reserve ~2400px where ~450px
+   is the truth, which is a scrollbar that jumps as you scroll past them.
+
+   This is only the guess, and the guess is all a folded row has. `auto`'s
+   remembered size is unset whenever the element generates no principal box, and
+   `display: none` is the canonical case of that — so hiding a run's rows drops
+   their remembered sizes exactly as unmounting them would. That is why the
+   number here has to be right rather than merely conservative: unfolding a run
+   lays every row out from this guess, not from what it measured last time.
+   Hiding rather than unmounting is still correct, but for React state, not for
+   this — see ToolRun. */
+.convo > [data-item-id]:has(> .tool) {
+  contain-intrinsic-size: auto 24px;
+}
+
+/* The rows of a collapsed run.
+
+   NOT OPTIONAL, and not the UA's job: `[hidden] { display: none }` comes from
+   the user-agent stylesheet at specificity (0,1,0) and loses outright to
+   `.convo > [data-item-id] { display: flex }` above. Without this the
+   attribute would be set, announced as hidden, and still painted — the fold
+   would simply not work. */
+.convo > [data-item-id][hidden] {
+  display: none;
+}
+
+/* Jump back to the newest output. Sticky rather than absolute because .convo
+   cannot be wrapped: `.pane-fill:has(> .convo > .empty)` selects it as a direct
+   child, and so does the composer rule beside it.
+
+   ALWAYS MOUNTED, opacity-toggled, and taking no space at all. Three traps in
+   that one sentence, all of them met here:
+
+    - `height: 0` plus a flex parent would stretch the button to zero height
+      (`align-items: stretch` is the default), so its fill and radius would
+      paint nothing. Hence a real height and a negative margin to pay for it.
+    - anything overflowing the block-END of a scroll container becomes
+      scrollable overflow, which would permanently push the last message up off
+      the bottom of the transcript.
+    - mounting it conditionally changes `scrollHeight` right at the 60px
+      threshold, so dismissing the arrow would need ~47px more scroll than
+      summoning it did — a hysteresis nobody can explain but everybody feels.
+
+   `align-self: center` also beats `.convo > * { flex-shrink: 0 }`'s stretch
+   without needing an inner flex container to centre it in. */
+.scroll-down {
+  position: sticky;
+  bottom: var(--sp-2);
+  align-self: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  margin-block: calc(-28px - var(--convo-gap)) 0;
+  z-index: 2;
+  /* Opaque, because it floats over live text rather than beside it. */
+  background: rgb(var(--surface-3));
+  box-shadow: var(--shadow-sm);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+.scroll-down[data-show] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
 /* A hairline card spanning the full column.
    Cursor's .composer-human-message: 4%-foreground fill, 12%-foreground border,
    one uniform 14px radius.
@@ -1239,8 +1307,6 @@ select {
   color: rgb(var(--danger));
 }
 
-/* A run of consecutive tool calls, folded to one row. Flat and quiet: it is a
-   log of what happened, and it must not compete with the conversation. */
 /* A tool the USER took part in: AskUserQuestion, ExitPlanMode. Not a card —
    the live prompt was a QuestionCard or PlanCard, and this is the one-line
    record left behind so a resumed conversation still shows what was chosen. */
@@ -1324,6 +1390,89 @@ select {
   transform: rotate(180deg);
 }
 
+/* The run header, and the second fold — `6 steps · 3 reads, 2 commands ⌄` over
+   a dim line naming whatever is running right now.
+
+   The wrapper exists for that second line. `.tool-status` is designed as a child
+   of the zero-gap `.tool` column; as a bare `.convo` child it would collect
+   --convo-gap and drift away from the head it belongs to. `gap: 0` for the same
+   reason. align-self keeps the pair hugging its own text, exactly as
+   .turn-head does — a hover fill spanning the column reads as a selected row —
+   and max-width stops a long live line from pushing the column wider than the
+   transcript. */
+.run {
+  display: flex;
+  flex-direction: column;
+  align-self: flex-start;
+  gap: 0;
+  max-width: 100%;
+  min-width: 0;
+}
+/* Deliberately the same treatment as .turn-head: they are the same gesture at
+   two scales, and giving the inner one its own look would read as a different
+   kind of control. */
+.run-head {
+  align-self: flex-start;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  margin-left: calc(var(--sp-1) * -1);
+  padding: 1px var(--sp-1);
+  border-radius: var(--r-sm);
+  font-size: var(--fs-base);
+  line-height: var(--convo-lh);
+  color: rgb(var(--text-faint));
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  transition:
+    background 0.12s ease,
+    color 0.12s ease;
+}
+.run-head:hover {
+  background: rgb(var(--fill-hover));
+  color: rgb(var(--text-dim));
+}
+/* The breakdown is the first thing to give up room: the step count, the diff
+   stat and the failure count are all short and all load-bearing. */
+.run-groups {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* The two short, load-bearing things to the right of the breakdown. `flex: none`
+   on both is what makes the claim above true: without it they are the first
+   items a narrow pane squeezes, and the diff stat wraps before .run-groups —
+   which can ellipsise — has given up a single character.
+
+   .run-failed is keyed off the head's attribute rather than the class alone,
+   mirroring `.tool-line[data-failed] .tool-arg`: the head carries the state, and
+   the count is only its rendering of it. */
+.run-head .diff-stat {
+  flex: none;
+  white-space: nowrap;
+}
+.run-failed {
+  flex: none;
+  white-space: nowrap;
+}
+.run-head[data-failed] .run-failed {
+  color: rgb(var(--danger));
+}
+.run-chevron {
+  opacity: 0.7;
+  transition: transform 0.12s ease;
+}
+.run-head[aria-expanded='true'] .run-chevron {
+  transform: rotate(180deg);
+}
+/* .tool-status ellipsises, which does nothing inside a flex column until the
+   item is allowed to be narrower than its content. */
+.run > .tool-status {
+  min-width: 0;
+}
+
 /* A tool call is a line of prose now, not a card.
 
    The border, radius and fill are gone; so are the icon, the mono font and the
@@ -1364,6 +1513,21 @@ button.tool-line:hover {
 .tool-verb {
   flex: 0 0 auto;
   color: rgb(var(--text-dim));
+}
+
+/* The MCP mark, standing in for the literal word `MCP` at the head of an MCP
+   row's verb.
+
+   .tool-line is `align-items: baseline`, and an inline SVG sits with its BOTTOM
+   EDGE on the baseline — so untouched it rides high above the text beside it.
+   The fix is on the glyph, not on the verb: making .tool-verb an inline-flex box
+   would fix this one row and break every other, because an inline-flex box takes
+   its baseline from its first item and an SVG has none, so the whole verb would
+   desynchronise from .tool-arg on every row in the transcript. */
+.tool-mark {
+  display: inline-block;
+  vertical-align: -0.15em;
+  margin-right: 4px;
 }
 .tool-arg {
   flex: 0 1 auto;
@@ -2394,8 +2558,9 @@ button.tool-line:hover {
   font-size: var(--fs-sm);
 }
 
-/* Announced, not shown. The ring is the only control in the app whose whole
-   content is a shape, so it is the only one that needs this. */
+/* Announced, not shown. For the two places where a shape carries meaning no
+   text repeats: the context ring, whose whole content is a gauge, and the MCP
+   mark that replaced the literal word `MCP` at the head of an MCP tool row. */
 .sr-only {
   position: absolute;
   width: 1px;

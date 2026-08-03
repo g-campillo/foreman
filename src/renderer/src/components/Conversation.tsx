@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useContext, useEffect, useMemo, useRef, useState } from 'react'
 import {
   ChevronDown,
   ChevronRight,
@@ -12,6 +12,8 @@ import {
 import type { ChatItem, EffortLevel, SessionMeta } from '../../../shared/types'
 import { useStore } from '../store'
 import ToolLine from './ToolLine'
+import ToolRun, { FoldedContext, RevealContext } from './ToolRun'
+import ScrollDown from './ScrollDown'
 import ApprovalCard from './ApprovalCard'
 import ElicitationCard from './ElicitationCard'
 import QuestionCard from './QuestionCard'
@@ -21,6 +23,7 @@ import {
   armedApproval,
   askQuestions,
   fmt,
+  groupRuns,
   groupTurns,
   hms,
   planProposal,
@@ -30,7 +33,7 @@ import {
   transcriptRows,
   workingVerb,
 } from '../derive.mts'
-import type { Turn as TurnShape } from '../derive.mts'
+import type { Row, Turn as TurnShape, WorkNode } from '../derive.mts'
 import Markdown from './Markdown'
 import { EFFORTS } from './Composer'
 
@@ -83,11 +86,23 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
   }, [items])
   const roots = useMemo(() => items.filter((it) => !parentOf(it)), [items])
   // Drops the checklist events TodoStrip renders, and flags the assistant
-  // message that opens a turn. No longer folds tool runs — see transcriptRows.
+  // message that opens a turn.
   const rows = useMemo(() => transcriptRows(roots), [roots])
   /* Grouped into turns, so each one can head itself with `Worked for Ns ⌄` and
      fold everything between the question and the answer behind it. */
   const turns = useMemo(() => groupTurns(rows), [rows])
+  /* ...and each turn's work grouped again, into runs of consecutive tool calls.
+     Here rather than inside `Rows`, for two reasons: `Rows` is a .tsx, so the
+     grouping would stop being checkable; and `Rows` also renders `turn.tail`,
+     which groupTurns guarantees holds only assistant/result/error rows — a
+     guaranteed-empty grouping pass on every streaming delta.
+
+     `Turn.work` stays a Row[]. Changing its element type would break the
+     groupTurns checks, which all read `t.work.map(r => r.item.id)`. */
+  const grouped = useMemo(
+    () => turns.map((turn) => ({ turn, nodes: groupRuns(turn.work) })),
+    [turns],
+  )
 
   /* `root`, `project` and the `chips` array lived here — the repo name and the
      branch · model · mode chips the empty state used to render above the
@@ -115,33 +130,70 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
     return () => cancelAnimationFrame(frame)
   }, [items, approvals, elicitations, rewindPreview])
 
+  /* Which turn and which run a given item lives in.
+
+     The gutter jump used to querySelector for the row and silently give up when
+     it missed — which it already did for anything inside a folded turn, i.e.
+     every turn but the newest. Folded runs would have added a second way to
+     miss, so both are fixed with one mechanism: the ids go down as context and
+     the two folds open themselves. */
+  const revealOf = useMemo(() => {
+    const m = new Map<string, { turnId: string; runId: string | null }>()
+    for (const { turn, nodes } of grouped) {
+      const put = (itemId: string, runId: string | null): void => {
+        m.set(itemId, { turnId: turn.id, runId })
+      }
+      if (turn.lead) put(turn.lead.item.id, null)
+      for (const n of nodes) {
+        if (n.kind === 'row') put(n.row.item.id, null)
+        else for (const r of n.rows) put(r.item.id, n.id)
+      }
+      for (const r of turn.tail) put(r.item.id, null)
+    }
+    return m
+  }, [grouped])
+  const reveal = focusItemId ? (revealOf.get(focusItemId) ?? null) : null
+
   /**
    * Scroll to and flash the row the editor pointed at.
    *
-   * The other half of the gutter click. One-shot: revealItem(null) immediately
-   * after, so re-clicking the same stripe flashes again rather than doing
+   * The other half of the gutter click. One-shot: revealItem(null) once it has
+   * landed, so re-clicking the same stripe flashes again rather than doing
    * nothing because the state never changed.
    */
   useEffect(() => {
     if (!focusItemId) return
-    const el = document.querySelector(`[data-item-id="${focusItemId}"]`)
-    if (el) {
-      el.scrollIntoView({ block: 'center', behavior: 'smooth' })
-      el.setAttribute('data-flash', '')
-      setTimeout(() => el.removeAttribute('data-flash'), 1200)
+    let frame = 0
+
+    const land = (tries: number): void => {
+      const el = document.querySelector(`[data-item-id="${focusItemId}"]`)
+      // Not there YET is the common case, not a miss: the reveal context and
+      // this effect commit in the same pass, so the turn and run it just told
+      // to open are a frame away from mounting their rows. Clearing here would
+      // close them again before the row existed. Three frames rather than one
+      // because a turn and a run can have to open in sequence, and a frame is
+      // cheap next to a gutter click that silently does nothing.
+      if (!el && tries > 0) {
+        frame = requestAnimationFrame(() => land(tries - 1))
+        return
+      }
+      if (el) {
+        el.scrollIntoView({ block: 'center', behavior: 'smooth' })
+        el.setAttribute('data-flash', '')
+        setTimeout(() => el.removeAttribute('data-flash'), 1200)
+      }
+      // Cleared even on a genuine miss — an item that is not in this transcript
+      // at all — or the id would stick and re-clicking the same stripe would do
+      // nothing. Nothing re-folds when it clears: both folds are one-way.
+      revealItem(null)
     }
-    revealItem(null)
+
+    land(3)
+    return () => cancelAnimationFrame(frame)
   }, [focusItemId, revealItem])
 
   return (
-    <div
-      className="convo"
-      ref={scroller}
-      onScroll={(e) => {
-        const el = e.currentTarget
-        pinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 60
-      }}
-    >
+    <div className="convo" ref={scroller}>
       {/* `.empty` is flex:1 and centred on both axes already; it beats
           `.convo > * { flex-shrink: 0 }` on source order at equal specificity,
           which is what lets it fill the scroller. The 'starting' guard covers
@@ -159,22 +211,28 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
           pulls the composer up to the middle of the pane, and it is the presence
           of this node, not its contents, that triggers it. */}
       {items.length === 0 && status !== 'starting' && <div className="empty" />}
-      {turns.map((t, i) => (
-        <Turn
-          key={t.id}
-          turn={t}
-          sessionId={sessionId}
-          cwd={session?.cwd ?? ''}
-          byParent={byParent}
-          // Only the newest turn stays open. Everything before it folds to its
-          // header plus what the agent finally said, which is what makes a long
-          // session readable when you scroll back through it.
-          latest={i === turns.length - 1}
-          // Live counter for the turn in flight. turnStartedAt comes from main,
-          // not a mount timestamp — see Working for why that distinction matters.
-          startedAt={i === turns.length - 1 && status === 'running' ? session?.turnStartedAt ?? null : null}
-        />
-      ))}
+      {/* The Provider paints nothing, so every wrapper below it is still a
+          direct `.convo` child — which is what the content-visibility and
+          flex rules key off. */}
+      <RevealContext.Provider value={reveal}>
+        {grouped.map(({ turn, nodes }, i) => (
+          <Turn
+            key={turn.id}
+            turn={turn}
+            nodes={nodes}
+            sessionId={sessionId}
+            cwd={session?.cwd ?? ''}
+            byParent={byParent}
+            // Only the newest turn stays open. Everything before it folds to its
+            // header plus what the agent finally said, which is what makes a long
+            // session readable when you scroll back through it.
+            latest={i === grouped.length - 1}
+            // Live counter for the turn in flight. turnStartedAt comes from main,
+            // not a mount timestamp — see Working for why that distinction matters.
+            startedAt={i === grouped.length - 1 && status === 'running' ? session?.turnStartedAt ?? null : null}
+          />
+        ))}
+      </RevealContext.Provider>
       {approvals.map((a) => {
         // ExitPlanMode's approval prompt IS the plan approval, so it gets the
         // plan rendered rather than "Allow ExitPlanMode?" over raw JSON.
@@ -195,40 +253,79 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
       {rewindPreview && <RewindCard />}
       {/* Without this there's dead air between sending and the first token. */}
       {status === 'running' && session && <Working session={session} />}
+      {/* Last child, and always mounted: it floats over the bottom of the
+          transcript on a negative margin, so it must sit after everything it
+          floats over and must never change `scrollHeight` by appearing. */}
+      <ScrollDown scroller={scroller} pinned={pinned} />
     </div>
   )
 }
 
 const EMPTY: ChatItem[] = []
 
+/** What every row needs, and what nothing between Conversation and a row cares
+ *  about — so it travels as one object rather than as three repeated props. */
+interface RowCtx {
+  sessionId: string
+  cwd: string
+  byParent: Map<string, ChatItem[]>
+}
+
 /** Each row keeps its own `data-item-id` wrapper: that is what the editor's
  *  gutter jumps to, and what `content-visibility` is applied to. A wrapper
  *  rather than an attribute on Item, because Item returns a different root per
  *  kind and threading the id through six branches would be six chances to miss
  *  one. */
-function Rows({
-  rows,
-  sessionId,
-  cwd,
-  byParent,
-}: {
-  rows: TurnShape['work']
-  sessionId: string
-  cwd: string
-  byParent: Map<string, ChatItem[]>
-}): React.JSX.Element {
+function RowItem({ row, ctx }: { row: Row; ctx: RowCtx }): React.JSX.Element {
+  // Inside a collapsed run this row is HIDDEN, not unmounted — that is what
+  // keeps an open diff open when a run folds under the user. The attribute has
+  // to be here, on the wrapper, because that is the element the CSS knows about;
+  // see `.convo > [data-item-id][hidden]`, which exists to beat the UA rule's
+  // specificity.
+  const folded = useContext(FoldedContext)
+  return (
+    <div data-item-id={row.item.id} hidden={folded || undefined}>
+      <Item
+        item={row.item}
+        sessionId={ctx.sessionId}
+        cwd={ctx.cwd}
+        byParent={ctx.byParent}
+        leadsTurn={row.leadsTurn}
+      />
+    </div>
+  )
+}
+
+/** A turn's work: loose rows, and runs of tool calls folded behind one line.
+ *
+ *  A pure mapper — the grouping happened in Conversation, where it is checkable.
+ *  ToolRun is handed its rows already rendered because `Item` lives in this
+ *  module; see the comment on ToolRun for why that direction. */
+function Rows({ nodes, ctx }: { nodes: readonly WorkNode[]; ctx: RowCtx }): React.JSX.Element {
+  return (
+    <>
+      {nodes.map((n) =>
+        n.kind === 'row' ? (
+          <RowItem key={n.row.item.id} row={n.row} ctx={ctx} />
+        ) : (
+          <ToolRun key={n.id} id={n.id} rows={n.rows} cwd={ctx.cwd}>
+            {n.rows.map((r) => (
+              <RowItem key={r.item.id} row={r} ctx={ctx} />
+            ))}
+          </ToolRun>
+        ),
+      )}
+    </>
+  )
+}
+
+/** The answer, and the turn's opening question. Never folded and never grouped —
+ *  groupTurns guarantees a tail holds only assistant/result/error rows. */
+function TailRows({ rows, ctx }: { rows: readonly Row[]; ctx: RowCtx }): React.JSX.Element {
   return (
     <>
       {rows.map((r) => (
-        <div key={r.item.id} data-item-id={r.item.id}>
-          <Item
-            item={r.item}
-            sessionId={sessionId}
-            cwd={cwd}
-            byParent={byParent}
-            leadsTurn={r.leadsTurn}
-          />
-        </div>
+        <RowItem key={r.item.id} row={r} ctx={ctx} />
       ))}
     </>
   )
@@ -249,6 +346,7 @@ function Rows({
  */
 function Turn({
   turn,
+  nodes,
   sessionId,
   cwd,
   byParent,
@@ -256,6 +354,9 @@ function Turn({
   startedAt,
 }: {
   turn: TurnShape
+  /** `turn.work` grouped into runs. Computed in Conversation, where it is
+   *  checkable — see the `grouped` memo. */
+  nodes: WorkNode[]
   sessionId: string
   cwd: string
   byParent: Map<string, ChatItem[]>
@@ -269,6 +370,15 @@ function Turn({
   const [open, setOpen] = useState(latest)
   useEffect(() => setOpen(latest), [latest])
 
+  // The editor's gutter pointed at a row inside this turn, so it has to be
+  // open for that row to exist at all. One-way, and it deliberately does not
+  // fold again when the reveal clears.
+  const reveal = useContext(RevealContext)
+  const forceOpen = reveal?.turnId === turn.id
+  useEffect(() => {
+    if (forceOpen) setOpen(true)
+  }, [forceOpen])
+
   const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
     if (startedAt === null) return
@@ -281,19 +391,11 @@ function Turn({
   // a question and an answer, and a "Worked for 0s" line above it is furniture.
   const header = turn.work.length > 0 && elapsed !== null
 
+  const ctx: RowCtx = { sessionId, cwd, byParent }
+
   return (
     <>
-      {turn.lead && (
-        <div data-item-id={turn.lead.item.id}>
-          <Item
-            item={turn.lead.item}
-            sessionId={sessionId}
-            cwd={cwd}
-            byParent={byParent}
-            leadsTurn={turn.lead.leadsTurn}
-          />
-        </div>
-      )}
+      {turn.lead && <RowItem row={turn.lead} ctx={ctx} />}
 
       {header && (
         <button className="turn-head" aria-expanded={open} onClick={() => setOpen(!open)}>
@@ -305,10 +407,8 @@ function Turn({
         </button>
       )}
 
-      {(open || !header) && (
-        <Rows rows={turn.work} sessionId={sessionId} cwd={cwd} byParent={byParent} />
-      )}
-      <Rows rows={turn.tail} sessionId={sessionId} cwd={cwd} byParent={byParent} />
+      {(open || !header) && <Rows nodes={nodes} ctx={ctx} />}
+      <TailRows rows={turn.tail} ctx={ctx} />
     </>
   )
 }

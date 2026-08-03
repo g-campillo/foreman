@@ -1,9 +1,16 @@
 /**
  * Pure derivations from store state, kept out of the components so they can be
  * checked under bare node — no React import here, and the ChatItem import is
- * type-only, so nothing needs resolving at runtime.
+ * type-only.
+ *
+ * `shared/diff.mts` is the one runtime import, and it is safe for the same
+ * reason: it is `.mts` and already loads under bare node for its own
+ * `check:diff`. Nothing here may import a `.tsx` — `npm run check:derive` runs
+ * this module's checks through plain `node`, which has no JSX loader, so a
+ * component import would take the only test harness this file has with it.
  */
-import type { ChatItem, SessionMeta } from '../../shared/types'
+import type { ChatItem, DiffHunk, SessionMeta } from '../../shared/types'
+import { toHunks } from '../../shared/diff.mts'
 
 // ---------------------------------------------------------------- activity
 
@@ -583,8 +590,13 @@ export function triggerAt(text: string, caret: number): Trigger | null {
 
 // --------------------------------------------------------------- tool names
 
-/** `get_file_content` / `query-docs` -> `Get File Content` / `Query Docs`. */
-function titleCase(segment: string): string {
+/** `get_file_content` / `query-docs` -> `Get File Content` / `Query Docs`.
+ *
+ *  Exported because the transcript no longer renders MCP calls through
+ *  toolLabel's string: the row leads with the MCP mark and then prints the
+ *  server and the tool as separate spans, so it needs the same transform the
+ *  label uses without the `MCP ` prefix baked into it. */
+export function titleCase(segment: string): string {
   return segment
     .split(/[_-]+/)
     .filter(Boolean)
@@ -640,26 +652,46 @@ export function toolRender(name: string): ToolRender | undefined {
 }
 
 /**
+ * An MCP wire name split into the server the user configured and the tool it
+ * exposes, or null when this is not one.
+ *
+ * MCP wire names encode server and tool with a double underscore between them,
+ * while the tool's own words are separated by single underscores (or hyphens) —
+ * so splitting on `__` first is what keeps `query-docs` from being mistaken for
+ * a server boundary, and everything after the second `__` belongs to the tool.
+ *
+ * The one parser, because there are now two readers of the same string:
+ * toolLabel below, and the transcript row, which leads with the MCP mark
+ * instead of the literal word `MCP` and therefore needs the two segments rather
+ * than the joined label.
+ *
+ * Null rather than empty strings for the degenerate shapes (`mcp__`, `''`),
+ * so a caller cannot render a mark with nothing after it. `mcp__server` with no
+ * tool segment IS valid — it comes off the wire — and yields an empty `tool`.
+ */
+export function mcpName(name: string): { server: string; tool: string } | null {
+  if (!name.startsWith('mcp__')) return null
+  const [, server, ...rest] = name.split('__')
+  if (!server) return null
+  return { server, tool: rest.join('__') }
+}
+
+/**
  * A tool name fit to read.
  *
  * Three cases, in order: a registry entry wins; then MCP wire names, where
  * `mcp__jcodemunch__get_file_content` becomes `MCP jcodemunch Get File Content`;
  * then everything else verbatim.
  *
- * MCP wire names encode server and tool with a double underscore between them,
- * while the tool's own words are separated by single underscores (or hyphens) —
- * so splitting on `__` first is what keeps `query-docs` from being mistaken for
- * a server boundary. The server segment is left verbatim: it's a name the user
- * chose in their MCP config, and title-casing it would misrepresent it.
+ * The server segment is left verbatim: it's a name the user chose in their MCP
+ * config, and title-casing it would misrepresent it.
  */
 export function toolLabel(name: string): string {
   const known = TOOL_DISPLAY[name]?.label
   if (known) return known
-  if (!name.startsWith('mcp__')) return name
-  const [, server, ...rest] = name.split('__')
-  if (!server) return name
-  const tool = rest.join('__')
-  return ['MCP', server, tool && titleCase(tool)].filter(Boolean).join(' ')
+  const mcp = mcpName(name)
+  if (!mcp) return name
+  return ['MCP', mcp.server, mcp.tool && titleCase(mcp.tool)].filter(Boolean).join(' ')
 }
 
 /**
@@ -708,6 +740,194 @@ export function toolVerb(name: string, pending = false): string {
   return pair ? pair[pending ? 1 : 0] : toolLabel(name)
 }
 
+/**
+ * Nouns, singular and plural.
+ *
+ * The counterpart to TOOL_VERB, for the folded run head — `12 steps · 5 reads,
+ * 4 commands`. Same tuple shape and the same rule for the same reason: a table
+ * of pairs is what stops `1 read` rendering as `1 reads`, and a name absent from
+ * it falls back to the tool's own name rather than an invented noun, because an
+ * invented noun for a tool we know nothing about misdescribes it.
+ *
+ * Coarser than TOOL_VERB on purpose. Glob and Grep are both `searches` and every
+ * edit tool is `edits`, because the head is a count of what kind of work
+ * happened, not a manifest — the rows behind the fold are the manifest.
+ */
+const TOOL_NOUN: Record<string, readonly [singular: string, plural: string]> = {
+  Read: ['read', 'reads'],
+  Glob: ['search', 'searches'],
+  Grep: ['search', 'searches'],
+  Bash: ['command', 'commands'],
+  Edit: ['edit', 'edits'],
+  MultiEdit: ['edit', 'edits'],
+  NotebookEdit: ['edit', 'edits'],
+  Write: ['edit', 'edits'],
+  WebFetch: ['lookup', 'lookups'],
+  WebSearch: ['lookup', 'lookups'],
+  Skill: ['skill', 'skills'],
+  ToolSearch: ['tool load', 'tool loads'],
+}
+
+// ---------------------------------------------------------- tool arguments
+
+/**
+ * One-line gist of a tool call. The card is only ever this one line.
+ *
+ * `cwd` shortens paths that live under it — see relPath. It defaults to empty
+ * so the one caller that has no session in scope (ApprovalCard) keeps working
+ * and keeps showing absolute paths, which is what it should show: that card is
+ * the user authorising a write to disk, and abbreviating a path you are being
+ * asked to trust is the wrong trade.
+ *
+ * This and editHunks below lived in ToolLine.tsx until the run fold needed them
+ * too — the head names the call in flight and sums the run's diff — and derive
+ * cannot import a `.tsx` (see the header). ToolLine re-exports both so the
+ * import path callers already use still resolves. The move also makes summarise
+ * checkable for the first time.
+ */
+export function summarise(name: string, input: unknown, cwd = ''): string {
+  if (!input || typeof input !== 'object') return ''
+  const i = input as Record<string, unknown>
+  const str = (k: string): string | null => (typeof i[k] === 'string' ? (i[k] as string) : null)
+
+  switch (name) {
+    case 'Bash':
+      return str('command') ?? ''
+    case 'Read':
+    case 'Edit':
+    case 'Write':
+    case 'MultiEdit':
+      return relPath(str('file_path') ?? '', cwd)
+    case 'NotebookEdit':
+      return relPath(str('notebook_path') ?? '', cwd)
+    case 'Glob':
+    case 'Grep':
+      return str('pattern') ?? ''
+    case 'WebFetch':
+      return str('url') ?? ''
+    case 'ExitPlanMode': {
+      // The whole plan is in here; the default branch would put the first 120
+      // characters of it, JSON-escaped, in a one-line gist.
+      const plan = planProposal(name, input)
+      return plan ? planTitle(plan.markdown) : ''
+    }
+    // The subagent tool reports as 'Agent' on the wire; 'Task' is kept because
+    // that is what it is called everywhere else, including older transcripts.
+    // Without this the default branch falls through to `prompt` and puts the
+    // subagent's entire instructions in the card's one-line gist.
+    case 'Agent':
+    case 'Task': {
+      const desc = str('description')
+      const kind = str('subagent_type')
+      return desc && kind ? `${kind}: ${desc}` : (desc ?? kind ?? '')
+    }
+    default: {
+      // The question set is the whole input, so the generic fallback would put
+      // raw JSON in the gist of the one card the user is being asked to read.
+      const questions = askQuestions(name, input)
+      if (questions) return questions.map((q) => q.header || q.question).join(' · ')
+
+      // MCP tools land here. Named fields first, then any short string value —
+      // this used to fall through to 120 characters of raw JSON, which is most
+      // of what made a transcript of MCP calls unreadable.
+      // The two path-shaped fields get shortened; query/pattern/name are not
+      // paths and must be left exactly as the agent wrote them.
+      const filePath = str('file_path') ?? str('path')
+      if (filePath) return relPath(filePath, cwd)
+      const named = str('query') ?? str('pattern') ?? str('name')
+      if (named) return named
+      for (const v of Object.values(i)) if (typeof v === 'string' && v.length <= 80) return v
+      return ''
+    }
+  }
+}
+
+/**
+ * The diff an edit tool is about to make, from its own input.
+ *
+ * Line numbers are deliberately absent downstream: old_string/new_string are
+ * fragments of the file, not the file, so any number here would be invented.
+ * Write has no before-text at all, so it reads as pure additions.
+ */
+export function editHunks(name: string, input: unknown): DiffHunk[] | null {
+  if (!input || typeof input !== 'object') return null
+  const i = input as Record<string, unknown>
+  const s = (k: string): string => (typeof i[k] === 'string' ? (i[k] as string) : '')
+  const path = s('file_path') || s('notebook_path')
+
+  if (name === 'Edit') return toHunks(s('old_string'), s('new_string'), path)
+  if (name === 'Write') return toHunks('', s('content'), path)
+  if (name === 'NotebookEdit') {
+    // Same shape as Write: the input carries the new cell source and no previous
+    // text, so it reads as pure additions. A delete carries no source at all —
+    // showing nothing beats inventing a before-image to strike through.
+    if (s('edit_mode') === 'delete') return null
+    return toHunks('', s('new_source'), path)
+  }
+  if (name === 'MultiEdit') {
+    const edits = Array.isArray(i.edits) ? (i.edits as Record<string, unknown>[]) : []
+    return edits.flatMap((e) =>
+      toHunks(String(e?.old_string ?? ''), String(e?.new_string ?? ''), path),
+    )
+  }
+  return null
+}
+
+/**
+ * Added/removed line counts for one edit call, memoised on the call itself.
+ *
+ * WHY A CACHE AT ALL. editHunks runs structuredPatch, which shared/diff.mts
+ * documents as O(ND) — and unlike diffRow it has no MAX_DIFF_BYTES guard,
+ * because its caller was a single row that memoised it. The folded run head sums
+ * this across every edit in the run, and it is recomputed on every streaming
+ * delta: groupRuns allocates fresh `rows` arrays each pass, so a useMemo in the
+ * component never hits. Without this, a run containing a Write of a 2000-line
+ * file re-diffs that file on every token for as long as it is on screen.
+ *
+ * KEYED ON THE ITEM OBJECT, NOT `item.id`, and that is the whole trick: the
+ * store replaces the object when a tool call is patched (a result lands, a
+ * progress line arrives), so a changed call misses naturally and a settled one
+ * hits forever. An id key would go stale silently and show the wrong `+N −M`
+ * with no way to notice. A WeakMap so a trimmed transcript takes its entries
+ * with it.
+ */
+const EDIT_STAT = new WeakMap<object, { added: number; removed: number }>()
+
+export function editStat(item: Extract<ChatItem, { kind: 'tool' }>): {
+  added: number
+  removed: number
+} {
+  const hit = EDIT_STAT.get(item)
+  if (hit) return hit
+  let added = 0
+  let removed = 0
+  for (const h of editHunks(item.name, item.input) ?? [])
+    for (const l of h.lines) {
+      if (l.type === 'add') added += 1
+      else if (l.type === 'del') removed += 1
+    }
+  const stat = { added, removed }
+  EDIT_STAT.set(item, stat)
+  return stat
+}
+
+/**
+ * The one place that decides a tool call failed.
+ *
+ * An answered question comes back `is_error` because the answer travelled on the
+ * deny channel — see ANSWER_PREFIX. It succeeded, and painting it red says "your
+ * answer failed" at the exact moment it worked. A SKIPPED question carries no
+ * answer text and stays a failure.
+ *
+ * One function rather than the expression it replaces, because the count on a
+ * folded run head and the colour on the row inside it are now two readings of
+ * the same fact, and a head saying `1 failed` over rows that all look fine is a
+ * bug nobody can diagnose from the screen.
+ */
+export function toolFailed(item: Extract<ChatItem, { kind: 'tool' }>): boolean {
+  return item.status === 'error' && !item.result?.startsWith(ANSWER_PREFIX)
+}
+
 // ------------------------------------------------------------ transcript shape
 
 export interface Row {
@@ -720,10 +940,26 @@ export interface Row {
  * The transcript, one row per item, with the assistant message that opens a
  * turn flagged.
  *
- * This used to also fold consecutive tool calls into a collapsible "N steps"
- * run. That is gone on purpose: the agent moves fast enough that a run is
- * usually still open and re-folding under you, and a folded run hides exactly
- * the thing you are watching for. Individual cards are already one line each.
+ * Folding consecutive tool calls into a "N steps" run lives in groupRuns below,
+ * not here. It was deleted from this function once, and the comment that
+ * replaced it gave two reasons — both of which groupRuns now has an answer for,
+ * which is why it is back:
+ *
+ *  - "a run is usually still open and re-folding under you". Two halves, and
+ *    both are needed. groupRuns emits a run node from n = 1, so the element type
+ *    at a given key never changes as the second call lands — but that alone only
+ *    keeps ToolRun mounted, not the rows inside it, which are still hidden the
+ *    instant a lone row grows a head. So ToolRun HIDES its rows rather than
+ *    dropping them, which is what actually preserves the open diff you were
+ *    reading. And a run the user opened by hand never folds itself again.
+ *  - "a folded run hides exactly the thing you are watching for". The head
+ *    carries a live second line naming the call in flight, the run's aggregate
+ *    `+N −M`, and a failure count in the danger hue. Nothing that was visible
+ *    before disappears without a trace.
+ *
+ * It is back at all because one line per call is not the problem at twenty
+ * calls a turn: the chat pane becomes a log you scroll rather than a
+ * conversation you read.
  *
  * `leadsTurn` stays, and is unrelated: streaming emits several assistant items
  * per turn, so putting an avatar on each one stutters down the page instead of
@@ -815,6 +1051,183 @@ export function groupTurns(rows: readonly Row[]): Turn[] {
   }
   close()
   return turns
+}
+
+// ----------------------------------------------------------------- tool runs
+
+/**
+ * A turn's work, with consecutive tool calls gathered into runs.
+ *
+ * `row` for everything that is not a foldable tool call; `run` for a stretch
+ * that is. See transcriptRows for why the fold is back at all.
+ */
+export type WorkNode = { kind: 'row'; row: Row } | { kind: 'run'; id: string; rows: Row[] }
+
+/**
+ * Whether a row belongs inside a run.
+ *
+ * Everything that is not a mechanical step breaks the run — assistant
+ * commentary, thinking, record rows — because those are the sentences the fold
+ * exists to put back on screen, and swallowing one would defeat the whole
+ * change.
+ *
+ * Subagents are out too, and that is not an oversight: a delegation already
+ * carries a two-line live form and, once expanded, an entire nested transcript.
+ * Counting it as one of "12 steps" would hide the largest thing in the turn
+ * behind the smallest possible summary.
+ */
+function joinsRun(row: Row): boolean {
+  const item = row.item
+  if (item.kind !== 'tool') return false
+  if (item.name === 'Agent' || item.name === 'Task') return false
+  return toolRender(item.name) !== 'record'
+}
+
+/**
+ * Group a turn's rows into runs.
+ *
+ * A RUN NODE IS EMITTED FROM n = 1, and that is the load-bearing decision here
+ * rather than a simplification. If a lone tool call were a `row` node that
+ * turned into a `run` node when the second call landed, React would see a
+ * different element type at the same key, unmount the subtree and destroy the
+ * state inside it — so a diff the user opened would vanish from under them
+ * 400ms later, as the agent kept working. Whether a run is worth a head is a
+ * rendering question, and ToolRun answers it (`rows.length >= 2`).
+ *
+ * This is NECESSARY AND NOT SUFFICIENT. It keeps ToolRun itself mounted; the
+ * rows inside it would still be dropped by the collapse that comes with the new
+ * head, so ToolRun hides them instead of unmounting them. Neither half works
+ * without the other.
+ *
+ * The run's id is its first row's item id, which is stable as rows append.
+ */
+export function groupRuns(rows: readonly Row[]): WorkNode[] {
+  const out: WorkNode[] = []
+  let run: Extract<WorkNode, { kind: 'run' }> | null = null
+
+  for (const row of rows) {
+    if (!joinsRun(row)) {
+      run = null
+      out.push({ kind: 'row', row })
+      continue
+    }
+    if (run) {
+      run.rows.push(row)
+    } else {
+      run = { kind: 'run', id: row.item.id, rows: [row] }
+      out.push(run)
+    }
+  }
+  return out
+}
+
+/** How many kinds of call a head names before it stops naming and counts. */
+const MAX_RUN_GROUPS = 5
+
+export interface RunSummary {
+  /** Calls in the run. `steps - sum(groups[].n)` is the `+N more` remainder. */
+  steps: number
+  /** At most MAX_RUN_GROUPS, in first-appearance order. `label` is the noun
+   *  alone — the caller prints `${n} ${label}`. */
+  groups: { label: string; n: number }[]
+  failed: number
+  added: number
+  removed: number
+  /** The newest call still in flight, for the head's live second line. */
+  live: Row | null
+}
+
+/**
+ * What a folded run says about itself: `12 steps · 5 reads, 4 commands, 3 brain
+ * calls`, plus the aggregate diff, the failure count and the call in flight.
+ *
+ * MCP calls group by SERVER rather than by tool, spelled exactly as the user
+ * wrote it in their config (see toolLabel for why it is never title-cased) —
+ * `3 brain calls` is what a person would say, where three separate rows of
+ * `brain Brain Get` is the wall this fold exists to remove.
+ *
+ * SELECTION IS BY COUNT; ORDER IS ALWAYS FIRST APPEARANCE. The two are
+ * deliberately separate passes. The biggest groups are the ones worth the five
+ * slots, but sorting the survivors by count would make the chips physically
+ * swap places on a line the user is reading — the same class of problem as a run
+ * re-folding under them.
+ *
+ * This used to sort by count "once the run settled", inferring settled from
+ * `live === null`. That was wrong in the ordinary case rather than the corner
+ * one: nothing is pending in the gap between every tool result and the next tool
+ * call, so the chips re-sorted and snapped back several times per turn. Order
+ * now never changes at all; only membership can, and only past five distinct
+ * kinds of call.
+ *
+ * `added`/`removed` are summed across the run so the fold does not swallow the
+ * only colour the transcript has, and `live` comes back as a Row rather than a
+ * string because this module has no cwd to shorten paths against — the caller
+ * composes the text with summarise().
+ */
+export function runSummary(rows: readonly Row[]): RunSummary {
+  interface Bucket {
+    noun: readonly [singular: string, plural: string]
+    n: number
+    /** Index of first appearance, which is the tie-break and the live order. */
+    at: number
+  }
+  const buckets = new Map<string, Bucket>()
+  let steps = 0
+  let failed = 0
+  let added = 0
+  let removed = 0
+  let live: Row | null = null
+
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]!
+    const item = row.item
+    if (item.kind !== 'tool') continue
+    steps += 1
+    // Newest wins: several calls can be in flight at once, and the one the user
+    // wants named is the last thing the agent said it was doing.
+    if (item.status === 'pending') live = row
+    if (toolFailed(item)) failed += 1
+    // Memoised on the item — see editStat. This is summed on every streaming
+    // delta, and the diff underneath it is O(ND).
+    const stat = editStat(item)
+    added += stat.added
+    removed += stat.removed
+
+    const noun = nounFor(item.name)
+    // THE NOUN IS THE KEY, not the tool name: Edit, Write and NotebookEdit are
+    // one bucket because they are one noun, which is what makes the head read
+    // `3 edits` instead of `1 edit, 1 edit, 1 edit`. The `mcp:` prefix keeps the
+    // two namespaces apart rather than resolving any particular collision — a
+    // server's noun is `<server> calls`, so nothing can literally clash today,
+    // and this is what keeps that true if either side of nounFor changes.
+    const key = mcpName(item.name) ? `mcp:${noun[1]}` : noun[1]
+    const seen = buckets.get(key)
+    if (seen) seen.n += 1
+    else buckets.set(key, { noun, n: 1, at: i })
+  }
+
+  // Two passes, and the order of them is the point. Pick the five biggest, then
+  // put those five BACK into first-appearance order — so a chip never moves,
+  // whatever happens to the counts around it.
+  const top = [...buckets.values()].sort((a, b) => b.n - a.n || a.at - b.at)
+  top.length = Math.min(top.length, MAX_RUN_GROUPS)
+  top.sort((a, b) => a.at - b.at)
+
+  return {
+    steps,
+    groups: top.map((b) => ({ label: b.noun[b.n === 1 ? 0 : 1], n: b.n })),
+    failed,
+    added,
+    removed,
+    live,
+  }
+}
+
+/** Singular and plural for one tool, which is also what buckets it. */
+function nounFor(name: string): readonly [singular: string, plural: string] {
+  const mcp = mcpName(name)
+  if (mcp) return [`${mcp.server} call`, `${mcp.server} calls`]
+  return TOOL_NOUN[name] ?? [name, name]
 }
 
 // ------------------------------------------------------------ working verbs
@@ -1262,7 +1675,9 @@ export function focusTarget(name: string, input: unknown): FocusTarget | null {
       return { path, line: 1, anchor: '', weight: 'write' }
     case 'NotebookEdit':
       // A .ipynb is JSON; there is no line mapping and pretending to one is
-      // worse than opening the file. Same call ToolCard.editHunks already makes.
+      // worse than opening the file. Same judgement editHunks makes above —
+      // ToolCard, which this used to name, has not existed since the card became
+      // a line and editHunks moved into this file.
       return { path, line: null, anchor: '', weight: 'write' }
     default:
       // An MCP tool that names a file still tells us something useful.

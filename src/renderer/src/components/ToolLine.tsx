@@ -1,13 +1,13 @@
 import { Children, useMemo, useState } from 'react'
 import { ChevronDown, FileCode2 } from 'lucide-react'
-import type { ChatItem, DiffHunk } from '../../../shared/types'
-import { toHunks } from '../../../shared/diff.mts'
+import type { ChatItem } from '../../../shared/types'
 import {
-  ANSWER_PREFIX,
-  askQuestions,
+  editHunks,
+  mcpName,
   planProposal,
-  planTitle,
-  relPath,
+  summarise,
+  titleCase,
+  toolFailed,
   toolVerb,
   focusTarget,
 } from '../derive.mts'
@@ -15,6 +15,7 @@ import { hljsLang } from '../highlight.mts'
 import { useStore } from '../store'
 import Markdown from './Markdown'
 import DiffLines from './DiffLines'
+import McpMark from './McpMark'
 
 type Tool = Extract<ChatItem, { kind: 'tool' }>
 
@@ -24,102 +25,17 @@ const MAX_INLINE_DIFF_LINES = 12
 /** Expanded is still a transcript, not the diff panel. One click, one ceiling. */
 const MAX_EXPANDED_DIFF_LINES = 200
 
-/**
- * One-line gist of a tool call. The card is only ever this one line.
- *
- * `cwd` shortens paths that live under it — see relPath. It defaults to empty
- * so the one caller that has no session in scope (ApprovalCard) keeps working
- * and keeps showing absolute paths, which is what it should show: that card is
- * the user authorising a write to disk, and abbreviating a path you are being
- * asked to trust is the wrong trade.
- */
-export function summarise(name: string, input: unknown, cwd = ''): string {
-  if (!input || typeof input !== 'object') return ''
-  const i = input as Record<string, unknown>
-  const str = (k: string): string | null => (typeof i[k] === 'string' ? (i[k] as string) : null)
+/* `summarise` and `editHunks` were defined here. They moved to derive.mts when
+   the folded run head started needing both — the head names the call in flight
+   and sums the run's diff — and derive.mts cannot import a `.tsx` without
+   breaking `npm run check:derive`, which runs under bare node. The move also
+   made summarise checkable for the first time.
 
-  switch (name) {
-    case 'Bash':
-      return str('command') ?? ''
-    case 'Read':
-    case 'Edit':
-    case 'Write':
-    case 'MultiEdit':
-      return relPath(str('file_path') ?? '', cwd)
-    case 'NotebookEdit':
-      return relPath(str('notebook_path') ?? '', cwd)
-    case 'Glob':
-    case 'Grep':
-      return str('pattern') ?? ''
-    case 'WebFetch':
-      return str('url') ?? ''
-    case 'ExitPlanMode': {
-      // The whole plan is in here; the default branch would put the first 120
-      // characters of it, JSON-escaped, in a one-line gist.
-      const plan = planProposal(name, input)
-      return plan ? planTitle(plan.markdown) : ''
-    }
-    // The subagent tool reports as 'Agent' on the wire; 'Task' is kept because
-    // that is what it is called everywhere else, including older transcripts.
-    // Without this the default branch falls through to `prompt` and puts the
-    // subagent's entire instructions in the card's one-line gist.
-    case 'Agent':
-    case 'Task': {
-      const desc = str('description')
-      const kind = str('subagent_type')
-      return desc && kind ? `${kind}: ${desc}` : (desc ?? kind ?? '')
-    }
-    default: {
-      // The question set is the whole input, so the generic fallback would put
-      // raw JSON in the gist of the one card the user is being asked to read.
-      const questions = askQuestions(name, input)
-      if (questions) return questions.map((q) => q.header || q.question).join(' · ')
-
-      // MCP tools land here. Named fields first, then any short string value —
-      // this used to fall through to 120 characters of raw JSON, which is most
-      // of what made a transcript of MCP calls unreadable.
-      // The two path-shaped fields get shortened; query/pattern/name are not
-      // paths and must be left exactly as the agent wrote them.
-      const filePath = str('file_path') ?? str('path')
-      if (filePath) return relPath(filePath, cwd)
-      const named = str('query') ?? str('pattern') ?? str('name')
-      if (named) return named
-      for (const v of Object.values(i)) if (typeof v === 'string' && v.length <= 80) return v
-      return ''
-    }
-  }
-}
-
-/**
- * The diff an edit tool is about to make, from its own input.
- *
- * Line numbers are deliberately absent downstream: old_string/new_string are
- * fragments of the file, not the file, so any number here would be invented.
- * Write has no before-text at all, so it reads as pure additions.
- */
-function editHunks(name: string, input: unknown): DiffHunk[] | null {
-  if (!input || typeof input !== 'object') return null
-  const i = input as Record<string, unknown>
-  const s = (k: string): string => (typeof i[k] === 'string' ? (i[k] as string) : '')
-  const path = s('file_path') || s('notebook_path')
-
-  if (name === 'Edit') return toHunks(s('old_string'), s('new_string'), path)
-  if (name === 'Write') return toHunks('', s('content'), path)
-  if (name === 'NotebookEdit') {
-    // Same shape as Write: the input carries the new cell source and no previous
-    // text, so it reads as pure additions. A delete carries no source at all —
-    // showing nothing beats inventing a before-image to strike through.
-    if (s('edit_mode') === 'delete') return null
-    return toHunks('', s('new_source'), path)
-  }
-  if (name === 'MultiEdit') {
-    const edits = Array.isArray(i.edits) ? (i.edits as Record<string, unknown>[]) : []
-    return edits.flatMap((e) =>
-      toHunks(String(e?.old_string ?? ''), String(e?.new_string ?? ''), path),
-    )
-  }
-  return null
-}
+   Only summarise is re-exported, and only because ApprovalCard imports it from
+   here; one import line is not worth touching a file for. editHunks has no
+   caller outside this module, and a re-export nobody uses is just a second name
+   for the same function. */
+export { summarise }
 
 /* TOOL_ICON and toolIcon lived here — a per-tool lucide glyph, with the status
    carried as a colour on `.tool-head[data-status]` beside it.
@@ -175,11 +91,9 @@ export default function ToolLine({
   // editor is exactly a call the agent could be followed into.
   const target = useMemo(() => focusTarget(item.name, item.input), [item.name, item.input])
 
-  // An answered question comes back flagged is_error, because the answer had to
-  // travel as a permission deny — see ANSWER_PREFIX. It succeeded; don't paint
-  // it as a failure. A skipped one has no answer text and stays an error.
-  const status =
-    item.status === 'error' && item.result?.startsWith(ANSWER_PREFIX) ? 'done' : item.status
+  // Shared with the folded run head's `N failed` count, so the two can never
+  // disagree about what failed — see toolFailed for the is_error subtlety.
+  const failed = toolFailed(item)
 
   /** Now three things rather than two: a subagent transcript, an approved plan,
    *  or a diff. The diff used to render unconditionally under the card; behind
@@ -202,9 +116,33 @@ export default function ToolLine({
   const subagent = item.name === 'Agent' || item.name === 'Task'
   const status2 = subagent ? item.progress : null
 
+  /* An MCP call leads with the official mark instead of the literal word `MCP`.
+     `MCP brain Brain Get` spends a third of the row restating the protocol, and
+     the protocol has a mark for exactly this. The server segment stays verbatim
+     — it is a name from the user's config, not prose — so only the tool half is
+     title-cased. The word is still ANNOUNCED, because a screen reader gets
+     nothing at all from an aria-hidden glyph.
+
+     RecordRow and ApprovalCard deliberately keep printing the word: both render
+     the name as a `.record-tag` / `.approval-tag`, and a tag is a tag — a glyph
+     inside a chip that already reads as a label is decoration. */
+  const mcp = mcpName(item.name)
+
   const line = (
     <>
-      <span className="tool-verb">{toolVerb(item.name, status === 'pending')}</span>
+      <span className="tool-verb">
+        {mcp ? (
+          <>
+            <McpMark size={12} className="tool-mark" />
+            <span className="sr-only">MCP </span>
+            {/* Same join as toolLabel, minus the prefix the mark replaced: a
+                server with no tool segment must not trail a lone space. */}
+            {[mcp.server, mcp.tool && titleCase(mcp.tool)].filter(Boolean).join(' ')}
+          </>
+        ) : (
+          toolVerb(item.name, item.status === 'pending')
+        )}
+      </span>
       {/* The rolling summary is the more useful argument once there is one, and
           it replaces the gist rather than crowding it. */}
       <span className="tool-arg">{subagent ? gist : item.progress || gist}</span>
@@ -224,7 +162,7 @@ export default function ToolLine({
       {expandable ? (
         <button
           className="tool-line"
-          data-failed={status === 'error' ? '' : undefined}
+          data-failed={failed ? '' : undefined}
           aria-expanded={open}
           onClick={() => setOpen(!open)}
         >
@@ -250,7 +188,7 @@ export default function ToolLine({
       ) : target ? (
         <button
           className="tool-line"
-          data-failed={status === 'error' ? '' : undefined}
+          data-failed={failed ? '' : undefined}
           title="Open in the editor"
           onClick={() => openFile(target.path, target.line ?? undefined)}
         >
@@ -259,7 +197,7 @@ export default function ToolLine({
       ) : (
         <div
           className="tool-line"
-          data-failed={status === 'error' ? '' : undefined}
+          data-failed={failed ? '' : undefined}
           data-static=""
         >
           {line}
