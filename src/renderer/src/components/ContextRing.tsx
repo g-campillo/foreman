@@ -1,66 +1,16 @@
-import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
-import type { ContextUsage, SessionMeta } from '../../../shared/types'
-import { contextBreakdown, fmt, level, swatch, type ContextCategory } from '../derive.mts'
+import { fmt, level, swatch, type ContextView } from '../derive.mts'
 
 /** Ring geometry. 7px radius in an 18px box leaves room for a 2px stroke. */
 const R = 7
 const CIRC = 2 * Math.PI * R
 
-export interface ContextView {
-  tokens: number
-  max: number
-  pct: number
-  /** Categories that actually occupy the window, filler and deferred removed. */
-  used: ContextCategory[]
-}
-
-/**
- * This session's context pressure, polled.
- *
- * A hook rather than state inside the ring, because the ring and the card it
- * opens are siblings — the ring sits under the composer and the card floats
- * above it, so neither can own the fetch for the other.
- *
- * Same policy the session panel uses: context usage is only meaningful between
- * turns, and polling a running session just races the numbers. Unlike the panel
- * this is always mounted, so during a turn it keeps showing the PREVIOUS turn's
- * figure rather than blanking — stale by one turn is the honest reading, and a
- * gauge that emptied every time you pressed send would look like a bug.
- */
-export function useContextUsage(session: SessionMeta): ContextView | null {
-  const [ctx, setCtx] = useState<ContextUsage | null>(null)
-
-  useEffect(() => {
-    if (session.status !== 'idle') return
-    let live = true
-    void window.foreman
-      .contextUsage(session.id)
-      .then((u) => {
-        // `live && u`: on a transient null (session tearing down, SDK hiccup)
-        // keep the last good reading.
-        if (live && u) setCtx(u)
-      })
-      .catch(() => {})
-    return () => {
-      live = false
-    }
-  }, [session.id, session.status])
-
-  const { used } = contextBreakdown(
-    ctx?.categories ?? [],
-    ctx?.totalTokens ?? 0,
-    ctx?.maxTokens ?? 0,
-  )
-  const tokens = ctx?.totalTokens ?? 0
-  const max = ctx?.maxTokens ?? 0
-
-  // Nothing to draw. A ring against an unknown window would either sit empty and
-  // assert "plenty left" or, drawn off Math.max(max, 1), sit full and assert the
-  // opposite. `used` proves the breakdown parsed — the same guard the panel uses.
-  if (max <= 0 || used.length === 0) return null
-  return { tokens, max, pct: (tokens / max) * 100, used }
-}
+/* The `useContextUsage` hook lived here, and the `ContextView` type with it.
+   Both moved out: the hook to ../useContextUsage.ts, because the session panel
+   needs the same reading and a panel importing a hook out of a composer leaf is
+   backwards; the type to derive.mts, because reconciling the poll with the live
+   estimate is a pure derivation with a rule in it worth checking, and this file
+   is a `.tsx` that `npm run check:derive` cannot load. */
 
 /**
  * Context pressure as a ring, and the button that opens its breakdown.
@@ -84,14 +34,27 @@ export function ContextRing({
       className="ctx-ring"
       data-level={level(pct)}
       data-open={open ? '' : undefined}
+      /* Dims the arc while the figure behind it is the per-request estimate
+         rather than a measured breakdown. The ring MOVES mid-turn now, which is
+         the whole point of the change — so it has to be able to say which of its
+         two sources it is drawing, or a number that walks while you watch reads
+         as a number nobody stands behind. */
+      data-estimated={usage.estimated ? '' : undefined}
       aria-expanded={open}
       aria-label={`Context ${pct.toFixed(0)}% used`}
       /* Cursor's own wording and split: the percentage as a sentence on the
          first line, the raw fraction underneath. What was here before —
          "Context: 51k of 1M used · 5%" plus a session-cost line — said the same
          thing twice on one line and then added something the hover was not
-         asked about. Cost is in the card. */
-      data-tip={`${pct.toFixed(0)}% context used\n${fmt(usage.tokens)} / ${fmt(usage.max)} tokens`}
+         asked about. Cost is in the card. The third line only appears when
+         there is something to disclose. */
+      data-tip={[
+        `${pct.toFixed(0)}% context used`,
+        `${usage.estimated ? '~' : ''}${fmt(usage.tokens)} / ${fmt(usage.max)} tokens`,
+        usage.estimated ? 'Estimated from the last request' : null,
+      ]
+        .filter(Boolean)
+        .join('\n')}
       onClick={onToggle}
     >
       <svg width="18" height="18" viewBox="0 0 18 18" aria-hidden="true">
@@ -148,14 +111,26 @@ export function ContextCard({
       <div className="ctx-card-stats">
         <span>{usage.pct.toFixed(0)}% full</span>
         <span className="spacer" />
+        {/* The tilde is GATED, like the ring's and the panel's. It used to be
+            hardcoded, from when this figure was always a poll away from current;
+            now that a settled reading really is measured, an unconditional `~`
+            says "approximately" about an exact number, and says nothing at all
+            in the one case it is meant for. */}
         <span className="ctx-card-tokens">
-          ~{fmt(usage.tokens)} / {fmt(usage.max)} tokens
+          {usage.estimated ? '~' : ''}
+          {fmt(usage.tokens)} / {fmt(usage.max)} tokens
         </span>
       </div>
 
       {/* Segments sized against the WINDOW, not against each other, so the bar
           fills to the same fraction the ring shows. The remainder is the track
-          showing through. */}
+          showing through.
+
+          The hatched tail is what keeps that promise while a turn is running.
+          The categories come from the last poll and the total comes from the
+          live estimate, so without it the bar would stop short of where the arc
+          ends — two views of one number, visibly disagreeing. It is hatched
+          rather than coloured because nothing has measured what is in it. */}
       <div className="ctx-card-bar" data-level={level(usage.pct)}>
         {usage.used.map((c, i) => (
           <span
@@ -163,6 +138,12 @@ export function ContextCard({
             style={{ width: `${(c.tokens / usage.max) * 100}%`, background: swatch(i) }}
           />
         ))}
+        {usage.unattributed > 0 && (
+          <span
+            className="ctx-card-est"
+            style={{ width: `${(usage.unattributed / usage.max) * 100}%` }}
+          />
+        )}
       </div>
 
       <ul className="ctx-card-list">
@@ -173,6 +154,16 @@ export function ContextCard({
             <span className="ctx-card-n">{fmt(c.tokens)}</span>
           </li>
         ))}
+        {/* Named rather than left as an unexplained band in the bar. It is one
+            row and it is always the last one, because it is by construction
+            whatever the breakdown could not account for. */}
+        {usage.unattributed > 0 && (
+          <li className="ctx-card-muted">
+            <i className="ctx-card-est" />
+            <span className="ctx-card-name">Since last refresh</span>
+            <span className="ctx-card-n">~{fmt(usage.unattributed)}</span>
+          </li>
+        )}
       </ul>
     </div>
   )

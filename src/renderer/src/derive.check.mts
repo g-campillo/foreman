@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem, SessionMeta } from '../../shared/types'
-import { activityOf, answeredQuestions, ANSWER_PREFIX, armedApproval, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, swatch, level, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, buildTree, focusTarget, authorEdits, resolveAnchors, mcpName, titleCase, summarise, editStat, toolFailed, groupRuns, runSummary } from './derive.mts'
+import { activityOf, answeredQuestions, ANSWER_PREFIX, armedApproval, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, contextView, swatch, level, triggerAt, askQuestions, projectKey, relPath, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, buildTree, focusTarget, authorEdits, resolveAnchors, mcpName, titleCase, summarise, editStat, toolFailed, groupRuns, runSummary } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -45,7 +45,7 @@ const todo = (content: string, status: string): unknown => ({ content, status })
 // parameter list and demand a `=>` (TS1005). Node's type-stripping parses it
 // fine, so `npm run check:derive` passes while `npm run typecheck` fails.
 ;{
-  const bg = [{ taskId: '1', taskType: 'Bash', description: 'npm test' }]
+  const bg = [{ taskId: '1', taskType: 'Bash', description: 'npm test', startedAt: 0 }]
   const s = (
     status: SessionMeta['status'],
     permissionMode: SessionMeta['permissionMode'] = 'default',
@@ -222,6 +222,152 @@ assert.deepEqual(contextBreakdown([{ name: 'x', tokens: 0 }], 100, 200).used, []
   )
   assert.deepEqual(used.map((c) => c.name), ['Messages', 'Skills'])
   assert.equal(used.reduce((n, c) => n + c.tokens, 0), 60)
+}
+
+// --------------------------------------------------------------- contextView
+
+// One poll, reused by every case below. Same shape the SDK returns, scaled down
+// so the arithmetic is readable: 6,000 of 10,000 used, one deferred group and a
+// filler, exactly as a live payload arrives.
+{
+  const poll = {
+    categories: [
+      { name: 'System tools', tokens: 1000 },
+      { name: 'Messages', tokens: 5000 },
+      { name: 'MCP tools (deferred)', tokens: 8000, isDeferred: true },
+      { name: 'Free space', tokens: 4000 },
+    ],
+    totalTokens: 6000,
+    maxTokens: 10000,
+  }
+
+  // A SETTLED reading IGNORES the estimate, however fresh it looks. Between
+  // turns, with a poll taken since the turn ended, the breakdown is the measured
+  // truth and the estimate is a number from before the last request.
+  {
+    const v = contextView(poll, 9000, true)
+    assert.equal(v?.tokens, 6000, 'settled draws the polled figure')
+    assert.equal(v?.pct, 60)
+    assert.equal(v?.estimated, false)
+    assert.equal(v?.unattributed, 0, 'nothing unaccounted for when the poll is what is drawn')
+  }
+
+  // THE TURN-END DIP, pinned. The third argument is NOT `status === 'idle'`: at
+  // the instant a turn ends the session is idle but the poll on screen predates
+  // the turn, and believing it would step the gauge down to the pre-turn total
+  // for one round trip and then back up. `settled` is false until a poll issued
+  // after the turn lands, and until then the estimate stands — even though the
+  // session is idle, and even though the estimate is the LARGER figure here,
+  // which is the direction a naive "trust the poll when idle" rule loses.
+  {
+    const v = contextView(poll, 9000, false)
+    assert.equal(v?.tokens, 9000, 'idle-but-not-yet-repolled keeps the estimate')
+    assert.equal(v?.estimated, true)
+    assert.equal(v?.unattributed, 3000, 'and the bar carries the difference')
+  }
+
+  // THE FROZEN-RING BUG, pinned. Mid-turn the estimate is what moves, and the
+  // ring used to sit on the poll for the entire duration of every turn — which
+  // is the whole time anyone looks at it.
+  {
+    const v = contextView(poll, 5000, false)
+    assert.equal(v?.tokens, 5000)
+    assert.equal(v?.pct, 50, 'not 60 — a running turn draws the live level')
+    assert.equal(v?.estimated, true)
+  }
+
+  // A FALLING ESTIMATE IS HONOURED. This is the check a `Math.max(poll, live)`
+  // implementation fails, and it is the case that matters most: after compaction
+  // the window really is emptier than the last poll said, and a max would pin
+  // the ring to the pre-compaction red until the next poll landed.
+  {
+    const v = contextView(poll, 2000, false)
+    assert.equal(v?.tokens, 2000, 'occupancy goes DOWN; never Math.max the two')
+    assert.equal(v?.pct, 20)
+    assert.equal(v?.unattributed, 0, 'a falling estimate leaves no remainder, and never a negative')
+  }
+
+  // The bar's own invariant: the segments plus the remainder are exactly what
+  // the ring's arc is drawn from. Violating it draws a bar that stops short of
+  // where the arc ends, which is two views of one number disagreeing on screen.
+  {
+    const v = contextView(poll, 7500, false)
+    const sum = (v?.used ?? []).reduce((n, c) => n + c.tokens, 0)
+    assert.equal(sum + (v?.unattributed ?? 0), v?.tokens, 'used.sum + unattributed === tokens')
+    assert.equal(v?.unattributed, 1500)
+  }
+
+  // Deferred groups are excluded from totalTokens by the SDK, so they must not
+  // leak into the remainder either — 8,000 of them here would swamp it.
+  {
+    const v = contextView(poll, 6000, false)
+    assert.equal(v?.unattributed, 0, 'deferred groups never inflate the remainder')
+    assert.deepEqual(v?.deferred.map((c) => c.name), ['MCP tools (deferred)'])
+  }
+
+  // Over 100% is reachable and is NOT capped: the arc clamps itself for drawing,
+  // but a readout claiming 100% while the next request will fail is the one
+  // place this must not round in the app's favour.
+  assert.equal(contextView(poll, 12000, false)?.pct, 120)
+
+  // No poll yet, and an estimate cannot conjure a gauge: it is a numerator with
+  // no denominator behind it. Same guard for a window of unknown size.
+  assert.equal(contextView(null, 5000, false), null, 'no poll -> nothing to draw')
+  assert.equal(
+    contextView({ categories: [], totalTokens: 0, maxTokens: 0 }, 5000, false),
+    null,
+    'maxTokens 0 -> nothing to draw',
+  )
+
+  // A breakdown that is entirely filler, or entirely deferred, has not parsed
+  // into anything drawable — the same `used.length === 0` guard the ring has
+  // always had, kept verbatim.
+  assert.equal(
+    contextView(
+      { categories: [{ name: 'Free space', tokens: 10000 }], totalTokens: 0, maxTokens: 10000 },
+      500,
+      false,
+    ),
+    null,
+    'all filler -> nothing to draw',
+  )
+  assert.equal(
+    contextView(
+      {
+        categories: [{ name: 'MCP tools (deferred)', tokens: 8000, isDeferred: true }],
+        totalTokens: 0,
+        maxTokens: 10000,
+      },
+      500,
+      false,
+    ),
+    null,
+    'all deferred -> nothing to draw',
+  )
+}
+
+// The regression net. contextView wraps contextBreakdown rather than
+// reimplementing it, and the live 92,328/23,894 fixture above is what proves the
+// filler and deferred rules still hold — so the two must agree category for
+// category, or one of them has quietly grown its own copy of the logic.
+{
+  const cats = [
+    { name: 'System prompt', tokens: 95 },
+    { name: 'System tools', tokens: 13761 },
+    { name: 'MCP tools (deferred)', tokens: 52166, isDeferred: true },
+    { name: 'System tools (deferred)', tokens: 16268, isDeferred: true },
+    { name: 'Custom agents', tokens: 71 },
+    { name: 'Memory files', tokens: 1492 },
+    { name: 'Skills', tokens: 2538 },
+    { name: 'Messages', tokens: 5937 },
+    { name: 'Free space', tokens: 976106 },
+  ]
+  const direct = contextBreakdown(cats, 23894, 1_000_000)
+  const v = contextView({ categories: cats, totalTokens: 23894, maxTokens: 1_000_000 }, null, true)
+  assert.deepEqual(v?.used, direct.used, 'contextView must not re-derive the breakdown')
+  assert.deepEqual(v?.deferred, direct.deferred)
+  assert.equal(v?.tokens, 23894)
+  assert.equal(v?.unattributed, 0)
 }
 
 // ------------------------------------------------------------ swatch / level

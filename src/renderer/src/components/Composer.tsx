@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
   ArrowUp,
-  Cog,
   FolderOpen,
   FolderPlus,
   GitBranch,
@@ -34,7 +33,9 @@ import Autocomplete, { type Suggestion } from './Autocomplete'
 import MarkdownInput from './MarkdownInput'
 import type { MenuItem } from './Menu'
 import Picker from './Picker'
-import { ContextCard, ContextRing, useContextUsage } from './ContextRing'
+import { ContextCard, ContextRing } from './ContextRing'
+import { BackgroundTaskCard, BackgroundTaskTray } from './BackgroundTasks'
+import { useContextUsage } from '../useContextUsage'
 
 /* The CURRENT sentinel lived here — a fake <option> for "whatever the session is
    already running" when no alias matched, because a native select cannot show a
@@ -205,6 +206,17 @@ const STARTERS: { label: string; mode: PermissionMode }[] = [
   { label: 'Accept edits', mode: 'acceptEdits' },
 ]
 
+/**
+ * What is open in the composer's one card slot, if anything.
+ *
+ * ONE SLOT, not a boolean per card. The context breakdown and a background
+ * task's detail card are both full-width panels that float directly above the
+ * composer, and two independent flags would let both open at once — pushing the
+ * composer down the pane and moving send out from under the pointer that just
+ * opened one of them. A single nullable state makes that unrepresentable.
+ */
+type Panel = { kind: 'context' } | { kind: 'task'; taskId: string } | null
+
 /** Only the four types the API accepts get this far — see ACCEPTED below. */
 interface Attachment {
   id: string
@@ -239,8 +251,8 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
   /* Fetched here rather than inside the ring, because the ring and the card it
      opens are siblings — the ring sits under the composer, the card floats above
      it, so neither can own the poll for the other. */
-  const usage = useContextUsage(session)
-  const [showContext, setShowContext] = useState(false)
+  const { view: usage } = useContextUsage(session)
+  const [panel, setPanel] = useState<Panel>(null)
   const picker = useRef<HTMLInputElement>(null)
   const [text, setText] = useState('')
   const [attachments, setAttachments] = useState<Attachment[]>([])
@@ -432,8 +444,10 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
   // ------------------------------------------------------------------ menus
 
   /** Cursor's composer has two shapes, and which one you get is whether a
-   *  conversation exists yet: a tall card with the context pickers above it and
-   *  starter chips below, or a single-row pill with the pickers underneath. */
+   *  conversation exists yet: a tall card with the project picker and the
+   *  starter chips, or a single-row reply pill with neither. Both carry the same
+   *  status row underneath — the shapes differ in the FIELD, not in where the
+   *  session's settings live. */
   const compact = !fresh
 
   const root = session.worktree?.repoRoot ?? session.cwd
@@ -530,20 +544,30 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     onSelect: () => void window.foreman.setPermissionMode(session.id, m.value),
   }))
 
+  /* The four status pickers. Each carries a placement class, because they now
+     all live on ONE row and the row has to decide which of them gives width
+     first — see `.composer-bar` in theme.css.
+
+     None of them passes `align` any more. They sit at the LEFT of a row at the
+     foot of the window, where `align="right"` computes a negative x and clamps
+     to the window edge — the menu ends up under the rail rather than under its
+     trigger. Menu already flips upward on its own for a control this low, which
+     the branch picker has been proving since it moved down here. */
   const projectPicker = (
     <Picker
+      className="composer-project"
       icon={<FolderOpen size={12} />}
       label={projectName}
       items={projectItems}
       ariaLabel="Project"
       tip="Project — pick another to start a session there"
-      align={compact ? 'right' : 'left'}
       search={recents.length > 6}
       searchPlaceholder="Find a project…"
     />
   )
   const branchPicker = (
     <Picker
+      className="composer-branch"
       icon={<GitBranch size={12} />}
       label={branchLabel}
       items={branchItems}
@@ -551,12 +575,27 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
       tip="Branch this session is working on"
     />
   )
+  /* Effort rides on the model label rather than taking a second control — see
+     `modelLabel`. It used to sit inside the card next to send; on the status row
+     it is beside the mode, which is the other thing that decides what the next
+     turn actually does. */
+  const modelPicker = (
+    <Picker
+      className="composer-model"
+      label={modelLabel}
+      items={modelItems}
+      ariaLabel="Model and reasoning effort"
+      tip="Model, and how long it thinks before answering"
+      search={models.length > 6}
+      searchPlaceholder="Find a model…"
+    />
+  )
   /* The live permission mode, always on screen. Its label is the whole point of
      the feature — there is deliberately NO icon-only fallback at narrow widths,
      because that would reintroduce the exact "which one is on?" problem this
-     exists to fix. `.composer-card .picker { flex: 0 1 auto }` and
-     `.picker-label`'s ellipsis already exist, so this and the model picker give
-     before anything else in the row does. */
+     exists to fix. It is last in the row and the last to give width: the shrink
+     weights in `.composer-bar` make branch and model ellipsis first, and this
+     one never truncates. */
   const modePicker = (
     <Picker
       className="composer-mode"
@@ -571,33 +610,26 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
 
   /* Outside the card, above it. Cursor's tray is its `__header`, absolutely
      positioned clear of the input — in the card it would break the compact
-     single row, and it is status rather than part of the field. */
+     single row, and it is status rather than part of the field.
+
+     The chips' markup and their 1s clock live in BackgroundTasks.tsx: a ticker
+     here would repaint the editor and every open menu once a second. */
   const bgTray = session.backgroundTasks.length > 0 && (
-    <div className="bg-tray">
-      {session.backgroundTasks.map((t) => (
-        <span
-          key={t.taskId}
-          className="chip bg-task"
-          title={t.description}
-          data-tip={
-            [t.progress, t.lastTool && `last: ${t.lastTool}`].filter(Boolean).join('\n') ||
-            'Running — no progress reported yet'
-          }
-        >
-          <Cog size={12} className="bg-spin" />
-          <span className="bg-desc">{t.description || t.taskType}</span>
-          {t.progress && <span className="bg-progress">{t.progress}</span>}
-          {t.tokens ? <span className="bg-tok">{Math.round(t.tokens / 1000)}k</span> : null}
-          <button
-            aria-label="Stop this background task"
-            onClick={() => void window.foreman.stopTask(session.id, t.taskId)}
-          >
-            <X size={12} />
-          </button>
-        </span>
-      ))}
-    </div>
+    <BackgroundTaskTray
+      session={session}
+      openTask={panel?.kind === 'task' ? panel.taskId : null}
+      onOpen={(taskId) => setPanel(taskId ? { kind: 'task', taskId } : null)}
+    />
   )
+
+  /* DERIVED from the live set rather than held as its own state, so a task that
+     finishes takes its card away with it — the level drops the id, this resolves
+     to undefined, and nothing renders. An effect that closed the card on the
+     same event would be a second writer of the same fact, racing the first. */
+  const openTask =
+    panel?.kind === 'task'
+      ? session.backgroundTasks.find((t) => t.taskId === panel.taskId)
+      : undefined
 
   return (
     <div className="composer">
@@ -621,29 +653,31 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
 
       {bgTray}
 
-      {compact && showContext && usage && (
-        <ContextCard
-          usage={usage}
-          costUsd={session.costUsd}
-          onClose={() => setShowContext(false)}
-        />
+      {/* THE ONE CARD SLOT — see the Panel type. The `compact &&` gate is gone
+          with it: the ring exists in both shapes now, so a card that could only
+          open in one of them was a control whose result was invisible. */}
+      {panel?.kind === 'context' && usage && (
+        <ContextCard usage={usage} costUsd={session.costUsd} onClose={() => setPanel(null)} />
+      )}
+      {openTask && (
+        <BackgroundTaskCard session={session} task={openTask} onClose={() => setPanel(null)} />
       )}
 
-      {/* Above on a fresh session, below once a conversation exists. Cursor
-          moves them, and the move is what makes the compact form read as a reply
-          box rather than a shrunken copy of the first one. */}
-      {!compact && (
-        <div className="composer-context">
-          {projectPicker}
-          {branchPicker}
-        </div>
-      )}
+      {/* The project/branch pair used to be duplicated here, above the card on a
+          fresh session, with a second copy below it once a conversation existed.
+          There is one status row now and it is always below — see
+          `.composer-bar` at the foot of this component. */}
 
-      {/* One card, controls inside it. The row of pickers and buttons used to
-          sit BELOW the input box as a separate strip; Cursor puts the same
-          controls inside the same rounded surface as the text, which is what
-          makes their composer read as one object rather than a field with a
-          toolbar bolted underneath.
+      {/* One card: the field, and only the controls that ACT on it — `+`, the
+          two busy-only buttons, send. Cursor draws the input and its own buttons
+          on one rounded surface, which is what makes the composer read as one
+          object rather than a field with a toolbar bolted under it.
+
+          The settings that used to sit in here with them — mode and model — are
+          on the status row below (see `.composer-bar` at the foot of this
+          component). That is not a return to the pre-card layout: what moved out
+          is what described the NEXT TURN rather than the field, and in here it
+          competed with send for width and swapped sides between the two shapes.
 
           The border, radius and fill moved here from .composer-editor, which is
           now transparent — otherwise there would be a box drawn inside a box.
@@ -781,26 +815,13 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
           <Plus size={14} />
         </button>
 
-        {/* Mode left, model right — Cursor's split, and the reason the pill is a
-            Picker rather than a bespoke control is that it then behaves exactly
-            like the other three: same trigger, same menu, same keyboard. */}
-        {modePicker}
-
+        {/* The mode pill and the model picker lived here, inside the card, one
+            on each side of this spacer. Both moved to the status row: they are
+            settings you glance at rather than parts of the field, and in here
+            they competed with send for width and changed places between the two
+            shapes. The SPACER STAYS — without it `+` and send collapse together
+            at the left of the card. */}
         <span className="spacer" />
-
-        {/* Right, next to send, not out on the left beside `+`. The model is the
-            last thing you check before pressing the button, and Cursor's compact
-            composer puts it in exactly this spot — this keeps the two shapes
-            agreeing about where it lives. */}
-        <Picker
-          label={modelLabel}
-          items={modelItems}
-          ariaLabel="Model and reasoning effort"
-          tip="Model, and how long it thinks before answering"
-          align="right"
-          search={models.length > 6}
-          searchPlaceholder="Find a model…"
-        />
 
         {/* The running cost used to sit here. It moved to ContextStrip below:
             it is a readout rather than a control, and this row had no width left
@@ -866,24 +887,36 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         </span>
       </div>
 
-      {/* Branch left, context pressure right — Cursor's chat status bar. The
-          project picker used to sit on the right; it is gone, because ⌘N already
-          starts a conversation in this project and its menu offers any other. A
-          picker whose only job was to restate the session's own directory was
-          spending the one spot Cursor gives to the context ring. */}
-      {compact && (
-        <div className="composer-context">
-          {branchPicker}
-          <span className="spacer" />
-          {usage && (
-            <ContextRing
-              usage={usage}
-              open={showContext}
-              onToggle={() => setShowContext((v) => !v)}
-            />
-          )}
-        </div>
-      )}
+      {/* The status row: what this turn will run as, left to right, with the
+          context ring at the far end. One unconditional row in both shapes,
+          where there used to be two conditional ones — a project/branch pair
+          above the fresh card and a branch/ring pair below the compact one.
+
+          Everything on it is a fact about the next turn rather than a part of
+          the field: where it runs, on what branch, as which model, under which
+          permission mode, against how much window. Inside the card they were
+          competing with send for width and moving between the two shapes.
+
+          The project picker is the one thing still conditional. ⌘N already
+          starts a conversation in this project and the branch picker's menu can
+          reach any other, so once a conversation exists it would only be
+          restating the session's own directory. */}
+      <div className="composer-bar" data-compact={compact ? '' : undefined}>
+        {!compact && projectPicker}
+        {branchPicker}
+        {modelPicker}
+        {modePicker}
+        <span className="spacer" />
+        {usage && (
+          <ContextRing
+            usage={usage}
+            open={panel?.kind === 'context'}
+            onToggle={() =>
+              setPanel((p) => (p?.kind === 'context' ? null : { kind: 'context' }))
+            }
+          />
+        )}
+      </div>
 
       {/* Cursor's starter pills. Only on a fresh session — once there is a
           conversation the mode is already set and these would be re-asking. */}

@@ -32,20 +32,73 @@ export type PermissionMode = (typeof PERMISSION_MODES)[number]
 /** Mirrors the SDK's EffortLevel. 'max' is session-scoped and never persisted. */
 export type EffortLevel = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 
+/** Mirrors the SDK's own task status union, from `task_updated`'s patch. */
+export type BackgroundTaskStatus =
+  | 'pending'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'killed'
+  | 'paused'
+
+/**
+ * One live background task, as the tray chip and its detail card need it.
+ *
+ * Everything past `description` is folded in from the SDK's task EDGES —
+ * task_started, task_progress, task_updated, task_notification — while
+ * membership in the tray comes from the `background_tasks_changed` LEVEL, which
+ * carries ids only. The SDK is explicit that the two streams must not be
+ * correlated and that their relative order is unspecified, so main keeps a side
+ * table and projects this shape out of it; see Session.noteTask.
+ *
+ * Nothing persists this, so its shape can change freely — the sidecar holds
+ * cost, tokens and permission mode and nothing else.
+ */
 export interface BackgroundTask {
   taskId: string
   taskType: string
   description: string
   /**
+   * Epoch ms, from `task_started` — which lands ~30s before the first
+   * task_progress could. REQUIRED, because a chip whose clock is optional has
+   * no clock: the tray would have to render a blank where the elapsed time goes
+   * for the first half-minute of every task, which is exactly the window in
+   * which people wonder whether anything is happening. Floored from
+   * task_progress's `duration_ms` if a start edge was somehow missed.
+   */
+  startedAt: number
+  /**
+   * When the task finished, if it has. THE CHIP'S CLOCK STOPS HERE.
+   *
+   * Without it the renderer has only `now - startedAt`, and a task whose
+   * completion arrives before the level drops its id — the ordering the SDK
+   * declines to specify — renders as "completed" with the elapsed time still
+   * counting up.
+   */
+  endedAt?: number
+  /** Time spent paused, so the elapsed clock can say so rather than lying. */
+  pausedMs?: number
+  /** 'code-reviewer' and friends — what KIND of work this is, for the chip. */
+  subagentType?: string
+  /** meta.name of a local workflow, the same slot subagentType fills. */
+  workflowName?: string
+  /** Tool calls made so far, from task_progress. */
+  toolUses?: number
+  status?: BackgroundTaskStatus
+  /** Set when the task failed. Shown on the card, never truncated into a chip. */
+  error?: string
+  /**
+   * ChatItem id of the Task card this work belongs to, so the card can offer
+   * "Show in transcript". Absent for an ambient/skip_transcript task, which has
+   * no card to show — the button says so rather than silently doing nothing.
+   */
+  itemId?: string
+  /**
    * Live progress, joined onto the task by `task_id`.
    *
-   * The SDK already emits all of this on `task_progress` roughly every 30s;
-   * before this it was only ever folded onto the in-transcript Task card, so a
-   * *backgrounded* task showed as an opaque chip with no way to see inside it.
-   *
-   * `background_tasks_changed` has REPLACE semantics and carries none of these,
-   * so they have to be merged by taskId when the set changes or every chip goes
-   * blank the moment another task starts or finishes.
+   * The SDK emits all of this on `task_progress` roughly every 30s; before this
+   * it was only ever folded onto the in-transcript Task card, so a *backgrounded*
+   * task showed as an opaque chip with no way to see inside it.
    */
   progress?: string
   lastTool?: string
@@ -102,6 +155,24 @@ export interface SessionMeta {
    * usage rides the message, not the token deltas — so it steps in chunks.
    */
   turnTokens: number
+  /**
+   * How full the context window is right now, as of the last request. null until
+   * a turn has reported one.
+   *
+   * A LEVEL, not a counter, and that is the whole reason it is its own field. The
+   * same double-count argument `turnTokens` makes above applies here an order of
+   * magnitude harder: this is the ENTIRE conversation re-sent on every request,
+   * so folding it into inputTokens/outputTokens/turnTokens would add the whole
+   * window to the cumulative totals once per assistant message and report a
+   * $0.11 turn as tens of millions of tokens.
+   *
+   * Levels go down as well as up — compaction is exactly that — so nothing may
+   * accumulate it or Math.max it against the polled figure.
+   *
+   * Not persisted to the sidecar: a window occupancy from a previous run says
+   * nothing about the window a resumed conversation actually has.
+   */
+  contextTokens: number | null
   permissionMode: PermissionMode
   createdAt: number
   /** null until set; the SDK's own default applies while it is. */

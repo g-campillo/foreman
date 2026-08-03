@@ -2002,22 +2002,11 @@ button.tool-line:hover {
   color: rgb(var(--text));
 }
 
-/* The permission mode, always on screen. Shrinks like the model picker beside
-   it — `.composer-card .picker` already sets `flex: 0 1 auto`, and this restates
-   it only because the pill is placed rather than inherited. Worst case ("Accept
-   edits") is about 120px, and `.picker-label` ellipsises before the row breaks.
-   Deliberately no icon-only fallback at narrow widths: hiding the label would
-   reintroduce the exact "which mode is on?" problem the pill exists to fix. */
-.composer-mode {
-  flex: 0 1 auto;
-}
-/* LOAD-BEARING. `+` leads the compact row via `order: -1`, and at equal order
-   DOM position decides — the pill sits after the input in markup, so without
-   this the compact row reads `+ | input | mode | model` and the mode ends up on
-   the wrong side of the field it governs. */
-.composer-card[data-compact] .composer-mode {
-  order: -1;
-}
+/* `.composer-mode`'s two rules lived here. The pill is on the status row now,
+   not in the card, so both were describing something that no longer happens:
+   the shrink weight is `.composer-bar`'s business, and the `order: -1` that put
+   the pill in front of the compact input governed a compact row it is no longer
+   part of. Its sizing is with the rest of the row's, above. */
 
 /* Every button in the card is icon-only, so they are circles rather than
    pills — Cursor's send is a filled white ⬤ with a dark glyph, and the two
@@ -2046,25 +2035,69 @@ button.tool-line:hover {
 .composer-card .btn[data-variant='danger']:hover {
   background: rgb(var(--danger) / 0.14);
 }
-/* The pickers give first when the pane is narrow — they ellipsis, and each still
-   shows enough of its label to identify it. Everything else in the row is a
-   fixed-size circle with nothing to give. */
-.composer-card .picker {
-  flex: 0 1 auto;
-}
+/* `.composer-card .picker` lived here, giving the in-card pickers something to
+   shrink. It matches nothing: the card holds no pickers any more — input, `+`,
+   spacer, the busy-only controls and send — and both of the pickers it was
+   written for are on `.composer-bar`, which sets its own weights. */
 
-/* The context row: project and branch, as bare text. Above the card on a fresh
-   session and below it once a conversation exists — Cursor moves them, and the
-   move is most of what distinguishes the two states.
+/* The status row: branch · model · mode, with the context ring at the far end.
+   Always below the card, in both shapes.
 
-   Inset by a picker's own left padding so the labels line up with the card's
-   text rather than with its border. */
-.composer-context {
+   A RENAME of the old context row, not a reuse of it — that name described a
+   row that MOVED above the card on a fresh session, and the whole argument in
+   its comment was for behaviour that has been deleted. One row, one place.
+
+   NO WRAPPING, and it is the one rule here worth defending. A status line that
+   reflows grows a second line, which shoves the card up the pane and moves send
+   out from under a pointer that was already aimed at it. The pickers ellipsis
+   instead — see the shrink weights below.
+
+   The inset is keyed off `data-compact` because the two shapes present entirely
+   different landmarks to line up with, not because one number was scaled.
+
+   EXPANDED there is an exact one. `.composer-input` is `flex: 1 0 100%`, so the
+   editor leads its own line and its text sits 23px in: 1px card border + 10px
+   card padding + 12px of --editor-pad. A picker spends 7px of its own before its
+   icon (6px padding + 1px border). 16 + 7 = 23, so the first icon lands under
+   the first character.
+
+   COMPACT there is none, and quoting arithmetic for it would be false precision
+   someone would later "correct" against the wrong thing. The leading element is
+   the `+` circle (`order: -1`) at 9px, and the editor's text is 43px in behind
+   it — 1 + 8 + 24 + 8 + 2. There is no character to align a label to, so 6px is
+   chosen to tuck the row just inside the pill and nothing more. */
+.composer-bar {
   display: flex;
+  flex-wrap: nowrap;
   align-items: center;
   gap: var(--sp-1);
   min-width: 0;
+  padding: 0 16px;
+}
+.composer-bar[data-compact] {
   padding: 0 var(--sp-1-5);
+}
+
+/* Shrink weights, in the order the row should give width up. Branch names are
+   long, arbitrary and the least load-bearing thing here, so they go first;
+   project and model give after it.
+
+   THE MODE LABEL NEVER TRUNCATES. `flex: none` on it, deliberately, and the
+   reason is the reason the pill exists at all: an unreadable mode is exactly
+   the "which one is on?" bug it was added to fix, and "Accept e…" over a
+   session that will edit files without asking is worse than not showing it. It
+   is at most "Accept edits" — about 120px — so the cost is bounded. */
+.composer-bar .composer-branch {
+  flex: 0 3 auto;
+  min-width: 0;
+}
+.composer-bar .composer-project,
+.composer-bar .composer-model {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.composer-bar .composer-mode {
+  flex: none;
 }
 
 /* Starter pills, under the empty composer. Cursor's filter-pill treatment: every
@@ -2464,6 +2497,14 @@ button.tool-line:hover {
 .ctx-ring[data-level='danger'] .ctx-ring-val {
   stroke: rgb(var(--danger));
 }
+/* Drawn from the per-request estimate rather than a measured breakdown. Opacity
+   rather than a dash pattern, which is the obvious way to say "provisional" and
+   is not available here: `stroke-dasharray` is an inline style carrying the ARC
+   LENGTH, so anything touching it would redraw the gauge. Opacity composes with
+   the level colours above instead of fighting them. */
+.ctx-ring[data-estimated] .ctx-ring-val {
+  opacity: 0.72;
+}
 
 /* The breakdown, opened from the ring. Cursor floats it in the composer's tray
    slot at the composer's own width rather than anchoring it as a menu — it is
@@ -2532,6 +2573,18 @@ button.tool-line:hover {
   min-width: 2px;
   border-radius: var(--r-pill);
 }
+/* Occupancy the last poll cannot account for — everything the conversation has
+   grown by since. Hatched rather than given a swatch, because no category has
+   been measured for it: a solid band would claim it belongs to something. Used
+   in three places (this bar, the panel's `.ctx-bar`, and both legends), so it
+   sets its own background and nothing else. */
+.ctx-card-est {
+  background: repeating-linear-gradient(
+    -45deg,
+    rgb(var(--text-faint) / 0.55) 0 2px,
+    transparent 2px 4px
+  );
+}
 
 .ctx-card-list {
   display: flex;
@@ -2553,6 +2606,11 @@ button.tool-line:hover {
   width: 9px;
   height: 9px;
   border-radius: 2px;
+}
+/* The estimate's legend row, one step back from the measured ones — it is the
+   only row here naming something nothing has counted. */
+.ctx-card-list li.ctx-card-muted {
+  color: rgb(var(--text-faint));
 }
 .ctx-card-name {
   flex: 1;
@@ -4254,11 +4312,58 @@ button.diff-more:hover {
   margin-bottom: 7px;
 }
 /* A background task is a live feed, not a badge: description, then the rolling
-   AI progress summary, then its token spend. Full width so the summary has
-   somewhere to go — these are the only thing on their row. */
+   AI progress summary, then a clock and its token spend. Full width so the
+   summary has somewhere to go — these are the only thing on their row.
+
+   `max-width: none` is a FIX, not decoration. `.chip` caps at 220px, and this
+   inherited it, so the "full width" the line above has claimed since the tray
+   was written has never once been true: every summary was clipped at a fifth of
+   the composer. */
 .bg-task {
   flex: 1 1 100%;
   min-width: 0;
+  max-width: none;
+  /* Padding belongs to the two buttons inside, so their hit areas reach the
+     chip's own edges. */
+  padding: 0;
+  gap: 0;
+}
+/* The chip body: everything except the ✕, and the whole of it opens the card.
+   A button, and the ✕ is its sibling rather than its child — a button inside a
+   button is markup the browser silently reparents, which would put the stop
+   control outside the chip.
+
+   SCOPED UNDER `.bg-task` ON PURPOSE, all four rules. `.chip button` and
+   `.chip button:hover` already exist for the attachment chips' remove control,
+   they match both of these buttons, and at one class plus one type they beat a
+   bare `.bg-body`. Unscoped, the body of the chip would inherit the ✕'s 10px
+   type and its danger-red hover — a whole live-feed row turning red because the
+   pointer crossed it, on the one control here that discards nothing. */
+.bg-task .bg-body {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 3px;
+  font-size: inherit;
+  color: inherit;
+  text-align: left;
+  border-radius: var(--r-sm);
+}
+.bg-task .bg-body:hover,
+.bg-task[data-open] .bg-body {
+  background: rgb(var(--fill-hover));
+  color: rgb(var(--text));
+}
+.bg-task .bg-stop {
+  flex: 0 0 auto;
+  padding: 3px 5px;
+  color: rgb(var(--text-faint));
+  border-radius: var(--r-sm);
+}
+.bg-task .bg-stop:hover {
+  color: rgb(var(--danger));
 }
 .bg-spin {
   flex: 0 0 auto;
@@ -4281,10 +4386,48 @@ button.diff-more:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* Ticks every second, so tabular figures — proportional ones make the whole
+   chip twitch as the digits change width. Pushed right by .bg-progress's
+   `flex: 1 1 auto`, and margin-left:auto covers the case where there is no
+   progress line yet, which is the first ~30s of every task. */
+.bg-elapsed {
+  flex: 0 0 auto;
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  color: rgb(var(--text-faint));
+}
 .bg-tok {
   flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
   color: rgb(var(--text-faint));
+}
+
+/* The detail card, in the composer's one card slot. Structure only: it borrows
+   `.ctx-card` for its shell, so the two things that can open in that slot are
+   the same object at the same width. */
+.bg-card-title {
+  flex: 1;
+  min-width: 0;
+  color: rgb(var(--text));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* Wraps, unlike the chip's copy — having room for the whole summary is most of
+   why the card exists. */
+.bg-card-progress {
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-dim));
+}
+.bg-card-error {
+  font-size: var(--fs-sm);
+  color: rgb(var(--danger));
+}
+.bg-card-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
 }
 
 /* In flow again, inside the card. This used to be `position: absolute; top:

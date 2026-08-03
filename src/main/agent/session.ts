@@ -5,6 +5,8 @@ import {
   IPC,
   type AccountInfo,
   type AgentInfo,
+  type BackgroundTask,
+  type BackgroundTaskStatus,
   type ChatItem,
   type ContextUsage,
   type EffortLevel,
@@ -79,11 +81,17 @@ export interface SessionInit {
  * $0.11 turn, because prompt caching moves essentially all of it into the two
  * cache counters. A "tokens in" readout built on it reads as broken, so both
  * are folded in: cache reads are billed (at a discount) and are real context.
+ *
+ * The cache fields are `number | null` rather than optional, because the two
+ * callers pass two different usage shapes: `result` carries the SDK's own
+ * non-nullable one, while an assistant message carries the API's BetaUsage,
+ * where an uncached request reports the cache counters as literal null. `?? 0`
+ * covers both, and narrowing this back to `?: number` breaks the second caller.
  */
 function inputTokensOf(u: {
-  input_tokens?: number
-  cache_read_input_tokens?: number
-  cache_creation_input_tokens?: number
+  input_tokens?: number | null
+  cache_read_input_tokens?: number | null
+  cache_creation_input_tokens?: number | null
 } | null | undefined): number {
   if (!u) return 0
   return (
@@ -92,6 +100,51 @@ function inputTokensOf(u: {
     (u.cache_creation_input_tokens ?? 0)
   )
 }
+
+/**
+ * Everything learned about one task from the SDK's edge stream.
+ *
+ * A SIDE TABLE, keyed by task_id, and the shape of it is the fix. The tray used
+ * to be built by merging each new `background_tasks_changed` payload against the
+ * previous array — which only ever worked because every field it preserved was
+ * written by `task_progress`, i.e. AFTER membership. `startedAt`, `toolUseId`
+ * and `subagentType` come from `task_started`, and the SDK says plainly that
+ * the level and the edges may arrive in either order: the very first thing that
+ * happens to a backgrounded task is the one that would be dropped.
+ *
+ * So membership and knowledge are kept apart. Edges fold in here whether or not
+ * the task is in the tray — a foreground subagent's start is recorded too, and
+ * is waiting if it is later backgrounded — and the level decides only WHICH of
+ * these rows the renderer is shown.
+ */
+interface TaskInfo {
+  description?: string
+  taskType?: string
+  /** Written once, never overwritten. See noteTask. */
+  startedAt?: number
+  toolUseId?: string
+  subagentType?: string
+  workflowName?: string
+  toolUses?: number
+  tokens?: number
+  progress?: string
+  lastTool?: string
+  status?: BackgroundTaskStatus
+  error?: string
+  pausedMs?: number
+  /** Finished for good. Half of the GC test — see sweepTasks. */
+  terminal?: boolean
+  /** When `terminal` was first set. Stamped once, and it is what stops the
+   *  chip's clock — see noteTask. */
+  endedAt?: number
+}
+
+/** Statuses a task never comes back from. 'paused' and 'pending' are not here. */
+const TERMINAL: ReadonlySet<BackgroundTaskStatus> = new Set<BackgroundTaskStatus>([
+  'completed',
+  'failed',
+  'killed',
+])
 
 export class Session {
   readonly meta: SessionMeta
@@ -102,6 +155,11 @@ export class Session {
     // Here rather than in setStatus: 'awaiting-approval' -> 'running' re-enters
     // that method, so a permission prompt mid-turn would zero the clock. A
     // message leaving the queue happens exactly once per turn.
+    //
+    // `contextTokens` is deliberately NOT reset with them. It is a level, not a
+    // per-turn counter — the window is exactly as full the instant after you
+    // press send as the instant before — and a gauge that empties on send reads
+    // as a bug. It is replaced wholesale by the next assistant message.
     this.patchMeta({ turnStartedAt: Date.now(), turnTokens: 0 })
     this.setStatus('running')
   })
@@ -119,6 +177,17 @@ export class Session {
   private readonly streamingThinking = new Map<string, string>()
   /** tool_use_id -> ChatItem id, so tool_result can update the right card. */
   private readonly toolItems = new Map<string, string>()
+  /**
+   * The task side table, and the tray's membership, kept apart on purpose — see
+   * TaskInfo above.
+   *
+   * Instance fields rather than module state because the level is PER-PROCESS:
+   * the SDK emits nothing at startup and expects the set to be empty until the
+   * first membership change, and a Session owns exactly one query(). So these
+   * are born empty with the CLI and die with it, which is the contract.
+   */
+  private readonly taskInfo = new Map<string, TaskInfo>()
+  private taskMembers: { taskId: string; taskType: string }[] = []
   private pendingApprovals = 0
   /**
    * Auto-titling state.
@@ -168,6 +237,10 @@ export class Session {
       outputTokens: prior.outputTokens,
       turnStartedAt: null,
       turnTokens: 0,
+      // Unknown until the first request reports one. Not restored from the
+      // sidecar with cost and tokens above: those are cumulative facts about the
+      // conversation, this is a reading of a window that does not exist yet.
+      contextTokens: null,
       // What this conversation WAS beats what the renderer configures a new one
       // to be. Resolved here rather than in the renderer's resume() because it
       // has to be known BEFORE query() is constructed twelve lines down —
@@ -383,24 +456,75 @@ export class Session {
         break
 
       case 'system':
-        // REPLACE semantics — the SDK sends the complete live set each time,
-        // and it carries no progress fields. So merge rather than assign: a
-        // straight map would blank every chip's live status the moment any
-        // other task started or finished.
+        // THE LEVEL. Ids only, REPLACE semantics, and the SDK's own note says
+        // its order against the task_started/task_notification edges is
+        // unspecified — so this decides membership and nothing else. Everything
+        // a chip actually shows comes out of the side table, which the edges
+        // fill in whenever they happen to arrive.
         if (msg.subtype === 'background_tasks_changed') {
-          const known = new Map(this.meta.backgroundTasks.map((t) => [t.taskId, t]))
-          this.patchMeta({
-            backgroundTasks: msg.tasks.map((t) => {
-              const prev = known.get(t.task_id)
-              return {
-                taskId: t.task_id,
-                taskType: t.task_type,
-                description: t.description,
-                ...(prev?.progress ? { progress: prev.progress } : {}),
-                ...(prev?.lastTool ? { lastTool: prev.lastTool } : {}),
-                ...(prev?.tokens ? { tokens: prev.tokens } : {}),
-              }
-            }),
+          for (const t of msg.tasks) {
+            const info = this.taskInfo.get(t.task_id) ?? {}
+            // What we already learned wins over the level's copy: this payload
+            // is a snapshot of the description at membership time, while
+            // task_updated can refine it afterwards.
+            info.description ??= t.description
+            info.taskType ??= t.task_type
+            // A clock the chip can start from even when we never saw the start
+            // edge — an adopted host replaying its log mid-task is the case.
+            // Never overwrites a real one: task_started writes into this same
+            // row whether or not the task was a member at the time.
+            info.startedAt ??= Date.now()
+            this.taskInfo.set(t.task_id, info)
+          }
+          this.taskMembers = msg.tasks.map((t) => ({ taskId: t.task_id, taskType: t.task_type }))
+          this.sweepTasks()
+          this.projectTasks()
+          break
+        }
+        // The first thing a task says about itself, and ~30s before any
+        // task_progress could: this is where the clock, the tool card it
+        // belongs to and what KIND of work it is are learned.
+        //
+        // It deliberately does NOT touch membership. Every subagent starts in
+        // the foreground, and a task_started that seeded the tray would put a
+        // chip under the composer for work the transcript is already showing.
+        if (msg.subtype === 'task_started') {
+          this.noteTask(
+            msg.task_id,
+            {
+              description: msg.description,
+              taskType: msg.task_type,
+              subagentType: msg.subagent_type,
+              workflowName: msg.workflow_name,
+              toolUseId: msg.tool_use_id,
+              status: 'running',
+            },
+            Date.now(),
+          )
+          break
+        }
+        // A wire-safe patch of whatever changed on the task. Merged, not
+        // replaced.
+        //
+        // `is_backgrounded` is IGNORED: membership belongs to the level, and
+        // honouring it here would put a chip in the tray the level has not
+        // admitted — the exact correlation between the two streams the SDK
+        // tells consumers not to make.
+        //
+        // `end_time` is ignored in favour of the `endedAt` noteTask stamps when
+        // the terminal flag first lands. It appears on only one of the several
+        // edges that can end a task, so honouring it would freeze the chip's
+        // clock on a completion and leave it running on a kill — and `startedAt`
+        // is our own clock anyway, so an SDK timestamp on one end of a duration
+        // and a local one on the other is a subtraction between two clocks.
+        if (msg.subtype === 'task_updated') {
+          const p = msg.patch
+          this.noteTask(msg.task_id, {
+            status: p.status,
+            description: p.description,
+            error: p.error,
+            pausedMs: p.total_paused_ms,
+            ...(p.status && TERMINAL.has(p.status) ? { terminal: true } : {}),
           })
           break
         }
@@ -422,23 +546,45 @@ export class Session {
           // The same event also feeds the background tray, joined on task_id —
           // for a BACKGROUNDED task the transcript card above says "running in
           // the background" and never updates again, so this is the only place
-          // its progress can be seen. No-ops when the task isn't backgrounded.
-          const at = this.meta.backgroundTasks.findIndex((t) => t.taskId === msg.task_id)
-          if (at !== -1) {
-            const next = [...this.meta.backgroundTasks]
-            next[at] = {
-              ...next[at],
-              ...(msg.summary ? { progress: msg.summary } : {}),
-              ...(msg.last_tool_name ? { lastTool: msg.last_tool_name } : {}),
-              ...(msg.usage?.total_tokens ? { tokens: msg.usage.total_tokens } : {}),
-            }
-            this.patchMeta({ backgroundTasks: next })
-          }
+          // its progress can be seen. noteTask no-ops the projection when the
+          // task isn't in the tray, while still recording what it said.
+          //
+          // `duration_ms` is a START FLOOR and never the clock. It is measured
+          // when the summary was forked, which is up to ~30s ago, so using it
+          // to drive elapsed time would make the chip's clock jump backwards
+          // every time a progress message landed. On first sight of a task
+          // whose start edge we missed it is the best lower bound available.
+          this.noteTask(
+            msg.task_id,
+            {
+              description: msg.description,
+              subagentType: msg.subagent_type,
+              toolUseId: msg.tool_use_id,
+              progress: msg.summary,
+              lastTool: msg.last_tool_name,
+              tokens: msg.usage?.total_tokens,
+              toolUses: msg.usage?.tool_uses,
+            },
+            msg.usage?.duration_ms ? Date.now() - msg.usage.duration_ms : undefined,
+          )
           break
         }
         // A finished background task or subagent reports here; the changed-set
         // message handles removal, so this only surfaces the outcome.
         if (msg.subtype === 'task_notification') {
+          // The tray half. The level takes the chip away a beat later, and this
+          // is what makes the card say how it ended in the meantime — 'stopped'
+          // on the wire is 'killed' in the SDK's own status vocabulary, which is
+          // the one BackgroundTaskStatus mirrors.
+          this.noteTask(msg.task_id, {
+            status:
+              msg.status === 'completed' ? 'completed' : msg.status === 'failed' ? 'failed' : 'killed',
+            terminal: true,
+          })
+          // The other sweep site, and the only one a session with no background
+          // work ever reaches — see sweepTasks. A row that is still in the tray
+          // survives it, so this cannot take a live chip away.
+          this.sweepTasks()
           if (!msg.skip_transcript) {
             // Prefer settling the card that started the work: a backgrounded
             // tool already returned "running in the background", so this is the
@@ -469,6 +615,17 @@ export class Session {
           }
           break
         }
+        // Compaction just rewrote the conversation, so the window occupancy
+        // fell — usually by most of it. The estimate `handleAssistant` keeps is
+        // now describing a conversation that no longer exists, and nothing else
+        // would correct it until the next assistant message lands, so the ring
+        // would sit red through the very turn that fixed it. `post_tokens` is
+        // optional in the SDK's own metadata; null means "unknown", which the
+        // renderer reads as "fall back to the polled figure".
+        if (msg.subtype === 'compact_boundary') {
+          this.patchMeta({ contextTokens: msg.compact_metadata.post_tokens ?? null })
+          break
+        }
         // Only the init frame means "ready", and only while we're still starting.
         // In streaming-input mode init doesn't arrive until the first user
         // message is already in flight, so it lands MID-TURN — without the
@@ -479,6 +636,18 @@ export class Session {
         // (The init frame carries no `model` — that comes off the assistant
         // message, verified against the live SDK.)
         if (msg.subtype === 'init' && this.meta.status === 'starting') this.setStatus('idle')
+        break
+
+      // /clear, a plan-mode exit, a fresh conversation under the same session:
+      // the window is empty again. A top-level message type rather than a
+      // `system` subtype, unlike compact_boundary — so it cannot live in the
+      // branch above however alike the two read.
+      //
+      // Only the context level is reset here. The transcript is deliberately
+      // left alone: the renderer's store is the record of what was said, and
+      // clearing the model's window does not unsay it.
+      case 'conversation_reset':
+        this.patchMeta({ contextTokens: null })
         break
 
       case 'stream_event':
@@ -546,6 +715,107 @@ export class Session {
   }
 
   /**
+   * Fold one task edge into the side table, and re-project if it is on screen.
+   *
+   * `undefined` values are SKIPPED rather than assigned, because these patches
+   * are built straight off optional SDK fields: a task_progress that carries no
+   * summary would otherwise wipe the summary the previous one set, which is
+   * exactly the "every chip goes blank" failure the old merge-by-array was
+   * written to avoid.
+   *
+   * `startedAt` is separate from the patch and is written ONCE. Three sources
+   * can supply it — the start edge, the level, and task_progress's duration
+   * floor — and they disagree by seconds; a clock that jumped whenever a later
+   * one arrived would be worse than no clock.
+   */
+  private noteTask(taskId: string, patch: Partial<TaskInfo>, startedAt?: number): void {
+    const info = this.taskInfo.get(taskId) ?? {}
+    for (const [k, v] of Object.entries(patch)) {
+      if (v !== undefined) (info as Record<string, unknown>)[k] = v
+    }
+    if (startedAt !== undefined) info.startedAt ??= startedAt
+    // STAMPED HERE, once, because the renderer's clock is `now - startedAt` and
+    // has no other way to learn that it should stop. The SDK's own `end_time` is
+    // deliberately not used for it: it appears on one of the several edges that
+    // can end a task, so a chip's clock would freeze for a completion and keep
+    // running for a kill. This is set by whichever edge got here first.
+    if (info.terminal) info.endedAt ??= Date.now()
+    this.taskInfo.set(taskId, info)
+    // Not a member: recorded, but nothing on screen changes. This is what lets
+    // a foreground subagent's start edge be kept without putting a chip in the
+    // tray, ready for the moment it is backgrounded.
+    if (this.taskMembers.some((m) => m.taskId === taskId)) this.projectTasks()
+  }
+
+  /**
+   * Drop side-table rows that are finished AND not in the tray.
+   *
+   * BOTH halves are required. Dropping on membership alone would throw away the
+   * outcome of a task whose notification is still in flight — the two streams
+   * have no defined order — and dropping on terminal alone would empty a chip
+   * that is still on screen.
+   *
+   * Called from the level AND from task_notification, and the second call site
+   * is the one that matters for memory: the level only fires when a BACKGROUND
+   * task starts or ends, so a session that runs two hundred foreground subagents
+   * and backgrounds none would have swept exactly never, accumulating a row per
+   * subagent for the life of the session. Those rows are terminal and were never
+   * members, so they go here at the moment they finish.
+   */
+  private sweepTasks(): void {
+    for (const [id, info] of this.taskInfo) {
+      if (info.terminal && !this.taskMembers.some((m) => m.taskId === id)) {
+        this.taskInfo.delete(id)
+      }
+    }
+  }
+
+  /**
+   * THE SINGLE WRITER of meta.backgroundTasks.
+   *
+   * Everything else writes to the side table and calls this, so the renderer's
+   * array is a pure projection of (membership × knowledge) and can never end up
+   * carrying a task the level has dropped or missing a field an edge supplied
+   * out of order.
+   */
+  private projectTasks(): void {
+    const tasks: BackgroundTask[] = this.taskMembers.map(({ taskId, taskType }) => {
+      const i = this.taskInfo.get(taskId) ?? {}
+      // Re-resolved on EVERY projection rather than stored once, because the
+      // tool card can be registered AFTER the task announces itself:
+      // handleAssistant writes toolItems when the tool_use block lands, and a
+      // task_started that beat it would otherwise be stuck with no card to
+      // link to for the rest of its life.
+      const itemId = i.toolUseId ? this.toolItems.get(i.toolUseId) : undefined
+      return {
+        taskId,
+        taskType: i.taskType ?? taskType,
+        description: i.description ?? '',
+        // Seeded on membership, so this fallback is unreachable — it exists
+        // because `startedAt` is required and inventing `0` would render a
+        // 57-year-old task.
+        startedAt: i.startedAt ?? Date.now(),
+        // MUST be projected, not just kept: `terminal` never crosses the bridge,
+        // so without this the chip of a task that reported 'completed' before
+        // the level dropped it — the unspecified ordering this whole side table
+        // exists for — would say "completed" with the clock still running.
+        ...(i.endedAt ? { endedAt: i.endedAt } : {}),
+        ...(i.pausedMs ? { pausedMs: i.pausedMs } : {}),
+        ...(i.subagentType ? { subagentType: i.subagentType } : {}),
+        ...(i.workflowName ? { workflowName: i.workflowName } : {}),
+        ...(i.toolUses ? { toolUses: i.toolUses } : {}),
+        ...(i.status ? { status: i.status } : {}),
+        ...(i.error ? { error: i.error } : {}),
+        ...(itemId ? { itemId } : {}),
+        ...(i.progress ? { progress: i.progress } : {}),
+        ...(i.lastTool ? { lastTool: i.lastTool } : {}),
+        ...(i.tokens ? { tokens: i.tokens } : {}),
+      }
+    })
+    this.patchMeta({ backgroundTasks: tasks })
+  }
+
+  /**
    * The Task card a subagent's output belongs under, or undefined for the main
    * thread. A miss degrades to top-level rather than dropping the item — the
    * pre-subagent behaviour, which is the safe direction to fail in.
@@ -610,11 +880,22 @@ export class Session {
 
     // Main thread only, for the same reason as the model above: a subagent's
     // output is billed to this turn, but counting it here makes the running
-    // total jump as subagents interleave. Their tokens still land in the
-    // authoritative `result` totals.
-    const out = msg.message?.usage?.output_tokens
+    // total jump as subagents interleave — and a subagent has its own context
+    // window, so its occupancy is not this conversation's. Their tokens still
+    // land in the authoritative `result` totals.
+    //
+    // One patch for both figures, and it costs no extra IPC: `turnTokens`
+    // already sends one here, so the live window level rides along for free.
+    // `contextTokens` is a SET rather than an add — input is the whole
+    // conversation re-sent, so this request's input plus what it just produced
+    // IS the occupancy the next request will start from.
+    const u = msg.message?.usage
+    const out = u?.output_tokens
     if (!msg.parent_tool_use_id && typeof out === 'number') {
-      this.patchMeta({ turnTokens: this.meta.turnTokens + out })
+      this.patchMeta({
+        turnTokens: this.meta.turnTokens + out,
+        contextTokens: inputTokensOf(u) + out,
+      })
     }
 
     for (const block of msg.message?.content ?? []) {

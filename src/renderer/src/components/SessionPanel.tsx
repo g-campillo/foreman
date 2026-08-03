@@ -3,11 +3,11 @@ import { RefreshCw } from 'lucide-react'
 import type {
   AccountInfo,
   AgentInfo,
-  ContextUsage,
   McpStatus,
   SessionMeta,
   UsageInfo,
 } from '../../../shared/types'
+import { useContextUsage } from '../useContextUsage'
 import AgentsTab from './session/AgentsTab'
 import McpTab from './session/McpTab'
 import OverviewTab from './session/OverviewTab'
@@ -21,8 +21,14 @@ const LABEL: Record<SubTab, string> = {
   agents: 'Agents',
 }
 
+/* `context` is deliberately absent. The other four are per-session FACTS — who
+   you are, what the plan allows, which servers are up, what agents exist — and
+   they change on the order of never, so one batch on open is right for them.
+   Context usage is the opposite: it is the only figure here that moves while you
+   watch, and it now comes from useContextUsage, which polls it on its own
+   cadence and shares the reading with the composer's ring. Leaving it in this
+   batch is what made the Context section as frozen as the ring was. */
 interface Data {
-  context: ContextUsage | null
   account: AccountInfo | null
   usage: UsageInfo | null
   mcp: McpStatus
@@ -73,27 +79,41 @@ export default function SessionPanel({
   const [overrides, setOverrides] = useState<Record<string, string>>({})
   useEffect(() => setOverrides({}), [session.id])
 
+  /* The same reading the composer's ring draws, from the same hook — same
+     source, same reconciliation rule, same cadence.
+
+     NOT "the two cannot disagree": each call site has its own useState and its
+     own timer, so pressing Refresh here while the ring sits on a ten-second-old
+     poll genuinely does put two totals on screen. What changed is that the
+     disagreement is now TRANSIENT — bounded by one round trip, and always in the
+     direction of this panel being fresher — where before it was structural: the
+     panel fetched on visible+idle and the ring on its own gate, so the two could
+     sit on readings from different turns indefinitely.
+
+     `enabled` is `visible`: the panel stays mounted for the app's lifetime, and
+     a hidden tab has no business making a control call every ten seconds. */
+  const { view: context, ctx, refresh: refreshContext } = useContextUsage(session, visible)
+
   const refresh = useCallback(async (): Promise<void> => {
     setBusy(true)
     const f = window.foreman
     // One round of calls, in parallel — a slow MCP status shouldn't hold up the
-    // context meter, which is the reason most people open this panel. Still one
-    // batch rather than one per tab: fetching per-tab would leave the Overview
-    // numbers stale for exactly as long as you'd been reading another tab.
-    const [context, account, usage, mcp, agents] = await Promise.all([
-      f.contextUsage(session.id).catch(() => null),
+    // rest. Still one batch rather than one per tab: fetching per-tab would
+    // leave the numbers stale for exactly as long as you'd been reading another
+    // tab.
+    const [account, usage, mcp, agents] = await Promise.all([
       f.accountInfo(session.id).catch(() => null),
       f.usageInfo(session.id).catch(() => null),
       f.mcpStatus(session.id).catch(() => ({ servers: [], staleEnv: false })),
       f.supportedAgents(session.id).catch(() => []),
     ])
-    setData({ context, account, usage, mcp, agents })
+    setData({ account, usage, mcp, agents })
     setBusy(false)
   }, [session.id])
 
-  // Refresh when the panel is actually on screen and the agent isn't mid-turn —
-  // context usage is only meaningful between turns, and polling a running
-  // session just races the numbers.
+  // Refresh when the panel is actually on screen and the agent isn't mid-turn.
+  // These four are per-session facts, so a settled session is as good a moment
+  // as any and mid-turn is a control call for nothing.
   useEffect(() => {
     if (visible && session.status === 'idle') void refresh()
   }, [visible, session.status, refresh])
@@ -134,10 +154,16 @@ export default function SessionPanel({
             word — there's no room for one beside a 12px glyph. data-tip sits on
             the wrapper because a disabled control fires no pointer events, and
             this tip exists precisely to explain the disabled state. */}
-        <span className="tw" data-tip="Refresh — context usage is only meaningful between turns">
+        {/* Both, because they are two fetches now. A refresh button that
+            reloaded everything except the meter people open this panel for
+            would be the least useful possible half. */}
+        <span className="tw" data-tip="Refresh">
           <button
             className="code-btn"
-            onClick={() => void refresh()}
+            onClick={() => {
+              void refreshContext()
+              void refresh()
+            }}
             disabled={busy}
             aria-label="Refresh"
           >
@@ -149,7 +175,8 @@ export default function SessionPanel({
       <div className="panel-scroll">
         {tab === 'overview' && (
           <OverviewTab
-            context={data?.context ?? null}
+            view={context}
+            context={ctx}
             account={data?.account ?? null}
             usage={data?.usage ?? null}
           />

@@ -211,6 +211,97 @@ export function contextBreakdown(
   return { used, deferred }
 }
 
+/**
+ * Everything a context gauge draws, from one poll and one live estimate.
+ *
+ * Lived in ContextRing.tsx until three views needed it — the ring, its card and
+ * the session panel's Overview tab — and until it had a rule in it worth
+ * checking. It is here for the same reason `swatch` is: a derivation two
+ * components share belongs where neither owns it, and this file is the only one
+ * `npm run check:derive` can reach.
+ */
+export interface ContextView {
+  /** Occupancy being drawn. The polled total, or the live estimate mid-turn. */
+  tokens: number
+  max: number
+  pct: number
+  /** Categories that actually occupy the window, filler and deferred removed. */
+  used: ContextCategory[]
+  /** Loadable on demand, excluded from `tokens` — the panel lists these greyed. */
+  deferred: ContextCategory[]
+  /** `tokens` came from the live estimate rather than the poll. Say so. */
+  estimated: boolean
+  /** Occupancy the polled breakdown cannot account for: growth since the poll. */
+  unattributed: number
+}
+
+/**
+ * Reconcile the polled breakdown with the per-request estimate.
+ *
+ * ONE RULE, and it is a choice rather than an obvious one: a settled reading
+ * takes the polled figure, anything else takes the estimate. NEVER `Math.max` of
+ * the two. Occupancy goes DOWN — compaction is exactly that, and so is /clear —
+ * so a max would pin the ring to the pre-compaction red and leave it there until
+ * the next poll, which is precisely when the user is watching to see whether it
+ * worked.
+ *
+ * `settled` IS NOT `status === 'idle'`, and a caller passing that raw is the bug
+ * this parameter is named to prevent. A turn ends the instant the result lands,
+ * which is BEFORE the poll reflecting it has even been issued — so raw `idle`
+ * swaps a current estimate for a breakdown fetched before the turn ran, and the
+ * gauge dips for one round trip and jumps back. The caller owes us "idle AND the
+ * breakdown I am handing you was fetched since": see useContextUsage.
+ *
+ * The poll is authoritative between turns and is the ONLY source of the
+ * category split; the estimate is a numerator with no breakdown behind it. So
+ * whatever the estimate holds beyond the sum of the polled categories becomes
+ * `unattributed` — one anonymous remainder rather than inflating the bands with
+ * numbers nothing measured.
+ *
+ * THE CLAMP ON `unattributed` IS LOAD-BEARING. Post-compaction the estimate is
+ * BELOW the stale poll, so the subtraction goes negative and a negative segment
+ * width silently paints the bar wrong.
+ *
+ * The `max <= 0 || used.length === 0` guard survives from the version of this
+ * that lived in the ring: an estimate is a numerator with no denominator, so it
+ * can never conjure a gauge on its own. And `pct` is deliberately NOT capped at
+ * 100 — the arc clamps itself for drawing, but a readout saying 100% when the
+ * window is over is the one place this must not round in the app's favour.
+ */
+export function contextView(
+  ctx: {
+    categories: readonly ContextCategory[]
+    totalTokens: number
+    maxTokens: number
+  } | null,
+  liveTokens: number | null,
+  /** Idle AND `ctx` was polled since the turn ended. See above — not raw idle. */
+  settled: boolean,
+): ContextView | null {
+  const { used, deferred } = contextBreakdown(
+    ctx?.categories ?? [],
+    ctx?.totalTokens ?? 0,
+    ctx?.maxTokens ?? 0,
+  )
+  const max = ctx?.maxTokens ?? 0
+  if (max <= 0 || used.length === 0) return null
+
+  const polled = ctx?.totalTokens ?? 0
+  const estimated = !settled && liveTokens !== null
+  const tokens = estimated ? liveTokens! : polled
+  const attributed = used.reduce((n, c) => n + c.tokens, 0)
+
+  return {
+    tokens,
+    max,
+    pct: (tokens / max) * 100,
+    used,
+    deferred,
+    estimated,
+    unattributed: Math.max(0, tokens - attributed),
+  }
+}
+
 /** Our own palette, because the SDK's `color` is a CLI theme key, not CSS.
  *  All theme tokens, so the breakdown flips with light/dark like everything else.
  *

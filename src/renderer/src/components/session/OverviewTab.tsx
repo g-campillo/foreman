@@ -1,5 +1,5 @@
 import type { AccountInfo, ContextUsage, RateWindow, UsageInfo } from '../../../../shared/types'
-import { contextBreakdown, fmt, level, swatch } from '../../derive.mts'
+import { fmt, level, swatch, type ContextView } from '../../derive.mts'
 
 /**
  * When a rate-limit window comes back around.
@@ -35,19 +35,25 @@ function resetLine(windows: readonly RateWindow[]): string | null {
  * neither needed a tab of its own.
  */
 export default function OverviewTab({
+  view,
   context: ctx,
   account,
   usage,
 }: {
+  /**
+   * The reconciled reading — the same one the composer's ring draws, so the two
+   * cannot disagree about how full the window is.
+   */
+  view: ContextView | null
+  /**
+   * The raw poll, alongside it. This tab is the only view that shows the model
+   * name, the memory files and the deferred groups' own figures, none of which
+   * survive the reduction to a ContextView.
+   */
   context: ContextUsage | null
   account: AccountInfo | null
   usage: UsageInfo | null
 }): React.JSX.Element {
-  const { used, deferred } = contextBreakdown(
-    ctx?.categories ?? [],
-    ctx?.totalTokens ?? 0,
-    ctx?.maxTokens ?? 0,
-  )
   const resets = usage ? resetLine(usage.windows) : null
 
   return (
@@ -56,49 +62,86 @@ export default function OverviewTab({
         <span>Context</span>
       </div>
 
+      {/* TWO GATES, not one, and the split is by what each thing actually
+          needs. The bar and the figures need `view`, which is null when nothing
+          in the breakdown occupies the window — all deferred, all filler. The
+          model name and the memory files need only the raw poll, and hiding
+          them behind "not measured" because the BAR had nothing to draw would
+          be the tab claiming ignorance of something it was just told.
+
+          "Send a message first" was wrong about the reason and therefore about
+          the remedy: the window is not sized until the first REQUEST, so a
+          resumed session with a full transcript reads the same way until it
+          takes a turn. Say what is missing instead of naming an action. */}
       {!ctx ? (
-        <p className="sect-empty">Unavailable — send a message first.</p>
+        <p className="sect-empty">Not measured yet — the window is sized on the first request.</p>
       ) : (
         <>
-          <div className="ctx-bar">
-            {used.map((c, i) => (
-              <span
-                key={c.name}
-                style={{
-                  width: `${(c.tokens / Math.max(ctx.maxTokens, 1)) * 100}%`,
-                  background: swatch(i),
-                }}
-                title={`${c.name}: ${fmt(c.tokens)}`}
-              />
-            ))}
-          </div>
-          {/* Percentage derived from the same tokens the bar is drawn from. The
-              SDK's own `percentage` is rounded differently (it reported 2.0 for
-              a 2.39% window) and a readout that disagrees with the bar beside it
-              reads as a bug. */}
-          <p className="sect-sub">
-            {fmt(ctx.totalTokens)} / {fmt(ctx.maxTokens)} ·{' '}
-            {((ctx.totalTokens / Math.max(ctx.maxTokens, 1)) * 100).toFixed(1)}% · {ctx.model}
-          </p>
-          <ul className="kv">
-            {used.map((c, i) => (
-              <li key={c.name}>
-                <i className="ctx-dot" style={{ background: swatch(i) }} />
-                <span>{c.name}</span>
-                <b>{fmt(c.tokens)}</b>
-              </li>
-            ))}
-            {/* Loadable on demand, and deliberately NOT in the bar: the SDK
-                excludes these from totalTokens, so drawing them would overstate
-                what the window is actually holding. */}
-            {deferred.map((c) => (
-              <li key={c.name} className="kv-muted">
-                <i className="ctx-dot" style={{ background: 'rgb(var(--text-faint))' }} />
-                <span>{c.name}</span>
-                <b>{fmt(c.tokens)}</b>
-              </li>
-            ))}
-          </ul>
+          {view ? (
+            <>
+              <div className="ctx-bar">
+                {view.used.map((c, i) => (
+                  <span
+                    key={c.name}
+                    style={{
+                      width: `${(c.tokens / view.max) * 100}%`,
+                      background: swatch(i),
+                    }}
+                    title={`${c.name}: ${fmt(c.tokens)}`}
+                  />
+                ))}
+                {/* Growth since the last poll — see ContextCard for why this is
+                    hatched rather than coloured, and why the bar would otherwise
+                    stop short of where the ring's arc ends. */}
+                {view.unattributed > 0 && (
+                  <span
+                    className="ctx-card-est"
+                    style={{ width: `${(view.unattributed / view.max) * 100}%` }}
+                  />
+                )}
+              </div>
+              {/* Percentage derived from the same tokens the bar is drawn from.
+                  The SDK's own `percentage` is rounded differently (it reported
+                  2.0 for a 2.39% window) and a readout that disagrees with the
+                  bar beside it reads as a bug. `~` while the figure is the live
+                  estimate. */}
+              <p className="sect-sub">
+                {view.estimated ? '~' : ''}
+                {fmt(view.tokens)} / {fmt(view.max)} · {view.pct.toFixed(1)}% · {ctx.model}
+              </p>
+              <ul className="kv">
+                {view.used.map((c, i) => (
+                  <li key={c.name}>
+                    <i className="ctx-dot" style={{ background: swatch(i) }} />
+                    <span>{c.name}</span>
+                    <b>{fmt(c.tokens)}</b>
+                  </li>
+                ))}
+                {view.unattributed > 0 && (
+                  <li className="kv-muted">
+                    <i className="ctx-dot ctx-card-est" />
+                    <span>Since last refresh</span>
+                    <b>~{fmt(view.unattributed)}</b>
+                  </li>
+                )}
+                {/* Loadable on demand, and deliberately NOT in the bar: the SDK
+                    excludes these from totalTokens, so drawing them would
+                    overstate what the window is actually holding. */}
+                {view.deferred.map((c) => (
+                  <li key={c.name} className="kv-muted">
+                    <i className="ctx-dot" style={{ background: 'rgb(var(--text-faint))' }} />
+                    <span>{c.name}</span>
+                    <b>{fmt(c.tokens)}</b>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            /* Polled, parsed, and nothing in it occupies the window — the guard
+               in contextView. There is no bar to draw and no honest percentage
+               to print, but the model is still worth saying. */
+            <p className="sect-sub">{ctx.model} · nothing in the window yet</p>
+          )}
           {ctx.memoryFiles.length > 0 && (
             <ul className="kv">
               {ctx.memoryFiles.map((f) => (
