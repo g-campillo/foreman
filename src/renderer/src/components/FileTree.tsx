@@ -42,7 +42,8 @@ export default function FileTree({ session, visible }: Props): React.JSX.Element
   const agent = useAgentFocus(session.id)
   // The agent's writes already push this on every edit — the tree gets its
   // refresh signal for free rather than polling. Same hook DiffPanel rides.
-  const bump = useStore((s) => s.diffCounts[session.id] ?? 0)
+  // Read for its identity: a fresh object means the tree or the branch moved.
+  const bump = useStore((s) => s.diffCounts[session.id])
 
   const refresh = useCallback(() => {
     void window.foreman.fileTree(session.cwd).then(setList)

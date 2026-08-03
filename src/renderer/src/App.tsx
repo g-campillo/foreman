@@ -13,6 +13,8 @@ import TodoStrip from './components/TodoStrip'
 import SessionPanel from './components/SessionPanel'
 import CommandPalette, { type PaletteActions } from './components/CommandPalette'
 import Tooltip from './components/Tooltip'
+import { hk } from './hotkey'
+import { useKeyPeek } from './useKeyPeek'
 
 export type Panel = 'diff' | 'session' | 'files'
 
@@ -31,17 +33,26 @@ const PANEL_ICON: Record<Panel, React.ReactNode> = {
   session: <Gauge size={14} />,
 }
 
-/** ⌘1/⌘3/⌘4. `undefined` for every other key — that lookup IS the guard in onKey.
- *  A record rather than a `'1' <= key <= '4'` range, which also admits junk.
+/** ⌘1/⌘3/⌘4, declared panel-first because that is the direction the keycaps read
+ *  it: the tab bar renders `⌘${PANEL_KEY[p]}` inside its own map rather than
+ *  carrying a second hardcoded copy of the numbering.
  *
  *  ⌘2 is deliberately absent and handled beside ⌘, and ⌘0 instead: the terminal
  *  kept its key but stopped being a panel, so the numbering already learned is
  *  unchanged even though it is no longer one of the display:none siblings. */
-const PANEL_KEYS: Record<string, Panel | undefined> = {
-  '1': 'diff',
-  '3': 'session',
-  '4': 'files',
+const PANEL_KEY: Record<Panel, string> = {
+  diff: '1',
+  session: '3',
+  files: '4',
 }
+
+/** The same table read the other way, for the keydown handler. `undefined` for
+ *  every other key — that lookup IS the guard in onKey, and a record rather than
+ *  a `'1' <= key <= '4'` range, which also admits junk. Derived rather than
+ *  written out, so a cap and its shortcut cannot disagree. */
+const PANEL_KEYS: Record<string, Panel | undefined> = Object.fromEntries(
+  (Object.keys(PANEL_KEY) as Panel[]).map((p) => [PANEL_KEY[p], p]),
+)
 
 /** One size for every chrome glyph, so the toolbar stays optically even.
  *  strokeWidth is deliberately absent — theme.css sets it once for all SVG. */
@@ -63,7 +74,10 @@ type Seam = keyof typeof SEAMS
 
 export default function App(): React.JSX.Element {
   const session = useStore(activeSession)
-  const diffCount = useStore((s) => (s.activeId ? (s.diffCounts[s.activeId] ?? 0) : 0))
+  // Lines, not files: `Changes +14` used to be the dirty FILE count wearing a
+  // plus sign, which reads as fourteen added lines and never was. Undefined
+  // until the first evtDiffChanged lands, which is a clean row rather than +0.
+  const diffStats = useStore((s) => (s.activeId ? s.diffCounts[s.activeId] : undefined))
   const newSession = useStore((s) => s.newSession)
   const setAppearance = useStore((s) => s.setAppearance)
   const [panel, setPanel] = useState<Panel | null>(null)
@@ -74,6 +88,11 @@ export default function App(): React.JSX.Element {
   // six levels down and the palette all open it; the terminal has exactly three
   // openers and all three are in this file or already take an actions object.
   const [showTerminal, setShowTerminal] = useState(false)
+
+  // Hold ⌘ and every `data-key` in the window names its shortcut. Writes an
+  // attribute on <body> and nothing else — see useKeyPeek for why it must not
+  // be state.
+  useKeyPeek()
 
   // Opening the initial project lives in the store's bootstrap(), not here: it
   // has to run after the session rehydration it would otherwise race.
@@ -240,7 +259,7 @@ export default function App(): React.JSX.Element {
             data-active={showSettings}
             aria-pressed={showSettings}
             aria-label="Settings"
-            data-tip="Settings  ⌘,"
+            {...hk('Settings', '⌘,')}
             onClick={() => setShowSettings((v) => !v)}
           >
             <SlidersHorizontal size={ICON} />
@@ -256,24 +275,53 @@ export default function App(): React.JSX.Element {
             <div className="dock-entries-head">
               On {(session.worktree?.repoRoot ?? session.cwd).split('/').filter(Boolean).pop()}
             </div>
-            <button data-tip="Files this agent has changed  ⌘1" onClick={() => toggle('diff')}>
+            <button
+              {...hk('Files this agent has changed', `⌘${PANEL_KEY.diff}`)}
+              onClick={() => toggle('diff')}
+            >
               <GitCompare size={ICON} />
               Changes
-              {diffCount > 0 && <span className="dock-count">+{diffCount}</span>}
+              {/* Each number only when it is non-zero — a lone `−0` beside a
+                  real `+120` reads as a rounding error.
+
+                  ...but a DIRTY TREE MUST NEVER RENDER AS CLEAN, which is what
+                  gating on the totals alone would do. Three ordinary cases have
+                  files but no lines: a binary file (numstat reports `-  -`), a
+                  chmod +x (`0  0`), and a new empty file. The panel lists rows
+                  and offers a commit for all three, so the row falls back to the
+                  file count — which is exactly what this badge showed before it
+                  learned to count lines. */}
+              {diffStats && (diffStats.added > 0 || diffStats.removed > 0) ? (
+                <>
+                  {diffStats.added > 0 && <span className="dock-count">+{diffStats.added}</span>}
+                  {diffStats.removed > 0 && (
+                    <span className="dock-count" data-tone="del">
+                      −{diffStats.removed}
+                    </span>
+                  )}
+                </>
+              ) : (
+                !!diffStats?.files && <span className="dock-count">{diffStats.files}</span>
+              )}
             </button>
+            {/* ⌘2 is hardcoded because the terminal is not a Panel — it kept
+                its key when it became a modal. */}
             <button
-              data-tip="A shell in this session's directory  ⌘2"
+              {...hk("A shell in this session's directory", '⌘2')}
               onClick={() => setShowTerminal(true)}
             >
               <SquareTerminal size={ICON} />
               Terminal
             </button>
-            <button data-tip="This project's tree  ⌘4" onClick={() => toggle('files')}>
+            <button
+              {...hk("This project's tree", `⌘${PANEL_KEY.files}`)}
+              onClick={() => toggle('files')}
+            >
               <FolderTree size={ICON} />
               Files
             </button>
             <button
-              data-tip="Context window, cost, MCP servers, skills  ⌘3"
+              {...hk('Context window, cost, MCP servers, skills', `⌘${PANEL_KEY.session}`)}
               onClick={() => toggle('session')}
             >
               <Gauge size={ICON} />
@@ -327,6 +375,12 @@ export default function App(): React.JSX.Element {
                 key={p}
                 data-active={panel === p}
                 aria-pressed={panel === p}
+                // No data-tip, deliberately (see the comment above): the tab is
+                // already labelled, and a bubble repeating its own text is
+                // noise. The cap is declared on its own so it can exist without
+                // one — which is the whole reason data-key is not parsed out of
+                // data-tip. Derived from PANEL_KEY rather than a second table.
+                data-key={`⌘${PANEL_KEY[p]}`}
                 onClick={() => setPanel(p)}
               >
                 {PANEL_ICON[p]}

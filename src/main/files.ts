@@ -8,7 +8,7 @@ import { promisify } from 'node:util'
 import { IPC, type FileRead, type FileWrite, type FileList } from '../shared/types'
 import { within } from './agent/policy.mts'
 import { reportServers } from '../lsp/detect.mts'
-import { emitCount, readStatus } from './agent/gitdiff'
+import { emitStats, readStatus } from './agent/gitdiff'
 
 const exec = promisify(execFile)
 
@@ -221,7 +221,7 @@ export async function writeFileFor(
     const st = await stat(real)
     // Human edits move the ⌘1 badge exactly as agent edits do. Without this the
     // badge silently disagrees with the tree until the next agent turn.
-    void emitCount(sessionId, cwd)
+    void emitStats(sessionId, cwd)
     return { ok: true, mtimeMs: st.mtimeMs }
   } catch (err) {
     return { ok: false, reason: 'io', error: String(err) }

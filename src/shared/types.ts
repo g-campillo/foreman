@@ -400,6 +400,72 @@ export interface PermissionAnswer {
   subagents?: boolean
 }
 
+/** One row of the composer's branch menu. */
+export interface BranchInfo {
+  /** The branch name with any remote prefix stripped: `origin/fix/x` -> `fix/x`.
+   *  This is what a checkout names, on both arms. */
+  name: string
+  /** The remote it lives on, or null for a local branch. A remote row means
+   *  "no local branch of this name exists" — see parseRefs' dedup. */
+  remote: string | null
+  /** The full refname. Unique across local and remote, so it is the menu key. */
+  ref: string
+  current: boolean
+  /** Absolute path of the OTHER worktree holding this branch, when one does.
+   *  Git refuses to check a branch out twice, so the row is disabled and this
+   *  path is its hint — pre-detected, rather than letting the click fail. */
+  checkedOutAt: string | null
+  upstream: string | null
+  /** Tip's committer date, epoch seconds. 0 for an unborn branch. */
+  updatedAt: number
+}
+
+export interface BranchList {
+  /** The checked-out branch, or null on a detached HEAD. */
+  current: string | null
+  /** Short sha of a detached HEAD, else null. */
+  detachedAt: string | null
+  branches: BranchInfo[]
+}
+
+export interface CheckoutResult {
+  ok: boolean
+  /** Git's own stderr, verbatim — "Your local changes would be overwritten…" is
+   *  a better message than anything we could write over it. */
+  error?: string
+  /** Succeeded, but something was left behind worth saying out loud. */
+  notice?: string
+  branch?: string
+}
+
+/**
+ * What the ⌘1 badge reports: how much is uncommitted, in files AND in lines.
+ *
+ * `files` is `git status`'s dirty count, not numstat's record count, because the
+ * panel renders one row per dirty path — including the ones numstat cannot see
+ * (untracked) and the ones it reports as zero (a chmod +x). The line totals come
+ * from `git diff --numstat` plus a walk of the untracked files; see readStats.
+ *
+ * Known and accepted divergence from the panel's own jsdiff totals: a
+ * `.gitattributes -diff` mark, `core.autocrlf` normalisation and a non-Myers
+ * `diff.algorithm` each make git count differently from structuredPatch. Two
+ * numbers a line or two apart is a far smaller problem than reading every dirty
+ * file on every agent tool call would be.
+ */
+export interface DiffStats {
+  files: number
+  added: number
+  removed: number
+}
+
+/** The `evtDiffChanged` payload. One event carries every downstream refresh:
+ *  the badge, the composer's branch label, the file tree and the diff panel. */
+export interface DiffChanged extends DiffStats {
+  sessionId: string
+  /** null on a detached HEAD, or when the cwd is not a repository at all. */
+  branch: string | null
+}
+
 export interface FileDiff {
   path: string
   /** Path relative to the session cwd, for display. */
@@ -836,6 +902,11 @@ export const IPC = {
   diffRevert: 'diff:revert',
   diffCommit: 'diff:commit',
   evtDiffChanged: 'diff:changed',
+  /** Branches for the composer's picker, and the checkout behind it. Beside the
+   *  diff channels because they share their posture: read git against a cwd,
+   *  answered in main, no session state. */
+  gitBranches: 'git:branches',
+  gitCheckout: 'git:checkout',
 
   // editor file I/O. No event channel: reconciliation reuses evtDiffChanged,
   // which the PostToolUse hook already fires on every agent write.

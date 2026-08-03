@@ -17,6 +17,7 @@ import {
 import type { PastSession, SessionMeta, TranscriptSearchHit } from '../../../shared/types'
 import { useStore } from '../store'
 import { activityOf, groupSessions, type Activity } from '../derive.mts'
+import { hk } from '../hotkey'
 import LspStrip from './LspStrip'
 
 /** Debounce on search: each keystroke otherwise re-reads up to 40 transcripts. */
@@ -184,18 +185,21 @@ export default function SessionRail(): React.JSX.Element {
       )}
 
       {/* Cursor's nav block: the standing actions, above everything the list
-          holds. Each row reveals its keybinding on hover rather than carrying a
-          permanent shortcut column, which is what keeps three rows of chrome
-          from reading as a toolbar. */}
+          holds. Each row reveals its keybinding on hover — or on a ⌘ hold, which
+          is now the app-wide way to see every shortcut at once — rather than
+          carrying a permanent shortcut column, which is what keeps three rows of
+          chrome from reading as a toolbar. */}
       <nav className="rail-nav">
+        {/* `data-key` rather than the `.rail-key` span this used to render: one
+            way to declare a shortcut, so ⌘ reveals this one alongside the dock's
+            without a second mechanism to keep in step. */}
         <button
           className="rail-nav-row"
           onClick={() => void newSession()}
-          data-tip="New conversation in this project"
+          {...hk('New conversation in this project', '⌘N')}
         >
           <Plus size={14} />
           <span className="rail-nav-label">New conversation</span>
-          <span className="rail-key">⌘N</span>
         </button>
         <button
           className="rail-nav-row"

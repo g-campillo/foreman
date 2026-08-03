@@ -49,6 +49,7 @@ export default function Picker({
   ariaLabel,
   className,
   tone,
+  onOpen,
 }: {
   icon?: React.ReactNode
   label: string
@@ -72,6 +73,15 @@ export default function Picker({
    * existing callers untouched.
    */
   tone?: 'warn' | 'danger'
+  /**
+   * Fired on the click that OPENS the menu, never on the one that closes it.
+   *
+   * For a list that has to be read fresh rather than held in state: the branch
+   * picker's rows come out of `git for-each-ref`, and anything cached is stale
+   * at exactly the moment it matters — you fetch in the ⌘2 terminal, then open
+   * this menu to pick what you fetched.
+   */
+  onOpen?: () => void
 }): React.JSX.Element {
   const menu = useMenu()
   return (
@@ -87,7 +97,10 @@ export default function Picker({
         aria-haspopup="menu"
         aria-expanded={!!menu.anchor}
         data-tip={tip}
-        onClick={menu.toggle}
+        onClick={() => {
+          if (!menu.anchor) onOpen?.()
+          menu.toggle()
+        }}
       >
         {icon}
         <span className="picker-label">{label}</span>

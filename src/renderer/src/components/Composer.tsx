@@ -4,7 +4,6 @@ import {
   FolderOpen,
   FolderPlus,
   GitBranch,
-  GitBranchPlus,
   ListChecks,
   ListPlus,
   Pencil,
@@ -18,16 +17,20 @@ import {
 } from 'lucide-react'
 import {
   PERMISSION_MODES,
+  type BranchInfo,
+  type BranchList,
   type EffortLevel,
   type ImageMediaType,
   type ModelInfo,
   type PermissionMode,
   type SendBlock,
+  type SendContent,
   type SessionMeta,
   type SlashCommandInfo,
 } from '../../../shared/types'
 import { useStore } from '../store'
 import { composerBox } from '../composerBox'
+import { pinToBottom } from '../scrollPin'
 import { filterEntries, recentProjects, triggerAt } from '../derive.mts'
 import Autocomplete, { type Suggestion } from './Autocomplete'
 import MarkdownInput from './MarkdownInput'
@@ -199,12 +202,12 @@ const MODE_HINT: Partial<Record<PermissionMode, string>> = {
   dontAsk: 'denies anything not pre-approved',
 }
 
-/** Chips under the empty composer. Cursor's are mode shortcuts too — "Plan New
- *  Idea", "Multitask" — so these are the same idea with Foreman's modes. */
-const STARTERS: { label: string; mode: PermissionMode }[] = [
-  { label: 'Plan first', mode: 'plan' },
-  { label: 'Accept edits', mode: 'acceptEdits' },
-]
+/* STARTERS lived here: `Plan first` and `Accept edits` chips under the empty
+   composer, plus a `New worktree` one beside them. All three were a third row of
+   chrome on the one shape that should be smallest — and every one of them said
+   something the status row below already says, or now offers as a control. Mode
+   is on the mode picker, on ⇧Tab and in the command palette; the worktree is a
+   checkbox on the picker bar. */
 
 /**
  * What is open in the composer's one card slot, if anything.
@@ -248,6 +251,23 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
   /** Live branch, kept fresh by the diff panel. worktree.branch is frozen at
    *  creation and lies after a checkout, so it is only the fallback. */
   const branch = useStore((s) => s.branches[session.id] ?? null)
+  const checkoutBranch = useStore((s) => s.checkoutBranch)
+  /* The pickable list, read on every menu open and never cached — see the
+     Picker's `onOpen`. Kept between opens so re-opening does not flash an empty
+     menu, and cleared on a session change so the last project's branches never
+     appear under this one's.
+
+     The WHOLE BranchList, not just its rows: `detachedAt` is the only place a
+     detached HEAD's sha reaches the renderer at all. The store's `branches[id]`
+     comes from `readStatus`, which uses `branch --show-current` and prints
+     nothing when detached — so without this the label reads `no branch` and the
+     sha you need to get back to your commits is nowhere on screen. */
+  const [branchList, setBranchList] = useState<BranchList | null>(null)
+  const branches = branchList?.branches ?? []
+  useEffect(() => setBranchList(null), [session.cwd])
+  const loadBranches = (): void => {
+    void window.foreman.listBranches(session.cwd).then(setBranchList)
+  }
   /* Fetched here rather than inside the ring, because the ring and the card it
      opens are siblings — the ring sits under the composer, the card floats above
      it, so neither can own the poll for the other. */
@@ -262,7 +282,18 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
   const [files, setFiles] = useState<string[]>([])
   /** Directory listing for a mention that points outside the project. */
   const [browsed, setBrowsed] = useState<string[]>([])
+  /**
+   * The session whose Worktree box is ticked, or null.
+   *
+   * KEYED BY SESSION ID rather than a bare boolean, because App renders one
+   * unkeyed `<Composer>` — a boolean would stay ticked across a session switch
+   * and silently branch the wrong conversation on its first message.
+   */
+  const [wantFor, setWantFor] = useState<string | null>(null)
   const setComposerDirty = useStore((s) => s.setComposerDirty)
+
+  /** Ticked for THIS session, and it still has somewhere to go. */
+  const wantWorktree = wantFor === session.id && fresh && !session.worktree
 
   const busy = session.status === 'running' || session.status === 'awaiting-approval'
   /** Nothing to send. Drives both the disabled state and its tooltip. */
@@ -367,6 +398,11 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     const t = text.trim()
     if (!t && attachments.length === 0) return
 
+    // Land at the bottom on the frame the message actually appears — see
+    // scrollPin. No branch for the busy case: this is the same function whether
+    // the agent is running, and a queued message renders as a real user item.
+    pinToBottom()
+
     // Stay a plain string unless there's actually something attached — the
     // block form is only needed for images.
     const content = attachments.length
@@ -381,10 +417,54 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         ] as SendBlock[])
       : t
 
+    if (wantWorktree) {
+      void hopThenSend(content)
+      return
+    }
+
     void send(content)
+    clearDraft()
+  }
+
+  const clearDraft = (): void => {
     setText('')
     setAttachments([])
     setCaret(0)
+  }
+
+  /**
+   * The Worktree checkbox, cashed in on the first message.
+   *
+   * Ticking the box is INTENT, not an action: a session's cwd is decided by
+   * createSession and never changes, so "run this in a worktree" is really
+   * close-and-reopen, and doing that the moment a checkbox is clicked would
+   * destroy and rebuild a session for a box the user might untick again.
+   *
+   * CREATE, THEN CLOSE — the order is the whole of it, and the reverse was a
+   * live bug. `createWorktree` refuses a branch that already exists, and
+   * `removeWorktree` never deletes the branch ref, so a second attempt with the
+   * same session title fails for perfectly ordinary reasons. Closing first left
+   * you with ZERO sessions and a red notice: the conversation was already gone
+   * by the time the failure was known. This way a failure costs nothing — the
+   * session, the draft and the attachments are all still here, and openPath has
+   * already put git's reason in the rail notice.
+   *
+   * No id threading: `send` reads the store's activeId, which openPath has
+   * already repointed at the new session, and the composer is unkeyed so its
+   * text survives the swap.
+   */
+  const hopThenSend = async (content: SendContent): Promise<void> => {
+    // Not a worktree yet, so cwd is the project directory — the right base. The
+    // branch name is derived rather than prompted: a checkbox that opens a text
+    // field isn't a checkbox. Never blank — branchSlug('') makes a degenerate ref.
+    const name = session.title?.trim() || `session-${Date.now().toString(36)}`
+    const moved = await openPath(session.cwd, name)
+    if (!moved) return
+
+    await close(session.id)
+    await send(content)
+    setWantFor(null)
+    clearDraft()
   }
 
   const addFiles = (list: FileList | File[]): void => {
@@ -412,26 +492,10 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     }
   }
 
-  /**
-   * Move this session into its own worktree.
-   *
-   * A session's cwd is decided by createSession and never changes, so "switch to
-   * a worktree" is really close-and-reopen. Safe only while nothing has been
-   * said yet, which is exactly when the toggle is offered.
-   *
-   * The branch name is derived rather than prompted: the rail's existing flow
-   * asks for one, but a checkbox that opens a text field isn't a checkbox.
-   * `startBranch` bails on empty and `branchSlug('')` would make a degenerate
-   * ref, so this must never pass a blank.
-   */
-  const goWorktree = async (): Promise<void> => {
-    if (!fresh || session.worktree) return
-    // Not a worktree yet, so cwd is the project directory — the right base.
-    const base = session.cwd
-    const name = session.title?.trim() || `session-${Date.now().toString(36)}`
-    await close(session.id)
-    await openPath(base, name)
-  }
+  /* `goWorktree` lived here — the close-then-reopen the menu row and the chip
+     both called. It is `hopThenSend` above now, deferred to the first message
+     and with the two halves the other way round; see its docblock for why the
+     order was a bug rather than a preference. */
 
   /** Accepting the predicted prompt has to move the caret too, or it lands at 0. */
   const acceptGhost = (): void => {
@@ -443,12 +507,12 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
 
   // ------------------------------------------------------------------ menus
 
-  /** Cursor's composer has two shapes, and which one you get is whether a
-   *  conversation exists yet: a tall card with the project picker and the
-   *  starter chips, or a single-row reply pill with neither. Both carry the same
-   *  status row underneath — the shapes differ in the FIELD, not in where the
-   *  session's settings live. */
-  const compact = !fresh
+  /* `compact` lived here — the boolean that gave a fresh session a tall, wrapped
+     three-row card and everything after it a single-row pill. There is one shape
+     now, the small one. The tall form was never carrying anything the pill does
+     not: the settings moved to the status row a release ago, the starter chips
+     are gone, and what was left was a 60px-minimum empty box on the one screen
+     with nothing in it. The field grows to 140px as you type either way. */
 
   const root = session.worktree?.repoRoot ?? session.cwd
   const projectName = root.split('/').filter(Boolean).pop() ?? 'project'
@@ -477,23 +541,55 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     },
   ]
 
-  const branchLabel = branch ?? session.worktree?.branch ?? 'no branch'
-  const branchItems: MenuItem[] = [
-    { kind: 'section' as const, label: 'Branch' },
-    { id: 'current', label: branchLabel, icon: <GitBranch size={14} />, checked: true },
-    { kind: 'divider' as const },
-    {
-      id: 'worktree',
-      label: 'Run in a new worktree',
-      icon: <GitBranchPlus size={14} />,
-      // A session's cwd is fixed at creation, so this is only ever offered on an
-      // untouched tab — the hint says why it is greyed rather than leaving you
-      // to guess.
-      hint: fresh ? undefined : 'before the first message',
-      disabled: !fresh || !!session.worktree,
-      onSelect: () => void goWorktree(),
-    },
-  ]
+  /* `detached at <sha>` rather than a bare `no branch` once the list has been
+     read: on a detached HEAD that sha is the ONLY way back to the commits you
+     are standing on, and git's own status says it in those words. Still falls
+     back to `no branch` before the first read, which is all the store's null
+     branch can honestly claim. */
+  const branchLabel =
+    branch ??
+    session.worktree?.branch ??
+    (branchList?.detachedAt ? `detached at ${branchList.detachedAt}` : 'no branch')
+
+  /* One row per branch. The remote arm passes `b.remote` straight through, and
+     main matches BOTH fields against a fresh enumeration before building argv —
+     so a row is a request to switch to something git itself just named, not a
+     string this component invented. */
+  const branchRow = (b: BranchInfo): MenuItem => ({
+    // The full refname: unique across local and remote, where `name` is not.
+    id: b.ref,
+    label: b.name,
+    icon: <GitBranch size={14} />,
+    checked: b.current,
+    // Git refuses to check a branch out in two worktrees at once, so the row is
+    // dead and says where the other copy is rather than failing on click.
+    hint: b.checkedOutAt ?? undefined,
+    disabled: !!b.checkedOutAt,
+    onSelect: () => void checkoutBranch(session.cwd, b.name, b.remote),
+  })
+
+  const localBranches = branches.filter((b) => !b.remote)
+  const remoteBranches = branches.filter((b) => b.remote)
+  const branchItems: MenuItem[] =
+    localBranches.length || remoteBranches.length
+      ? [
+          ...(localBranches.length
+            ? [{ kind: 'section' as const, label: 'Local' }, ...localBranches.map(branchRow)]
+            : []),
+          ...(remoteBranches.length
+            ? [
+                { kind: 'divider' as const },
+                { kind: 'section' as const, label: 'Remote' },
+                ...remoteBranches.map(branchRow),
+              ]
+            : []),
+        ]
+      : // Before the first read resolves, and for a cwd that is not a repository
+        // at all. A menu that opens empty reads as broken; this reads as loading.
+        [
+          { kind: 'section' as const, label: 'Branch' },
+          { id: 'current', label: branchLabel, icon: <GitBranch size={14} />, checked: true },
+        ]
 
   const current =
     models.find((m) => m.resolvedModel === session.model) ??
@@ -572,7 +668,14 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
       label={branchLabel}
       items={branchItems}
       ariaLabel="Branch"
-      tip="Branch this session is working on"
+      tip="Branch this session is working on — pick another to check it out"
+      onOpen={loadBranches}
+      /* No `search` prop, unlike the project and model pickers: those count a
+         list they already hold, and this one's arrives after the menu is open.
+         Counting `branches` here would be deciding from state one render behind
+         the rows actually drawn — Menu's own `items.length >= SEARCHABLE`
+         default is measured against exactly what it renders. */
+      searchPlaceholder="Find a branch…"
     />
   )
   /* Effort rides on the model label rather than taking a second control — see
@@ -683,11 +786,10 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
           now transparent — otherwise there would be a box drawn inside a box.
 
           The controls are direct children rather than living in a `.composer-row`
-          wrapper, because the two shapes are one flex container with and without
-          wrapping: expanded, `.composer-input` takes `flex: 1 0 100%` and pushes
-          the rest onto a second line; compact, nothing wraps and `+` takes
-          `order: -1` to lead the row. A nested row could not produce both. */}
-      <div className="composer-card" data-compact={compact ? '' : undefined}>
+          wrapper, and that is still load-bearing with one shape: the `+` has to
+          sit BEFORE the input, which it does with `order: -1`, and a child of a
+          later sibling cannot reorder across it. */}
+      <div className="composer-card">
         <div className="composer-input">
           {/* Ghost text for the predicted next prompt. Only while the box is
               empty and idle — overlaying a suggestion on real typing is noise. */}
@@ -888,9 +990,9 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
       </div>
 
       {/* The status row: what this turn will run as, left to right, with the
-          context ring at the far end. One unconditional row in both shapes,
-          where there used to be two conditional ones — a project/branch pair
-          above the fresh card and a branch/ring pair below the compact one.
+          context ring at the far end. One unconditional row, where there used to
+          be two conditional ones — a project/branch pair above the fresh card
+          and a branch/ring pair below the follow-up one.
 
           Everything on it is a fact about the next turn rather than a part of
           the field: where it runs, on what branch, as which model, under which
@@ -901,9 +1003,27 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
           starts a conversation in this project and the branch picker's menu can
           reach any other, so once a conversation exists it would only be
           restating the session's own directory. */}
-      <div className="composer-bar" data-compact={compact ? '' : undefined}>
-        {!compact && projectPicker}
+      <div className="composer-bar">
+        {fresh && projectPicker}
         {branchPicker}
+        {/* The worktree opt-in. A native checkbox on the picker row rather than
+            the menu row and the chip it replaces: those were two controls 40px
+            apart that both fired immediately, and one of them could leave you
+            with no sessions at all. This one is a statement of intent — nothing
+            happens until ⏎, and unticking it costs nothing.
+
+            Only offered while the session can still move: its cwd is fixed at
+            creation, so once a message exists there is nowhere to go. */}
+        {fresh && !session.worktree && (
+          <label className="composer-worktree" data-tip="Run this in its own worktree and branch">
+            <input
+              type="checkbox"
+              checked={wantWorktree}
+              onChange={(e) => setWantFor(e.target.checked ? session.id : null)}
+            />
+            Worktree
+          </label>
+        )}
         {modelPicker}
         {modePicker}
         <span className="spacer" />
@@ -918,29 +1038,7 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         )}
       </div>
 
-      {/* Cursor's starter pills. Only on a fresh session — once there is a
-          conversation the mode is already set and these would be re-asking. */}
-      {!compact && (
-        <div className="composer-chips">
-          {STARTERS.map((s) => (
-            <button
-              key={s.mode}
-              className="composer-chip"
-              data-active={session.permissionMode === s.mode ? '' : undefined}
-              onClick={() => void window.foreman.setPermissionMode(session.id, s.mode)}
-            >
-              {s.label}
-            </button>
-          ))}
-          <button
-            className="composer-chip"
-            disabled={!fresh || !!session.worktree}
-            onClick={() => void goWorktree()}
-          >
-            New worktree
-          </button>
-        </div>
-      )}
+      {/* The starter chips lived here — see the note where STARTERS was. */}
 
       {/* Images could only ever arrive by paste or drop before. The `+` above
           needs something to click, and a hidden input is the only way to open

@@ -56,8 +56,9 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
   const revealItem = useStore((s) => s.revealItem)
   // Same signal the tree uses, so the two never disagree about where the agent is.
   const agent = useAgentFocus(session.id)
-  // The agent's writes already push this; the gutter rides it rather than polling.
-  const bump = useStore((s) => s.diffCounts[session.id] ?? 0)
+  // The agent's writes already push this; the gutter rides it rather than
+  // polling. Read for its identity — see DiffPanel for what a fresh one means.
+  const bump = useStore((s) => s.diffCounts[session.id])
   const [elsewhere, setElsewhere] = useState<string | null>(null)
   // Bumped once the editor is actually attached. The gutter effect needs a live
   // Monaco AND a model, and on the first open neither exists when effects first

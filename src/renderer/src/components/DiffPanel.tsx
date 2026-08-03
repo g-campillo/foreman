@@ -23,7 +23,10 @@ export default function DiffPanel({
   const [message, setMessage] = useState('')
   const [committing, setCommitting] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const bump = useStore((s) => s.diffCounts[session.id] ?? 0)
+  // Read for its IDENTITY, not its fields: the store mints a fresh object only
+  // when the tree or the branch actually moved, so this in a dep array is the
+  // refresh signal — including after a checkout, which changes no counts at all.
+  const bump = useStore((s) => s.diffCounts[session.id])
   const status = session.status
 
   const refresh = useCallback(

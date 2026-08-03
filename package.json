@@ -23,7 +23,9 @@
     "check:lspstatus": "node src/lsp/status.check.mts",
     "check:rules": "node src/shared/rules.check.mts",
     "check:shellpath": "node src/shared/shellpath.check.mts",
-    "check": "npm run check:derive && npm run check:diff && npm run check:highlight && npm run check:hostsock && npm run check:lsp && npm run check:lspstatus && npm run check:lspwire && npm run check:policy && npm run check:porcelain && npm run check:rules && npm run check:shellpath && npm run check:transcript",
+    "check:numstat": "node src/main/agent/numstat.check.mts",
+    "check:refs": "node src/main/agent/refs.check.mts",
+    "check": "npm run check:derive && npm run check:diff && npm run check:highlight && npm run check:hostsock && npm run check:lsp && npm run check:lspstatus && npm run check:lspwire && npm run check:numstat && npm run check:policy && npm run check:porcelain && npm run check:refs && npm run check:rules && npm run check:shellpath && npm run check:transcript",
     "notarize:dmg": "bash scripts/notarize-dmg.sh",
     "check:diff": "node src/shared/diff.check.mts"
   },

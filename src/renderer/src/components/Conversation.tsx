@@ -11,6 +11,7 @@ import {
 } from 'lucide-react'
 import type { ChatItem, EffortLevel, SessionMeta } from '../../../shared/types'
 import { useStore } from '../store'
+import { scrollPin } from '../scrollPin'
 import ToolLine from './ToolLine'
 import ToolRun, { FoldedContext, RevealContext } from './ToolRun'
 import ScrollDown from './ScrollDown'
@@ -114,7 +115,8 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
   const pinned = useRef(true)
 
   // Only autoscroll when the user is already at the bottom, so reading history
-  // isn't yanked away mid-stream.
+  // isn't yanked away mid-stream — or when the user just said something, which
+  // is what `scrollPin` carries over from the composer.
   //
   // Next frame, not in the effect body: reading scrollHeight and writing
   // scrollTop forces a synchronous layout, and doing that inside React's commit
@@ -122,10 +124,18 @@ export default function Conversation({ sessionId }: { sessionId: string }): Reac
   // runs after the browser has laid out the new content anyway, so scrollHeight
   // is the same number for free. Cancelled on re-run so a burst of updates
   // scrolls once.
+  //
+  // The latch is SPENT INSIDE THE rAF, not in the effect body, so it is spent on
+  // the frame that actually scrolls: a cancelled callback never spends it, which
+  // is what makes a burst of deltas arriving alongside the sent message collapse
+  // to one scroll rather than swallowing the pin on a frame that never ran.
   useEffect(() => {
     const frame = requestAnimationFrame(() => {
       const el = scroller.current
-      if (el && pinned.current) el.scrollTop = el.scrollHeight
+      if (!el) return
+      if (scrollPin.current) scrollPin.current = false
+      else if (!pinned.current) return
+      el.scrollTop = el.scrollHeight
     })
     return () => cancelAnimationFrame(frame)
   }, [items, approvals, elicitations, rewindPreview])

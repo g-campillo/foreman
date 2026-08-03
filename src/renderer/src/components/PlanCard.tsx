@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Check, ChevronLeft, FileText, Pencil, SendHorizontal, Users, X, Zap } from 'lucide-react'
 import type { PermissionMode, PermissionRequest } from '../../../shared/types'
 import { PLAN_FEEDBACK_PREFIX, planTitle, type PlanProposal } from '../derive.mts'
+import { pinToBottom } from '../scrollPin'
 import Markdown from './Markdown'
 
 /**
@@ -41,6 +42,10 @@ export default function PlanCard({
   }
   const revise = (): void => {
     if (!feedback.trim()) return
+    // Feedback is the user's own words entering the transcript — unlike
+    // `approve` above, which adds nothing of theirs and so must not move the
+    // view out from under someone reading the plan they just approved.
+    pinToBottom()
     void window.foreman.respondPermission(req.requestId, 'deny', {
       message: `${PLAN_FEEDBACK_PREFIX}\n\n${feedback.trim()}`,
     })

@@ -28,7 +28,9 @@ import {
   type TranscriptSearchHit,
   type WorktreeInfo,
 } from '../../shared/types'
-import { createWorktree, removeWorktree } from './worktrees'
+import { createWorktree, removeWorktree, repoRoot } from './worktrees'
+import { checkoutBranch, listBranches } from './branches'
+import { within } from './policy.mts'
 import {
   normaliseTranscript,
   searchTranscript,
@@ -40,6 +42,7 @@ import { HostClient, policy, reapDeadHost, scanHosts } from './hostclient'
 import { currentPathId } from '../shellpath'
 import {
   computeDiffs,
+  emitStats,
   revertFile,
   commitFiles,
 } from './gitdiff'
@@ -99,6 +102,20 @@ function canonical(path: string | undefined): string | undefined {
 
 function get(id: string): HostClient | undefined {
   return sessions.get(id)
+}
+
+/**
+ * Every live session standing on a repository, for an operation that rewrites
+ * the working directory under all of them at once.
+ *
+ * Containment, not equality: a session opened on `<repo>/src` is affected by a
+ * checkout exactly as much as one opened on the root. Worktree sessions live
+ * under `userData`, so they correctly fall OUTSIDE their own repo root and are
+ * neither blocked by nor refreshed for a checkout on the main tree — which is
+ * the whole point of a worktree.
+ */
+function sessionsUnder(root: string): HostClient[] {
+  return [...sessions.values()].filter((h) => within(root, h.meta.cwd))
 }
 
 /**
@@ -377,6 +394,66 @@ export function registerSessionIpc(): void {
         message,
       }: { sessionId: string; cwd: string; paths: string[]; message: string },
     ) => commitFiles(sessionId, cwd, paths, message),
+  )
+
+  // --- branches -----------------------------------------------------------
+
+  ipcMain.handle(IPC.gitBranches, (_e, { cwd }: { cwd: string }) => listBranches(cwd))
+
+  /**
+   * Check a branch out, on behalf of every session standing on that tree.
+   *
+   * A checkout rewrites the working directory under whoever is in it, so it is
+   * refused while any session on this tree is mid-turn — an agent reading a file
+   * that changes under it produces failures with no visible cause. The refusal
+   * NAMES the session, because with three tabs open "something is busy" is not
+   * an actionable sentence.
+   *
+   * On success, one emitStats per affected session. That single event carries
+   * both the new branch and the new line totals, which is every downstream
+   * refresh in one hop: the badge, the composer's branch label, the file tree,
+   * the diff panel and the editor's gutter decorations.
+   *
+   * Left deliberately stale: an already-open FileModal buffer (which fails safely
+   * on save via expectMtimeMs), SessionMeta.worktree.branch (cosmetic — Composer
+   * prefers the live value), and the LSP servers (IPC.lspRecheck exists; out of
+   * scope here).
+   */
+  ipcMain.handle(
+    IPC.gitCheckout,
+    async (
+      _e,
+      {
+        sessionId,
+        cwd,
+        name,
+        remote,
+      }: { sessionId: string; cwd: string; name: string; remote: string | null },
+    ) => {
+      const root = await repoRoot(cwd)
+      if (!root) return { ok: false, error: 'Not a git repository.' }
+
+      const busy = sessionsUnder(root).find(
+        (h) => h.meta.status === 'running' || h.meta.status === 'awaiting-approval',
+      )
+      if (busy) {
+        return {
+          ok: false,
+          error: `${busy.meta.title} is mid-turn on this tree — interrupt it first.`,
+        }
+      }
+
+      const result = await checkoutBranch(cwd, name, remote)
+      if (!result.ok) return result
+
+      // The asker is included by id even if its host has gone away, so the
+      // window it is looking at still updates. A Map, because it is usually one
+      // of the same sessions and a double emit would be a wasted git read.
+      const targets = new Map(sessionsUnder(root).map((h) => [h.meta.id, h.meta.cwd]))
+      targets.set(sessionId, cwd)
+      await Promise.all([...targets].map(([id, dir]) => emitStats(id, dir).catch(() => undefined)))
+      return result
+    },
   )
 
   ipcMain.handle(IPC.sessionResume, (_e, init: SessionInit & { resume: string }) =>

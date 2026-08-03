@@ -2,6 +2,8 @@ import { create } from 'zustand'
 import type {
   Appearance,
   ChatItem,
+  DiffChanged,
+  DiffStats,
   Prefs,
   ElicitationRequest,
   ModelInfo,
@@ -18,7 +20,9 @@ interface State {
   items: Record<string, ChatItem[]>
   approvals: PermissionRequest[]
   elicitations: ElicitationRequest[]
-  diffCounts: Record<string, number>
+  /** Uncommitted files AND lines per session, from evtDiffChanged. The OBJECT
+   *  identity is the refresh signal three panels ride — see onDiffChanged. */
+  diffCounts: Record<string, DiffStats>
   /** Live checked-out branch per session, from git. null on a detached HEAD. */
   branches: Record<string, string | null>
   models: ModelInfo[]
@@ -109,7 +113,10 @@ interface State {
   setComposerDirty(dirty: boolean): void
 
   select(id: string): void
-  openPath(cwd: string, worktreeBranch?: string): Promise<void>
+  /** Resolves to the new session, or null when creating it failed — which is an
+   *  ordinary outcome for a worktree, and the composer has to know before it
+   *  closes anything. The other three callers ignore it. */
+  openPath(cwd: string, worktreeBranch?: string): Promise<SessionMeta | null>
   newSession(worktreeBranch?: string): Promise<void>
   /** Always asks for a folder — the "different repo" case ⌘N no longer covers. */
   openProject(worktreeBranch?: string): Promise<void>
@@ -121,6 +128,9 @@ interface State {
   confirmRewind(): Promise<void>
   cancelRewind(): void
   close(id: string): Promise<void>
+  /** Check a branch out under the active session. `remote` non-null means the
+   *  branch exists only on that remote, so a tracking branch is created. */
+  checkoutBranch(cwd: string, name: string, remote: string | null): Promise<void>
   send(content: SendContent): Promise<void>
   setAppearance(patch: Partial<Appearance>): void
   bootstrap(): void
@@ -480,11 +490,12 @@ export const useStore = create<State>((set, get) => ({
       // reasons (branch taken, no commits yet), so it needs saying rather than
       // leaving the New button looking dead.
       set({ notice: ipcMessage(err) })
-      return
+      return null
     }
     // every entry point into "new conversation" funnels through.
     set((s) => ({ sessions: [...s.sessions, meta], activeId: meta.id, notice: null }))
     get().select(meta.id)
+    return meta
   },
 
   /**
@@ -495,8 +506,10 @@ export const useStore = create<State>((set, get) => ({
    */
   async newSession(worktreeBranch) {
     const cwd = activeSession(get())?.cwd
-    if (cwd) return get().openPath(cwd, worktreeBranch)
-    await get().openProject(worktreeBranch)
+    // `await`, not `return`: openPath resolves to the new session now, and this
+    // one is declared as void — only the composer's worktree hop needs the meta.
+    if (cwd) await get().openPath(cwd, worktreeBranch)
+    else await get().openProject(worktreeBranch)
   },
 
   async openProject(worktreeBranch) {
@@ -610,6 +623,36 @@ export const useStore = create<State>((set, get) => ({
         notice: notice ?? s.notice,
       }
     })
+  },
+
+  /**
+   * Move the tree this session is standing on to another branch.
+   *
+   * Nothing else to do here on success: main emits evtDiffChanged for every
+   * session under the repo root, and that one event carries the new branch and
+   * the new counts — which is the badge, the composer's label, the file tree and
+   * the diff panel, all refreshed without this knowing about any of them.
+   *
+   * `error ?? notice` for the message, exactly as openPath does: a refusal is
+   * git's own sentence, and a success can still have left a detached HEAD's
+   * commits behind and needs to say so.
+   *
+   * The try/catch is the other half of that same posture, and the half openPath
+   * is really named for. The handler answers every FORESEEN failure as
+   * `{ ok: false, error }`, so this is only reachable if the invoke itself
+   * rejects — main gone, the channel unregistered. That is exactly when a
+   * silent no-op is worst: the branch label would simply not change, with
+   * nothing to say why.
+   */
+  async checkoutBranch(cwd, name, remote) {
+    const id = get().activeId
+    if (!id) return
+    try {
+      const res = await window.foreman.checkoutBranch(id, cwd, name, remote)
+      set({ notice: res.error ?? res.notice ?? null })
+    } catch (err) {
+      set({ notice: ipcMessage(err) })
+    }
   },
 
   async send(content) {
@@ -743,28 +786,35 @@ export const useStore = create<State>((set, get) => ({
       set((s) => ({ elicitations: s.elicitations.filter((e) => e.requestId !== requestId) }))
     })
 
-    window.foreman.onDiffChanged(
-      ({
-        sessionId,
-        count,
-        branch,
-      }: {
-        sessionId: string
-        count: number
-        branch: string | null
-      }) => {
-        set((s) => {
-          // Bail when nothing moved. computeDiffs emits this as a side effect of
-          // the very call DiffPanel makes, and `bump` is in that effect's deps —
-          // so without the guard, listing diffs would schedule another listing.
-          if (s.diffCounts[sessionId] === count && s.branches[sessionId] === branch) return s
-          return {
-            diffCounts: { ...s.diffCounts, [sessionId]: count },
-            branches: { ...s.branches, [sessionId]: branch },
-          }
-        })
-      },
-    )
+    window.foreman.onDiffChanged(({ sessionId, branch, ...stats }: DiffChanged) => {
+      set((s) => {
+        // Bail when nothing moved. computeDiffs emits this as a side effect of
+        // the very call DiffPanel makes, and `bump` is in that effect's deps —
+        // so without the guard, listing diffs would schedule another listing.
+        //
+        // FIELD BY FIELD, never `prev === stats`: this payload is now an object,
+        // so a reference test is always false and the refetch loops forever.
+        //
+        // `branch` is part of the test on purpose, and deleting it breaks step 2
+        // with no type error: a checkout onto a branch with identical counts must
+        // still mint a fresh diffCounts object, because that object's IDENTITY is
+        // what FileTree, DiffPanel and FileModal have in their effect deps. That
+        // is how one event refreshes all three after a branch switch.
+        const prev = s.diffCounts[sessionId]
+        if (
+          prev &&
+          prev.files === stats.files &&
+          prev.added === stats.added &&
+          prev.removed === stats.removed &&
+          s.branches[sessionId] === branch
+        )
+          return s
+        return {
+          diffCounts: { ...s.diffCounts, [sessionId]: stats },
+          branches: { ...s.branches, [sessionId]: branch },
+        }
+      })
+    })
 
     // Re-adopt whatever is already running. This covers a renderer reload as it
     // always did, and now also an app RESTART: agents live in detached host

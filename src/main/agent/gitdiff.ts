@@ -1,12 +1,13 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { readFile, unlink } from 'node:fs/promises'
+import { readFile, stat, unlink } from 'node:fs/promises'
 import { relative } from 'node:path'
 import type { HookCallbackMatcher } from '@anthropic-ai/claude-agent-sdk'
-import { IPC, type FileDiff } from '../../shared/types'
+import { IPC, type DiffStats, type FileDiff } from '../../shared/types'
 import { send } from '../../shared/sink'
 import { parsePorcelainZ } from './porcelain.mts'
-import { diffRow } from '../../shared/diff.mts'
+import { countLines, parseNumstat } from './numstat.mts'
+import { diffRow, MAX_DIFF_BYTES } from '../../shared/diff.mts'
 import { within } from './policy.mts'
 
 const exec = promisify(execFile)
@@ -104,6 +105,94 @@ async function contentAtHead(root: string, path: string): Promise<string | null>
 }
 
 /**
+ * What to diff the working tree against: 'HEAD', or the empty tree.
+ *
+ * A repo with no commits has no HEAD, and `git diff HEAD` there is a hard
+ * `fatal: ambiguous argument 'HEAD'` — so the badge would silently read 0 on
+ * exactly the tree where everything is new.
+ *
+ * The empty tree is COMPUTED, not the famous 4b825dc6… literal: that hash is
+ * SHA-1's, and a repo created with `--object-format=sha256` has a different one.
+ * `/dev/null` rather than the documented `--stdin`, and this is not cosmetic —
+ * promisify(execFile) never closes the child's stdin, so `--stdin` hangs forever
+ * on a code path that runs after every agent tool call. If this ever has to run
+ * on Windows the answer is `spawn` plus an explicit `stdin.end()`, NOT the
+ * literal 4b825dc6… — that would silently give the wrong base on a SHA-256 repo,
+ * which is the failure this function exists to avoid. (The build ships mac only.)
+ */
+async function diffBase(root: string): Promise<string> {
+  const head = await git(root, ['rev-parse', '--verify', '--quiet', 'HEAD'])
+  if (head?.trim()) return 'HEAD'
+  const empty = await git(root, ['hash-object', '-t', 'tree', '/dev/null'])
+  // Falling back to HEAD is the safe failure: readStats treats a failed diff as
+  // zero, which is what an unreadable repo should report anyway.
+  return empty?.trim() || 'HEAD'
+}
+
+/**
+ * Cap on the untracked files whose lines are counted.
+ *
+ * This runs on the agent's hot path — every Edit, Write and Bash — and a
+ * `node_modules` that escaped .gitignore is thousands of reads. Past the cap the
+ * badge undercounts, which is far better than a stalled turn.
+ */
+const MAX_UNTRACKED_SCAN = 400
+
+/**
+ * Line totals for a status already in hand.
+ *
+ * Two sources, because neither one can answer alone. `git diff --numstat` covers
+ * everything git tracks, in one process and without reading a single file in
+ * this one — but it cannot see untracked files, and `git add -N` to fold them in
+ * is not available: it mutates the index, which would break commitFiles'
+ * "exactly the files you ticked" contract. So new files are counted by reading
+ * them, under the same ceilings the panel applies.
+ *
+ * `--no-renames` is load-bearing twice: it keeps a numstat record to three
+ * fields, and it makes a rename count as a full delete plus a full add — which
+ * is what parsePorcelainZ's two `R` entries and diffRow's two rows already
+ * produce, so the badge and the panel agree about renames too.
+ *
+ * `files` is `st.dirty.size` rather than numstat's record count, because that is
+ * what the panel renders one row per.
+ */
+async function readStats(st: GitStatus): Promise<DiffStats> {
+  const base = await diffBase(st.root)
+  const out = await git(st.root, ['diff', '--numstat', '--no-renames', '-z', base])
+  const totals = out === null ? { added: 0, removed: 0 } : parseNumstat(out)
+
+  let added = totals.added
+  let scanned = 0
+  for (const [path, code] of st.dirty) {
+    if (!code.startsWith('??')) continue
+    if (++scanned > MAX_UNTRACKED_SCAN) break
+    // Same three refusals diffRow makes, so a file the panel declines to diff
+    // cannot contribute lines the panel never shows: not a regular file, over
+    // the ceiling, or binary by git's own NUL-byte heuristic.
+    const info = await stat(path).catch(() => null)
+    if (!info?.isFile() || info.size > MAX_DIFF_BYTES) continue
+    const text = await readFile(path, 'utf8').catch(() => null)
+    if (text === null || text.includes('\0')) continue
+    added += countLines(text)
+  }
+
+  return { files: st.dirty.size, added, removed: totals.removed }
+}
+
+/**
+ * The ONE emitter for evtDiffChanged, taking a status the caller already read.
+ *
+ * Single, so what the badge says and what the panel just received can never
+ * disagree — computeDiffs routes both of its emits through here rather than
+ * building the payload twice. `null` is "not a repository", which is a clean
+ * badge and no branch.
+ */
+export async function sendStats(sessionId: string, st: GitStatus | null): Promise<void> {
+  const stats = st ? await readStats(st) : { files: 0, added: 0, removed: 0 }
+  send(IPC.evtDiffChanged, { sessionId, ...stats, branch: st?.branch ?? null })
+}
+
+/**
  * Every uncommitted change, straight from git.
  *
  * Emits the badge count as a side effect, so what the badge says and what the
@@ -115,7 +204,7 @@ async function contentAtHead(root: string, path: string): Promise<string | null>
 export async function computeDiffs(sessionId: string, cwd: string): Promise<FileDiff[]> {
   const st = await readStatus(cwd)
   if (!st) {
-    send(IPC.evtDiffChanged, { sessionId, count: 0, branch: null })
+    await sendStats(sessionId, null)
     return []
   }
 
@@ -132,23 +221,25 @@ export async function computeDiffs(sessionId: string, cwd: string): Promise<File
   }
 
   out.sort((a, b) => a.relPath.localeCompare(b.relPath))
-  send(IPC.evtDiffChanged, { sessionId, count: out.length, branch: st.branch })
+  // The status this already holds, rather than a second readStatus: the panel
+  // and the badge are then reporting the same instant of the tree.
+  await sendStats(sessionId, st)
   return out
 }
 
 /**
- * Badge-only refresh: one git call, no file reads.
+ * Badge-only refresh: four git calls plus the untracked walk, no diffing.
  *
- * Equal to `computeDiffs().length` by construction, because diffRow emits a row
- * per dirty path unconditionally.
+ * The four are readStatus's `rev-parse --show-toplevel` and `status`, then
+ * diffBase's `rev-parse --verify HEAD` and the `diff --numstat` itself. Still
+ * cheap enough for the PostToolUse hook, because none of them reads a tracked
+ * file — which is the cost `computeDiffs` pays and this deliberately does not.
+ *
+ * `files` is equal to `computeDiffs().length` by construction, because diffRow
+ * emits a row per dirty path unconditionally.
  */
-export async function emitCount(sessionId: string, cwd: string): Promise<void> {
-  const st = await readStatus(cwd)
-  send(IPC.evtDiffChanged, {
-    sessionId,
-    count: st?.dirty.size ?? 0,
-    branch: st?.branch ?? null,
-  })
+export async function emitStats(sessionId: string, cwd: string): Promise<void> {
+  await sendStats(sessionId, await readStatus(cwd))
 }
 
 /**
@@ -166,7 +257,7 @@ export function makeDiffHook(sessionId: string, cwd: string): HookCallbackMatche
       hooks: [
         async (input) => {
           if (input.hook_event_name !== 'PostToolUse') return { continue: true }
-          await emitCount(sessionId, cwd).catch(() => undefined)
+          await emitStats(sessionId, cwd).catch(() => undefined)
           return { continue: true }
         },
       ],
@@ -205,7 +296,7 @@ export async function revertFile(
     if (!done.ok) return { ok: false, error: done.error }
   }
 
-  await emitCount(sessionId, cwd)
+  await emitStats(sessionId, cwd)
   return { ok: true }
 }
 
@@ -240,7 +331,7 @@ export async function commitFiles(
   if (!done.ok) return { ok: false, error: done.error, committed: 0 }
 
   // Nothing to forget — the committed files simply stop being dirty.
-  await emitCount(sessionId, cwd)
+  await emitStats(sessionId, cwd)
 
   const sha = (await git(root, ['rev-parse', '--short', 'HEAD']))?.trim()
   return { ok: true, sha, committed: paths.length }

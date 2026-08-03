@@ -10,8 +10,12 @@ import type { DiffHunk, DiffLine, FileDiff } from './types'
  * against. `.mts` so the assert checks can load it under bare node.
  */
 
-/** Past this, a line diff is both useless to read and slow to produce — structuredPatch is O(ND). */
-const MAX_DIFF_BYTES = 1_000_000
+/** Past this, a line diff is both useless to read and slow to produce — structuredPatch is O(ND).
+ *
+ *  Exported because gitdiff's badge has to refuse exactly the same files this
+ *  does: a second copy of the ceiling would drift, and the badge would then count
+ *  lines in a file the panel renders as 'too large to diff'. */
+export const MAX_DIFF_BYTES = 1_000_000
 
 /**
  * jsdiff's hunk lines carry their marker as the first character and no line

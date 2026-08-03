@@ -107,8 +107,8 @@
   --r-md: 10px;
   --r-lg: 14px;
   --r-xl: 16px;
-  /* Cursor's --cursor-radius-3xl. Only the compact composer uses it: their
-     follow-up box is a single row that is nearly, but deliberately not, a pill. */
+  /* Cursor's --cursor-radius-3xl. Only the composer card uses it: their prompt
+     box is a single row that is nearly, but deliberately not, a pill. */
   --r-2xl: 18px;
   --r-pill: 999px;
 
@@ -706,16 +706,90 @@ select {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.rail-key {
-  flex: none;
+/* Keycaps.
+   ────────
+   `.rail-key` lived here — a real <span> the New conversation row rendered, and
+   the only shortcut visible anywhere in the app. It is a pseudo-element off
+   `data-key` now, so there is exactly ONE way to declare a shortcut and every
+   control that has one can reveal it: on hover as this always did, and on a ⌘
+   hold across the whole window (see useKeyPeek, which sets `data-keys` on body).
+
+   `attr()` in `content` is why this can be a pseudo-element at all, and why the
+   cap is declared as its own attribute rather than parsed out of `data-tip`:
+   CSS cannot parse, and two of the targets (the dock's tabs) deliberately carry
+   no tooltip at all. */
+[data-key] {
+  position: relative;
+}
+[data-key]::after {
+  content: attr(data-key);
+  position: absolute;
+  right: var(--sp-1-5);
+  top: 50%;
+  translate: 0 -50%;
   font-size: var(--fs-xs);
+  line-height: 1;
   color: rgb(var(--text-faint));
   opacity: 0;
   transition: opacity 0.1s ease;
+  /* Same reason `.tab .badge` takes it: this sits over the middle of a control
+     whose whole job is to be clicked. */
+  pointer-events: none;
 }
-.rail-nav-row:hover .rail-key,
-.rail-nav-row:focus-visible .rail-key {
+/* A ⌘ hold reveals every cap. Hover reveals only the ones with NO TOOLTIP to
+   say it instead — `hk()` puts the same key in both attributes, so hovering a
+   capped control would otherwise paint `⌘1` on the button and "Files this agent
+   has changed  ⌘1" in the bubble beside it. One shortcut, shown once.
+
+   `.rail-key` used to own an unconditional hover reveal, and could: it sat on
+   the one row whose tip carried no key. In practice `:not([data-tip])` leaves
+   the reveal exactly where it still earns its place — the dock's tabs, which
+   carry no tip on purpose. */
+body[data-keys] [data-key]::after,
+[data-key]:not([data-tip]):hover::after,
+[data-key]:not([data-tip]):focus-visible::after {
   opacity: 1;
+}
+/* The global reduced-motion block kills `animation` only — its own comment says
+   so — and a transition is not an animation. A fade is decoration by any
+   reading, so it gets its own arm rather than riding on that one. */
+@media (prefers-reduced-motion: reduce) {
+  [data-key]::after {
+    transition: none;
+  }
+}
+/* Hovering a control while ⌘ is ALREADY held re-fires pointerover, so the bubble
+   and the cap would paint together and overlap. Tooltip.tsx covers the other
+   order for us (it hides on any keydown, so pressing ⌘ clears a live bubble);
+   this is the inverse. */
+body[data-keys] .tip[data-show] {
+  opacity: 0;
+}
+
+/* A PERMANENT right gutter, reserved whether the cap is showing or not, for the
+   two carriers that have something at that edge to collide with: `.dock-entries`
+   parks `.dock-count` there with `margin-left: auto`, and `.rail-nav-row`'s label
+   is `flex: 1` and would ellipsis straight under the cap.
+
+   NOT `.dock-tabs button`, which has neither. Reserving 26px on all three tabs
+   would widen the strip by ~54px and push every label off centre permanently, to
+   make room for a cap that is only ever visible during a ⌘ hold — and their caps
+   overhang the label for those few hundred milliseconds instead, which is the
+   cheaper trade on a control with nothing at its right edge. `position: relative`
+   is all they need, and `[data-key]` above already gives them that. */
+.rail-nav-row[data-key],
+.dock-entries button[data-key] {
+  padding-right: 26px;
+}
+
+/* The icon-only exception. Settings is a 14px glyph in a ~25px button, so a cap
+   inside it would land on the icon; it corner-anchors instead, exactly as
+   `.tab .badge` does and into the same 12px of `.pane-head` padding that one was
+   measured against. */
+.tab[data-key]::after {
+  top: -2px;
+  right: -4px;
+  translate: none;
 }
 
 /* Cursor's cell metrics: 6px gap, 8px radius, and the selected state carries a
@@ -1826,65 +1900,45 @@ button.tool-line:hover {
   gap: var(--sp-2);
 }
 
-/* The card: one surface holding the text and its controls, in two shapes.
-   Radius is Cursor's --conversation-surface-border-radius (14px in glass mode).
+/* The card: one surface holding the text and its controls, on ONE ROW.
 
-   Both shapes come out of ONE flex container rather than two DOM trees, because
-   the only difference is whether it wraps:
+   There used to be two shapes keyed off `data-compact` — a tall wrapped card
+   before the first message, a single-row pill after it — and the whole of the
+   difference was `.composer-input { flex: 1 0 100% }` forcing the controls onto
+   a second line. The tall form is gone: everything that justified it (the mode
+   and model controls, then the starter chips) has moved out or been deleted, so
+   what was left was a 60px-minimum empty box on the one screen with nothing in
+   it. `flex: 1 1 auto` is the fix, and `min-width: 0` beside it is not optional
+   — without it a long draft refuses to shrink and pushes send off the edge.
 
-     expanded — flex-wrap: wrap, and .composer-input takes `flex: 1 0 100%`, so
-                the text claims a full line and the controls fall to a second.
-     compact  — nothing wraps, the input takes the slack, and .composer-add gets
-                `order: -1` so the `+` leads the row.
-
-   A nested `.composer-row` wrapper could not produce the compact form at all:
-   the `+` has to sit BEFORE the input there, and a child of a later sibling
-   cannot reorder across it. That is why the controls are direct children. */
+   NO WRAPPING. `.composer-add` takes `order: -1` so the `+` leads the row, and
+   that is why the controls are direct children rather than living in a
+   `.composer-row` wrapper: the `+` sits AFTER the input in the DOM, and a child
+   of a later sibling cannot reorder across it. */
 .composer-card {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   align-items: center;
-  gap: var(--sp-1-5);
-  /* Cursor's --prompt-input-toolbar-padding, 8px 10px 10px. The input carries
-     its own top and side padding, so only the bottom band belongs to the card. */
-  padding: 0 var(--sp-2-5) var(--sp-2-5);
+  gap: var(--sp-2);
+  padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-2);
   /* The editor's content inset, read by BOTH .cm-content and the .ghost overlay
      that sits on top of it. It used to be hardcoded in each — 10px/12px on the
      content and 10px/13px on the ghost — which was already a pixel out and went
-     badly wrong once the compact shape gave the editor a different padding: the
-     suggestion floated a line below the placeholder it was supposed to replace. */
-  --editor-pad: 10px 12px;
+     badly wrong when the two shapes gave the editor different paddings: the
+     suggestion floated a line below the placeholder it was replacing. One shape
+     means one value, which makes that coupling smaller rather than safe. */
+  --editor-pad: 4px 2px;
   background: rgb(var(--fill-4));
   border: 1px solid rgb(var(--stroke-2));
-  border-radius: var(--r-lg);
+  border-radius: var(--r-2xl);
   transition: border-color 0.12s ease;
 }
 .composer-card > .composer-input {
-  flex: 1 0 100%;
+  flex: 1 1 auto;
   min-width: 0;
 }
-
-/* The follow-up shape: one row, `+` first, model and send trailing. Cursor
-   shrinks the editor to a single line here — it is a reply box, and a 60px
-   minimum would make it look like the conversation had not started. */
-.composer-card[data-compact] {
-  flex-wrap: nowrap;
-  gap: var(--sp-2);
-  padding: var(--sp-1) var(--sp-1) var(--sp-1) var(--sp-2);
-  border-radius: var(--r-2xl);
-}
-.composer-card[data-compact] > .composer-input {
-  flex: 1 1 auto;
-}
-.composer-card[data-compact] .composer-add {
+.composer-card .composer-add {
   order: -1;
-}
-.composer-card[data-compact] .composer-editor .cm-scroller {
-  min-height: 24px;
-  max-height: 140px;
-}
-.composer-card[data-compact] {
-  --editor-pad: 4px 2px;
 }
 /* A hairline lift, not a ring. --accent is near-white now, so the old
    `--accent / 0.7` border read as a hard white outline around the whole card. */
@@ -1915,11 +1969,14 @@ button.tool-line:hover {
 .composer-editor .cm-editor.cm-focused {
   outline: none;
 }
+/* One line to start, growing to ~7. The 60px minimum belonged to the tall shape
+   and is gone with it — an empty box three lines high is what made a new session
+   look like it was waiting for an essay. */
 .composer-editor .cm-scroller {
   font-family: inherit;
   line-height: 1.5;
-  min-height: 60px;
-  max-height: 220px;
+  min-height: 24px;
+  max-height: 140px;
   overflow-y: auto;
 }
 .composer-editor .cm-content {
@@ -1975,8 +2032,8 @@ button.tool-line:hover {
 }
 
 /* `.composer-row` lived here — the wrapper the controls used to sit in. It is
-   gone: the controls are direct children of the card now, so one flex container
-   can produce both the expanded and compact shapes. See .composer-card above. */
+   gone: the controls are direct children of the card now, which is what lets the
+   `+` take `order: -1` and lead the row. See .composer-card above. */
 
 /* Cursor's `+`: a filled circle at the head of the toolbar, one step lighter
    than the card it sits on. Not a `.btn` — it is the only control here that is
@@ -2005,8 +2062,8 @@ button.tool-line:hover {
 /* `.composer-mode`'s two rules lived here. The pill is on the status row now,
    not in the card, so both were describing something that no longer happens:
    the shrink weight is `.composer-bar`'s business, and the `order: -1` that put
-   the pill in front of the compact input governed a compact row it is no longer
-   part of. Its sizing is with the rest of the row's, above. */
+   the pill in front of the input governed a row it is no longer part of. Its
+   sizing is with the rest of the row's, above. */
 
 /* Every button in the card is icon-only, so they are circles rather than
    pills — Cursor's send is a filled white ⬤ with a dark glyph, and the two
@@ -2041,7 +2098,7 @@ button.tool-line:hover {
    written for are on `.composer-bar`, which sets its own weights. */
 
 /* The status row: branch · model · mode, with the context ring at the far end.
-   Always below the card, in both shapes.
+   Always below the card.
 
    A RENAME of the old context row, not a reuse of it — that name described a
    row that MOVED above the card on a fresh session, and the whole argument in
@@ -2052,29 +2109,17 @@ button.tool-line:hover {
    out from under a pointer that was already aimed at it. The pickers ellipsis
    instead — see the shrink weights below.
 
-   The inset is keyed off `data-compact` because the two shapes present entirely
-   different landmarks to line up with, not because one number was scaled.
-
-   EXPANDED there is an exact one. `.composer-input` is `flex: 1 0 100%`, so the
-   editor leads its own line and its text sits 23px in: 1px card border + 10px
-   card padding + 12px of --editor-pad. A picker spends 7px of its own before its
-   icon (6px padding + 1px border). 16 + 7 = 23, so the first icon lands under
-   the first character.
-
-   COMPACT there is none, and quoting arithmetic for it would be false precision
-   someone would later "correct" against the wrong thing. The leading element is
-   the `+` circle (`order: -1`) at 9px, and the editor's text is 43px in behind
-   it — 1 + 8 + 24 + 8 + 2. There is no character to align a label to, so 6px is
-   chosen to tuck the row just inside the pill and nothing more. */
+   The inset used to be keyed off `data-compact`, with arithmetic quoted for the
+   tall shape ("16 + 7 = 23, so the first icon lands under the first character").
+   Both are gone with the second shape: nothing wraps now, the leading element is
+   always the `+` circle rather than a character, and there is nothing for a
+   label to line up with. 6px tucks the row just inside the pill, and no more. */
 .composer-bar {
   display: flex;
   flex-wrap: nowrap;
   align-items: center;
   gap: var(--sp-1);
   min-width: 0;
-  padding: 0 16px;
-}
-.composer-bar[data-compact] {
   padding: 0 var(--sp-1-5);
 }
 
@@ -2100,38 +2145,46 @@ button.tool-line:hover {
   flex: none;
 }
 
-/* Starter pills, under the empty composer. Cursor's filter-pill treatment: every
-   one is bordered, and the active one merely adds a fill. With no saturated
-   accent anywhere, that fill is the whole of the selected state. */
-.composer-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--sp-1-5);
-  padding: 0 var(--sp-1-5);
-}
-.composer-chip {
+/* `.composer-chips` / `.composer-chip` lived here: the bordered starter pills
+   under an empty composer. They are gone with the row that held them — a third
+   line of chrome on the one shape that should be smallest, each one restating a
+   control that sits four pixels below it. */
+
+/* The worktree opt-in, sitting on the picker row as a sibling of the pickers.
+   A native checkbox with its own label, deliberately NOT `.switch`: that is a
+   34x20 settings toggle whose meaning is "a preference, in effect now", and this
+   is an intent about a session that does not exist yet — nothing happens until
+   the first message is sent. It is also three times the height of a 12px
+   `.picker` on a row that must never grow a second line.
+
+   `accent-color` and a real <input>, following `.diff-pick` and
+   `.approval-tick input`: the role, the space-to-toggle and :checked all stay
+   the platform's. */
+.composer-worktree {
   flex: none;
-  padding: 3px var(--sp-2-5);
-  border: 1px solid rgb(var(--stroke-3));
-  border-radius: var(--r-pill);
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 2px var(--sp-1-5);
+  border-radius: var(--r-sm);
   font-size: var(--fs-sm);
+  color: rgb(var(--text-faint));
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.12s ease;
+}
+.composer-worktree:hover {
   color: rgb(var(--text-dim));
-  transition:
-    background 0.12s ease,
-    border-color 0.12s ease,
-    color 0.12s ease;
 }
-.composer-chip:hover:not(:disabled) {
-  background: rgb(var(--fill-hover));
+/* The on state is the label lighting up with the box. :has() rather than a
+   sibling selector so the whole row reads as one control. */
+.composer-worktree:has(:checked) {
   color: rgb(var(--text));
 }
-.composer-chip[data-active] {
-  background: rgb(var(--fill-2));
-  border-color: rgb(var(--stroke-2));
-  color: rgb(var(--text));
-}
-.composer-chip:disabled {
-  opacity: 0.4;
+.composer-worktree input {
+  accent-color: rgb(var(--accent));
+  margin: 0;
+  cursor: pointer;
 }
 
 /* Borderless. Cursor's pickers are plain text plus a chevron with no box at all
@@ -2708,17 +2761,30 @@ button.tool-line:hover {
   color: rgb(var(--text));
 }
 /* The only colour in the list, and the same green Cursor puts on its own
-   `Changes +1`. */
+   `Changes +1`. Two of them now — added and removed — sharing the diff panel's
+   own palette, so the badge and the panel header read as the same fact.
+
+   `margin-left: auto` on the base pushes the pair to the row's right edge; the
+   sibling rule takes it back off the second, or the two would spread apart. It
+   has to be a sibling rule rather than a class on the first, because either
+   number can be absent: a delete-only change renders the red one alone, and it
+   still has to reach the edge. */
 .dock-count {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
   color: rgb(var(--add-fg));
 }
+.dock-count + .dock-count {
+  margin-left: var(--sp-1);
+}
+.dock-count[data-tone='del'] {
+  color: rgb(var(--del-fg));
+}
 
 /* The dock's tab bar. Borderless: active takes a fill, inactive is plain text.
    That is Cursor's tab treatment, and it is deliberately NOT the bordered-pill
-   treatment their filter chips use — see .composer-chip, which is the other
-   one. Two different jobs, two different shapes. */
+   treatment their filter chips use. Two different jobs, two different shapes —
+   the composer's own starter pills were the bordered kind, and they are gone. */
 .dock-tabs {
   display: flex;
   align-items: center;
@@ -3593,7 +3659,7 @@ button.diff-more:hover {
    Cursor's tab shape and this is a tab bar. The dock's own tabs sit ~8px above
    this one; drawing both the same way reads as a single confused two-row tab
    bar. The container fill is what marks this as sub-navigation — same reasoning
-   .dock-tabs gives for why it is not .composer-chip. */
+   .dock-tabs gives for why it is not a bordered pill. */
 .stabs {
   display: flex;
   align-items: center;

@@ -1,5 +1,12 @@
 import { contextBridge, ipcRenderer, type IpcRendererEvent } from 'electron'
-import { IPC, type McpActionResult, type McpStatus, type PermissionAnswer } from '../shared/types'
+import {
+  IPC,
+  type BranchList,
+  type CheckoutResult,
+  type McpActionResult,
+  type McpStatus,
+  type PermissionAnswer,
+} from '../shared/types'
 
 function on(channel: string, cb: (payload: any) => void): () => void {
   const listener = (_e: IpcRendererEvent, payload: any): void => cb(payload)
@@ -99,6 +106,20 @@ const api = {
     ipcRenderer.invoke(IPC.diffRevert, { sessionId, cwd, path }),
   commitFiles: (sessionId: string, cwd: string, paths: string[], message: string) =>
     ipcRenderer.invoke(IPC.diffCommit, { sessionId, cwd, paths, message }),
+
+  // branches. Both annotated, for the reason reconnectMcp gives above: the
+  // failure reason IS the feature here — git's refusal to overwrite local
+  // changes is what the rail notice shows — so it must not arrive as `any` and
+  // get quietly dropped.
+  listBranches: (cwd: string): Promise<BranchList> =>
+    ipcRenderer.invoke(IPC.gitBranches, { cwd }),
+  checkoutBranch: (
+    sessionId: string,
+    cwd: string,
+    name: string,
+    remote: string | null,
+  ): Promise<CheckoutResult> =>
+    ipcRenderer.invoke(IPC.gitCheckout, { sessionId, cwd, name, remote }),
 
   // editor files
   readFile: (cwd: string, path: string) => ipcRenderer.invoke(IPC.fileRead, { cwd, path }),

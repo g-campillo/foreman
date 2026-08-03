@@ -9,6 +9,7 @@ import {
 } from 'lucide-react'
 import type { PermissionRequest } from '../../../shared/types'
 import { ANSWER_PREFIX, askQuestions, type AskQuestion } from '../derive.mts'
+import { pinToBottom } from '../scrollPin'
 import Markdown from './Markdown'
 
 /**
@@ -139,6 +140,9 @@ export default function QuestionCard({
    * branch on.
    */
   const submit = (): void => {
+    // The answers land in the transcript as a user message, so this is the
+    // user's own words arriving — the one case autoscroll follows unasked.
+    pinToBottom()
     const lines = questions.map((q, i) => {
       const a = ans(i)
       const parts = a.picked.map(sanitize)
