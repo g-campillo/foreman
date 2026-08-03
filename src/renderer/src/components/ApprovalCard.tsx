@@ -51,7 +51,7 @@ const ARM_GRACE_MS = 350
  */
 function focusIsBusy(): boolean {
   /**
-   * An open modal beats every exception below, because THE EXCEPTIONS ARE
+   * An OPEN modal beats every exception below, because THE EXCEPTIONS ARE
    * REACHABLE WITH ONE OPEN.
    *
    * Settings, FileModal and TerminalModal contain no `.focus()` call and no
@@ -61,6 +61,18 @@ function focusIsBusy(): boolean {
    * box is empty. Without this an arriving approval would take focus to a button
    * BEHIND the scrim, scroll the conversation under it, and 350ms later accept
    * a ⏎ for a tool the user never saw.
+   *
+   * MOUNTED IS NO LONGER THE SAME AS OPEN, which is what `:not()` is for:
+   * usePresence keeps a dismissed scrim in the DOM for its 180ms exit. And the
+   * `:not()` is on EACH selector rather than around the pair, because two scrims
+   * can be mounted at once — a closing palette over an open Settings — and
+   * `querySelector` returns the first in DOCUMENT order, which may well be the
+   * closing one.
+   *
+   * Reading a closing scrim as open is not a stall. The arm effect below has
+   * deps `[arm]` and `arm` does not flip again for the same request, so a single
+   * true reading disarms that card for its entire life: Allow never takes focus,
+   * ⏎ does nothing, and the "↵" badge never appears.
    *
    * A DOM query rather than store state, deliberately: these six modals keep
    * their open flags in local `useState` in six different components, so there
@@ -72,7 +84,12 @@ function focusIsBusy(): boolean {
    * exactly the two states the `<body>` exemption exists to serve, so this costs
    * that exemption nothing.
    */
-  if (document.querySelector('.plan-scrim, .palette-scrim')) return true
+  if (
+    document.querySelector(
+      '.plan-scrim:not([data-state="closed"]), .palette-scrim:not([data-state="closed"])',
+    )
+  )
+    return true
 
   const el = document.activeElement
   if (!(el instanceof HTMLElement) || el === document.body) return false

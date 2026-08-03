@@ -250,6 +250,9 @@ export const DEFAULT_APPEARANCE: Appearance = {
   // fixed start for a diff or terminal pane.
   railWidth: 244,
   sideWidth: 520,
+  // Today's behaviour to the pixel: 'comfortable' resolves --convo-max-w to
+  // --composer-max-w, so nobody's transcript moves on upgrade.
+  transcriptWidth: 'comfortable',
 }
 
 /**
@@ -310,6 +313,7 @@ function loadAppearance(): Appearance {
       trafficLights: saved.trafficLights ?? DEFAULT_APPEARANCE.trafficLights,
       railWidth: saved.railWidth ?? DEFAULT_APPEARANCE.railWidth,
       sideWidth: saved.sideWidth ?? DEFAULT_APPEARANCE.sideWidth,
+      transcriptWidth: saved.transcriptWidth ?? DEFAULT_APPEARANCE.transcriptWidth,
     }
   } catch {
     return DEFAULT_APPEARANCE
@@ -412,6 +416,9 @@ export function applyAppearance(a: Appearance): void {
   // The exception is xterm, which takes colour literals rather than CSS vars —
   // it watches resolvedTheme instead, which is why that lives in the store.
   document.documentElement.dataset.theme = theme
+  // Same mechanism, one line down: theme.css keys --convo-max-w off this
+  // attribute and .convo's inline padding follows. Nothing in JS reads it.
+  document.documentElement.dataset.transcriptWidth = a.transcriptWidth
   useStore.setState({ resolvedTheme: theme })
   // There is deliberately no window-background push here any more. The window is
   // transparent with a native vibrancy material behind it, so its pre-paint

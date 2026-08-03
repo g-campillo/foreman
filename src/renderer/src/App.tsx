@@ -17,6 +17,7 @@ import CommandPalette, { type PaletteActions } from './components/CommandPalette
 import Tooltip from './components/Tooltip'
 import { hk } from './hotkey'
 import { useKeyPeek } from './useKeyPeek'
+import { usePresence } from './usePresence'
 
 export type Panel = 'diff' | 'session' | 'files'
 
@@ -90,6 +91,13 @@ export default function App(): React.JSX.Element {
   // six levels down and the palette all open it; the terminal has exactly three
   // openers and all three are in this file or already take an actions object.
   const [showTerminal, setShowTerminal] = useState(false)
+
+  // Each modal stays mounted for the length of its exit transition, which is the
+  // only way a `{cond && <X/>}` overlay can animate out at all — see usePresence.
+  // The flags above are still the truth; these only delay the unmount.
+  const settingsAt = usePresence(showSettings)
+  const paletteAt = usePresence(showPalette)
+  const terminalAt = usePresence(showTerminal)
 
   // Hold ⌘ and every `data-key` in the window names its shortcut. Writes an
   // attribute on <body> and nothing else — see useKeyPeek for why it must not
@@ -408,22 +416,27 @@ export default function App(): React.JSX.Element {
         {/* All three stay mounted rather than swapping, because DiffPanel holds
             an unsent commit message plus per-file tick and collapse state, and a
             panel toggle silently discarding those is worse than three hidden
-            subtrees. SessionPanel already no-ops while `visible` is false. */}
-        <div className="pane pane-body" style={{ display: panel === 'diff' ? 'flex' : 'none' }}>
+            subtrees. SessionPanel renders nothing until its first open.
+
+            `data-active` rather than an inline `display`: theme.css stacks all
+            three in one grid cell and crossfades them, and `display` is the one
+            property that cannot be transitioned into. The attribute is the only
+            thing the CSS needs — see .pane-body. */}
+        <div className="pane pane-body" data-active={panel === 'diff' || undefined}>
           {session ? (
             <DiffPanel session={session} visible={panel === 'diff'} />
           ) : (
             <div className="empty">No session</div>
           )}
         </div>
-        <div className="pane pane-body" style={{ display: panel === 'files' ? 'flex' : 'none' }}>
+        <div className="pane pane-body" data-active={panel === 'files' || undefined}>
           {session ? (
             <FileTree session={session} visible={panel === 'files'} />
           ) : (
             <div className="empty">No session</div>
           )}
         </div>
-        <div className="pane pane-body" style={{ display: panel === 'session' ? 'flex' : 'none' }}>
+        <div className="pane pane-body" data-active={panel === 'session' || undefined}>
           {session ? (
             <SessionPanel session={session} visible={panel === 'session'} />
           ) : (
@@ -467,9 +480,15 @@ export default function App(): React.JSX.Element {
           child, and the pane's overflow would then clip the bubble. Tooltip
           renders last so its z-index:70 and its DOM order agree about painting
           over both scrims. */}
-      {showSettings && <Settings onClose={() => setShowSettings(false)} />}
-      {showPalette && (
-        <CommandPalette actions={paletteActions} onClose={() => setShowPalette(false)} />
+      {settingsAt.mounted && (
+        <Settings data-state={settingsAt.state} onClose={() => setShowSettings(false)} />
+      )}
+      {paletteAt.mounted && (
+        <CommandPalette
+          data-state={paletteAt.state}
+          actions={paletteActions}
+          onClose={() => setShowPalette(false)}
+        />
       )}
       {/* Here for the strong version of the reason above, not the weak one:
           PlanCard's scrim renders inside .convo and is therefore confined to the
@@ -480,8 +499,12 @@ export default function App(): React.JSX.Element {
           containing block and the pane's overflow would clip it. Unlike the
           others it sits BELOW the palette in z (see .term-scrim): ⌘K has to
           stay reachable over a terminal you left open. */}
-      {session && showTerminal && (
-        <TerminalModal session={session} onClose={() => setShowTerminal(false)} />
+      {session && terminalAt.mounted && (
+        <TerminalModal
+          data-state={terminalAt.state}
+          session={session}
+          onClose={() => setShowTerminal(false)}
+        />
       )}
       <Tooltip />
     </div>

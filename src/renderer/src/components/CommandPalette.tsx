@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import type { PermissionMode } from '../../../shared/types'
 import { useStore } from '../store'
 import { filterEntries, tildePath } from '../derive.mts'
+import type { PresenceState } from '../usePresence'
 import { MODES } from './Composer'
 
 interface Entry {
@@ -32,9 +33,12 @@ export interface PaletteActions {
 export default function CommandPalette({
   actions,
   onClose,
+  'data-state': state,
 }: {
   actions: PaletteActions
   onClose: () => void
+  /** From usePresence in App — see `.palette-scrim[data-state='closed']`. */
+  'data-state': PresenceState
 }): React.JSX.Element {
   const sessions = useStore((s) => s.sessions)
   const activeId = useStore((s) => s.activeId)
@@ -119,14 +123,30 @@ export default function CommandPalette({
     listRef.current?.querySelector('[data-sel]')?.scrollIntoView({ block: 'nearest' })
   }, [cursor, shown])
 
+  /**
+   * ONE entry per palette, which stopped being structural.
+   *
+   * `onClose()` only starts the exit — usePresence keeps this mounted for
+   * --dur-2 afterwards, and the autoFocus input below holds DOM focus for all of
+   * it, so its onKeyDown is still live. The closing scrim's `pointer-events:
+   * none` covers the mouse and nothing else. A second ⏎ in that window ran the
+   * entry twice: two sessions, two worktrees. Before usePresence the component
+   * was gone on the next frame and there was nothing left to press.
+   *
+   * `state` also reads 'closed' for the two frames of the ENTRY animation (see
+   * usePresence — a modal mounted already-open has nothing to animate from), so
+   * this refuses a ⏎ that arrived before the list was painted. That is the
+   * keystroke ARM_GRACE_MS swallows over in ApprovalCard, and the entry it would
+   * have run here is a session switch or a new worktree.
+   */
   const run = (entry: Entry | undefined): void => {
-    if (!entry) return
+    if (!entry || state === 'closed') return
     onClose()
     entry.run()
   }
 
   return (
-    <div className="palette-scrim" onMouseDown={onClose}>
+    <div className="palette-scrim" data-state={state} onMouseDown={onClose}>
       <div className="palette" onMouseDown={(e) => e.stopPropagation()}>
         <input
           className="palette-input"

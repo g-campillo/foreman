@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { X } from 'lucide-react'
 import type { SessionMeta } from '../../../shared/types'
 import { tildePath } from '../derive.mts'
+import type { PresenceState } from '../usePresence'
 import TerminalPane from './TerminalPane'
 
 /**
@@ -32,9 +33,12 @@ import TerminalPane from './TerminalPane'
 export default function TerminalModal({
   session,
   onClose,
+  'data-state': state,
 }: {
   session: SessionMeta
   onClose: () => void
+  /** From usePresence in App — see `.plan-scrim[data-state='closed']`. */
+  'data-state': PresenceState
 }): React.JSX.Element {
   // Bare window listener, copying FileModal's — and safe here for the same
   // reason, which TerminalPane had to be taught: its attachCustomKeyEventHandler
@@ -52,7 +56,7 @@ export default function TerminalModal({
   }, [onClose])
 
   return (
-    <div className="plan-scrim term-scrim">
+    <div className="plan-scrim term-scrim" data-state={state}>
       <div className="plan-modal term-modal" role="dialog" aria-label="Terminal">
         <header className="plan-head term-head">
           {/* `~/code/foreman`, not `/Users/…/code/foreman`. `.term-title`

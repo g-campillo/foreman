@@ -8,6 +8,19 @@ import rehypeHighlight from 'rehype-highlight'
 const LONG_BLOCK_LINES = 18
 
 /**
+ * Neither of this block's buttons is anybody else's click.
+ *
+ * The bug it fixes was real and silent: the question modal rendered an option's
+ * preview INSIDE the `<button>` that selected the option, so copying a preview
+ * also flipped your answer. That structure is gone — the preview is a sibling of
+ * the button now — and this stays anyway, as the guard for the other four
+ * `<Markdown>` call sites. It costs nothing at any of them: at all four the
+ * `.md` tree is a sibling of whatever is clickable, never a descendant, so there
+ * is no parent handler here to stop.
+ */
+const stop = (e: React.MouseEvent): void => e.stopPropagation()
+
+/**
  * A fenced code block: highlighted by rehype, plus copy and collapse.
  *
  * The line count is read off the DOM rather than the React children, because
@@ -28,7 +41,8 @@ function CodeBlock(props: React.HTMLAttributes<HTMLPreElement>): React.JSX.Eleme
     setLines((prev) => (prev === n ? prev : n))
   })
 
-  const copy = (): void => {
+  const copy = (e: React.MouseEvent): void => {
+    stop(e)
     const text = ref.current?.textContent ?? ''
     void navigator.clipboard.writeText(text).then(() => {
       setCopied(true)
@@ -42,7 +56,13 @@ function CodeBlock(props: React.HTMLAttributes<HTMLPreElement>): React.JSX.Eleme
       <pre ref={ref} {...props} />
       <div className="code-bar">
         {long && (
-          <button className="code-btn" onClick={() => setExpanded((v) => !v)}>
+          <button
+            className="code-btn"
+            onClick={(e) => {
+              stop(e)
+              setExpanded((v) => !v)
+            }}
+          >
             {expanded ? 'Collapse' : `Show all ${lines} lines`}
           </button>
         )}

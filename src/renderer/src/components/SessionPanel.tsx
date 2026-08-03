@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { RefreshCw } from 'lucide-react'
 import type {
   AccountInfo,
@@ -58,6 +58,10 @@ export default function SessionPanel({
 }): React.JSX.Element {
   const [data, setData] = useState<Data | null>(null)
   const [busy, setBusy] = useState(false)
+  /** Latches on the first open. A ref rather than state: it only ever gates the
+   *  render it is set in, so flipping it can never need a second one. */
+  const seen = useRef(false)
+  if (visible) seen.current = true
   /* Local, not persisted. The Appearance whitelist in store.ts is deliberately
      narrow and a sub-tab does not earn a slot in it; the panel stays mounted for
      the app's lifetime anyway, so the choice already survives every dock switch
@@ -118,7 +122,15 @@ export default function SessionPanel({
     if (visible && session.status === 'idle') void refresh()
   }, [visible, session.status, refresh])
 
-  if (!visible) return <></>
+  /* Rendered once it has EVER been shown, not only while it is showing.
+     The dock's three panels crossfade now rather than swapping with `display`,
+     and a bare `if (!visible)` makes the outgoing half of that fade a blank
+     pane: the panel vanishes on the frame the tab is clicked and an empty box
+     fades out behind the new one. Still nothing at all until the first open,
+     which is what the early return was really buying — a Session tab nobody
+     opens costs nothing. Fetching is gated on `visible` above and is untouched
+     by this. */
+  if (!seen.current) return <></>
 
   /* `null` until the fetch lands, not 0. A tab reading "MCP 0" for the second
      it takes to answer is a claim that there are none, and it is wrong far more

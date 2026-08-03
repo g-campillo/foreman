@@ -3,6 +3,7 @@ import { Check, ChevronLeft, FileText, Pencil, SendHorizontal, Users, X, Zap } f
 import type { PermissionMode, PermissionRequest } from '../../../shared/types'
 import { PLAN_FEEDBACK_PREFIX, planTitle, tildePath, type PlanProposal } from '../derive.mts'
 import { pinToBottom } from '../scrollPin'
+import { usePresence } from '../usePresence'
 import Markdown from './Markdown'
 
 /**
@@ -30,6 +31,8 @@ export default function PlanCard({
   plan: PlanProposal
 }): React.JSX.Element {
   const [open, setOpen] = useState(true)
+  // Held in the DOM for the length of its exit transition — see usePresence.
+  const at = usePresence(open)
   const [feedback, setFeedback] = useState('')
   const [writing, setWriting] = useState(false)
   const title = planTitle(plan.markdown)
@@ -75,8 +78,8 @@ export default function PlanCard({
         </button>
       </div>
 
-      {open && (
-        <div className="plan-scrim" onMouseDown={() => setOpen(false)}>
+      {at.mounted && (
+        <div className="plan-scrim" data-state={at.state} onMouseDown={() => setOpen(false)}>
           <div
             className="plan-modal"
             role="dialog"

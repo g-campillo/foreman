@@ -21,6 +21,7 @@ import {
   setAuthored,
 } from '../editor/models'
 import { useAgentFocus } from '../useAgentFocus'
+import { usePresence } from '../usePresence'
 import { serverFor } from '../../../shared/languages.mts'
 
 /** Languages the user has waved away this session. Module scope, so it survives
@@ -76,6 +77,19 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
 
   const path = editorState?.path ?? null
   const line = editorState?.line ?? null
+
+  /* Presence lives INSIDE this component, unlike the other four modals: what
+     opens it is `editor` in the store rather than a flag at the call site, and
+     App renders `<FileModal>` unconditionally.
+
+     `shown` is the path the frame keeps rendering while it animates out. `path`
+     is already null by then, and every hook below still keys off `path` — so
+     the reads, the buffer and the gutter all tear down on the real close,
+     exactly as before, and only the frame outlives them by --dur-2. The one
+     exception is the detach effect, which says why on itself. */
+  const at = usePresence(!!path)
+  const shown = useRef<string | null>(null)
+  if (path) shown.current = path
 
   const save = useCallback(async () => {
     if (!path) return
@@ -171,15 +185,24 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
     return () => window.removeEventListener('keydown', onKey)
   }, [path, closeFile, save])
 
+  /* Keyed on `at.mounted` rather than on `path`, and that is about detach():
+     it pulls Monaco's host straight out of the DOM, so running it the frame
+     `path` clears would empty the editor before the modal had begun to fade —
+     the code vanishing, then a blank frame sliding away. Held to the end of the
+     exit and the file fades out with the modal that holds it.
+
+     It also stops a file SWITCH detaching at all, which was already redundant:
+     attach() saves the outgoing buffer's view state itself and re-appends the
+     host only when the mount does not already contain it. */
   useEffect(() => {
-    if (!path) return
+    if (!at.mounted) return
     const onResize = (): void => relayout()
     window.addEventListener('resize', onResize)
     return () => {
       window.removeEventListener('resize', onResize)
       detach()
     }
-  }, [path])
+  }, [at.mounted])
 
   /**
    * Follow the agent — but only ever within an editor that is already open.
@@ -298,14 +321,14 @@ export default function FileModal({ session }: Props): React.JSX.Element | null 
     )
   }
 
-  if (!path) return null
+  if (!at.mounted || !shown.current) return null
   // (path, cwd) — that order, not the other one. relPath does prefix arithmetic
   // and returns its first argument unchanged when the second does not prefix it,
   // so swapping them fails silently by rendering the cwd as a filename.
-  const rel = relPath(path, session.cwd)
+  const rel = relPath(shown.current, session.cwd)
 
   return (
-    <div className="plan-scrim" onMouseDown={closeFile}>
+    <div className="plan-scrim" data-state={at.state} onMouseDown={closeFile}>
       <div
         className="plan-modal file-modal"
         role="dialog"

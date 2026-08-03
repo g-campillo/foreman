@@ -743,6 +743,21 @@ export interface Appearance {
   /** Side panel width in px. Same clamping story as railWidth. */
   sideWidth: number
   /**
+   * How much of the chat pane the TRANSCRIPT is allowed to use.
+   *
+   * The composer is not in the deal: it stays pinned at --composer-max-w in
+   * every setting, because a 2000px-wide prompt box is not what the empty
+   * gutters were asking for. 'comfortable' is the behaviour the app has always
+   * had — the two share one number — so an upgrade changes nothing until this
+   * is touched.
+   *
+   * A choice rather than a pixel width because there is nothing to drag: unlike
+   * railWidth/sideWidth there is no seam here, and three named stops answer the
+   * real question ("is this a laptop or a 32-inch display") without inventing a
+   * control.
+   */
+  transcriptWidth: 'comfortable' | 'wide' | 'full'
+  /**
    * 'auto' follows the OS live via matchMedia; the other two pin it.
    *
    * The only look knob left, and deliberately so. The window is transparent

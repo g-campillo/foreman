@@ -180,9 +180,13 @@ export const MODES: { value: PermissionMode; label: string }[] = PERMISSION_MODE
   label: MODE_LABEL[value],
 }))
 
-/** Separate from MODES rather than a field on it, because the palette and
- *  Settings render these as text rows and would import lucide for nothing. */
-const MODE_ICON: Record<PermissionMode, React.ReactNode> = {
+/** Separate from MODES rather than a field on it, because the command palette
+ *  renders its mode entries as text rows and would import lucide for nothing.
+ *
+ *  Exported, unlike when only this file used it: Settings shows the same five
+ *  modes in the same Picker, and a second table of glyphs there is a second
+ *  place for a sixth mode to be forgotten. The palette still takes MODES alone. */
+export const MODE_ICON: Record<PermissionMode, React.ReactNode> = {
   default: <ShieldCheck size={14} />,
   acceptEdits: <Pencil size={14} />,
   plan: <ListChecks size={14} />,
@@ -207,7 +211,9 @@ const MODE_TONE: Partial<Record<PermissionMode, 'warn' | 'danger'>> = {
   dontAsk: 'warn',
 }
 
-const MODE_HINT: Partial<Record<PermissionMode, string>> = {
+/** The trailing text on those same two rows. Exported for the same reason as
+ *  MODE_ICON: the picker in Settings is the same picker. */
+export const MODE_HINT: Partial<Record<PermissionMode, string>> = {
   bypassPermissions: 'no prompts at all',
   dontAsk: 'denies anything not pre-approved',
 }

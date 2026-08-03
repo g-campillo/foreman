@@ -10,6 +10,7 @@ import {
 import type { PermissionRequest } from '../../../shared/types'
 import { ANSWER_PREFIX, askQuestions, type AskQuestion } from '../derive.mts'
 import { pinToBottom } from '../scrollPin'
+import { usePresence } from '../usePresence'
 import Markdown from './Markdown'
 
 /**
@@ -71,6 +72,25 @@ const oneLine = (s: string): string => s.replace(/\s+/g, ' ').trim()
  */
 const sanitize = (s: string): string => oneLine(s).replace(/ → /g, ' -> ').slice(0, MAX_FREE_TEXT)
 
+/**
+ * A preview, wrapped in a fence long enough to survive its own contents.
+ *
+ * A bare ``` fence is an injection: a preview containing a line of three
+ * backticks CLOSES the block early, and everything after it renders as live
+ * markdown inside the option — headings, links, the lot. CommonMark's rule is
+ * that a fence is closed only by a run at least as long as the one that opened
+ * it, so opening one backtick longer than the longest run present is airtight.
+ */
+const fenced = (s: string): string => {
+  const longest = Math.max(0, ...[...s.matchAll(/`+/g)].map((m) => m[0].length))
+  const bar = '`'.repeat(Math.max(3, longest + 1))
+  return `${bar}\n${s}\n${bar}`
+}
+
+/** 1–9 pick an option; `Number(e.key)` from one keypress cannot reach 10, so the
+ *  chip stops being printed rather than promising a key that does nothing. */
+const MAX_KEYED_OPTIONS = 9
+
 export default function QuestionCard({
   req,
   questions,
@@ -79,6 +99,8 @@ export default function QuestionCard({
   questions: AskQuestion[]
 }): React.JSX.Element {
   const [open, setOpen] = useState(true)
+  // Held in the DOM for the length of its exit transition — see usePresence.
+  const shown = usePresence(open)
   const [at, setAt] = useState(0)
   const [answers, setAnswers] = useState<Record<number, Answer>>({})
 
@@ -207,6 +229,9 @@ export default function QuestionCard({
       }
       // A focused option owns its own Enter/Space — without this, a keyboard
       // user tabbing onto an option would both pick it and advance the page.
+      // `.ask-opt` is the frame rather than the button now, so this also covers
+      // a preview's own Copy and "Show all N lines" buttons, which are inside
+      // the frame and beside the button rather than within it.
       if (
         (e.key === 'Enter' || e.key === ' ') &&
         e.target instanceof HTMLElement &&
@@ -234,6 +259,11 @@ export default function QuestionCard({
       // 1–9 pick the nth option on this page. Number keys rather than
       // arrows-plus-Enter because they sidestep the focus-versus-global-handler
       // conflict entirely, and they are what the CLI does.
+      //
+      // NINE IS THE CEILING, and it is this line that sets it: one keypress
+      // yields one digit, so a tenth option can never be reached this way. The
+      // chip stops printing at MAX_KEYED_OPTIONS to match — it used to print
+      // "10" beside an option no key could pick.
       const n = Number(e.key)
       if (Number.isInteger(n) && n >= 1 && n <= q.options.length) {
         e.preventDefault()
@@ -259,8 +289,8 @@ export default function QuestionCard({
         </button>
       </div>
 
-      {open && (
-        <div className="plan-scrim" onMouseDown={() => setOpen(false)}>
+      {shown.mounted && (
+        <div className="plan-scrim" data-state={shown.state} onMouseDown={() => setOpen(false)}>
           <div
             className="plan-modal ask-modal"
             role="dialog"
@@ -283,51 +313,68 @@ export default function QuestionCard({
 
             <div className="plan-body">
               <div className="ask-q">
+                {/* THE FRAME IS A DIV AND THE ROW INSIDE IT IS THE BUTTON.
+                    It used to be one <button> holding everything, which was
+                    invalid HTML — a code block's Copy and "Show all N lines"
+                    are interactive descendants of a button — and produced a
+                    real bug: those clicks bubbled, so copying a preview
+                    silently flipped your selection. Hoisting the preview out
+                    also stops a screen reader reading the entire code block,
+                    token by token, as the option's accessible name. */}
                 {q.options.map((o, oi) => {
                   const on = ans(at).picked.includes(o.label)
                   return (
-                    <button
-                      key={o.label}
-                      className="ask-opt"
-                      data-on={on ? '' : undefined}
-                      onClick={() => toggle(at, o.label, Boolean(q.multiSelect))}
-                    >
-                      <span className="ask-key">{oi + 1}</span>
-                      <span className="ask-opt-label">{o.label}</span>
-                      {o.description && <span className="ask-opt-desc">{o.description}</span>}
+                    <div key={o.label} className="ask-opt" data-on={on ? '' : undefined}>
+                      <button
+                        className="ask-opt-main"
+                        aria-pressed={on}
+                        onClick={() => toggle(at, o.label, Boolean(q.multiSelect))}
+                      >
+                        <span className="ask-opt-text">
+                          <span className="ask-opt-label">{o.label}</span>
+                          {o.description && <span className="ask-opt-desc">{o.description}</span>}
+                        </span>
+                        {oi < MAX_KEYED_OPTIONS && <span className="ask-key">{oi + 1}</span>}
+                      </button>
                       {/* Previews are requested as markdown, not HTML, so they
                           render through the existing renderer, not innerHTML. */}
                       {o.preview && (
-                        <span className="ask-preview">
-                          <Markdown text={`\`\`\`\n${o.preview}\n\`\`\``} />
-                        </span>
+                        <div className="ask-preview">
+                          <Markdown text={fenced(o.preview)} />
+                        </div>
                       )}
-                    </button>
+                    </div>
                   )
                 })}
 
-                {/* A sibling pair, not a nested field: .ask-opt is a <button>
-                    and a <button> cannot contain an <input>. Structurally the
-                    same shape as PlanCard's `writing` gate. */}
-                <div className="ask-other">
+                {/* The same frame, and the field is simply another child of it.
+                    `.ask-other` — a wrapper that existed only because a
+                    <button> cannot contain an <input> — is gone with the
+                    button-as-frame it worked around. */}
+                <div className="ask-opt" data-on={ans(at).otherOn ? '' : undefined}>
                   <button
-                    className="ask-opt"
-                    data-on={ans(at).otherOn ? '' : undefined}
+                    className="ask-opt-main"
+                    aria-pressed={ans(at).otherOn}
                     onClick={() => toggleOther(at, Boolean(q.multiSelect))}
                   >
-                    <span className="ask-key">O</span>
-                    <span className="ask-opt-label">Other</span>
-                    <span className="ask-opt-desc">
-                      {q.multiSelect
-                        ? 'Type your own, alongside anything picked above.'
-                        : 'Type your own answer instead.'}
+                    <span className="ask-opt-text">
+                      <span className="ask-opt-label">Other</span>
+                      <span className="ask-opt-desc">
+                        {q.multiSelect
+                          ? 'Type your own, alongside anything picked above.'
+                          : 'Type your own answer instead.'}
+                      </span>
                     </span>
+                    <span className="ask-key">O</span>
                   </button>
                   {ans(at).otherOn && (
                     <textarea
                       className="ask-other-input"
                       autoFocus
-                      rows={2}
+                      // The cap sanitize() already enforces, said where it can
+                      // still be obeyed: without it, typing past 500 characters
+                      // looks fine and loses the tail silently at submit.
+                      maxLength={MAX_FREE_TEXT}
                       placeholder="Your answer, in your own words."
                       value={ans(at).other}
                       onChange={(e) => patch(at, { other: e.target.value })}
@@ -346,7 +393,7 @@ export default function QuestionCard({
                     Note (optional)
                     <textarea
                       className="ask-other-input"
-                      rows={2}
+                      maxLength={MAX_FREE_TEXT}
                       placeholder="Anything the agent should know about this choice."
                       value={ans(at).note}
                       onChange={(e) => patch(at, { note: e.target.value })}

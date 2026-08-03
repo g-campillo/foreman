@@ -112,6 +112,20 @@
   --r-2xl: 18px;
   --r-pill: 999px;
 
+  /* motion — the one axis with no tokens until now. Durations are Cursor's:
+     short enough that nothing waits on the UI, long enough to read as movement.
+
+     These are also what honours Reduce Motion for everything built on them: the
+     prefers-reduced-motion block below collapses all three to 1ms rather than
+     blanket-killing `transition`, which two rules deliberately depend on. So a
+     NEW transition belongs on a token; a hardcoded duration opts out. */
+  --dur-1: 120ms; /* tint, hover, tooltip — matches the 0.12s already everywhere */
+  --dur-2: 180ms; /* modal and panel enter/exit */
+  --dur-3: 260ms; /* layout: the dock opening, a column resizing */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1); /* things arriving */
+  --ease-in: cubic-bezier(0.4, 0, 1, 1); /* things leaving */
+  --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1); /* things moving in place */
+
   /* 4px spacing scale, Cursor's --cursor-spacing-* */
   --sp-0-5: 2px;
   --sp-1: 4px;
@@ -131,12 +145,20 @@
   --fs-md: 14px;
   --fs-lg: 16px;
 
-  /* Conversation geometry, all Cursor's. --convo-inset is what pushes the user
-     message in from the left as the column widens, so a short message hugs the
-     right edge instead of stretching; -human floors it at 32px on a narrow one. */
+  /* Conversation geometry, all Cursor's. */
   --composer-max-w: 840px;
+  /* The transcript's cap, split from the composer's so the two can differ. The
+     composer NEVER moves — 840px is a prompt box, not a document — and this is
+     the only half the Appearance setting steers. Defaulting to the composer's
+     number is what makes 'comfortable' bit-for-bit today's layout. */
+  --convo-max-w: var(--composer-max-w);
   --convo-gap: 10px;
   --convo-lh: 1.6;
+  /* Both UNUSED, and left declared rather than deleted only because they are the
+     record of a decision: the pair pushed a short user message in from the left
+     so it hugged the right edge, and .msg-user says at length why it stopped
+     doing that. Relative and capped at 20%, so they would still scale correctly
+     into a 'wide' or 'full' transcript if that read ever came back. */
   --convo-inset: clamp(0px, (100% - 480px) * 0.4, 20%);
   --convo-inset-human: max(32px, var(--convo-inset));
 
@@ -185,6 +207,21 @@
   --syn-comment: 122 122 122;
   --syn-fn: 239 176 128; /* #efb080 */
   --syn-type: 135 195 255; /* #87c3ff */
+}
+
+/* The transcript-width setting, written onto <html> by applyAppearance exactly
+   as data-theme is. Only --convo-max-w moves; --composer-max-w is deliberately
+   not redeclared, which is the whole point of the split.
+
+   `100%` is the trick that makes 'full' need no special case downstream:
+   .convo's padding is `max(--sp-5, (100% - --convo-max-w) / 2)`, and at 100%
+   that inner term is 0, so the max() collapses to the ordinary edge padding
+   instead of needing its own rule. */
+:root[data-transcript-width='wide'] {
+  --convo-max-w: 1100px;
+}
+:root[data-transcript-width='full'] {
+  --convo-max-w: 100%;
 }
 
 /* Only the palette flips. Geometry, fonts, the spacing/type scales and the
@@ -358,11 +395,27 @@ select {
   display: none;
 }
 
-/* Every animation in this file is a decorative "in progress" loop — spin, pulse
-   or bounce — so honouring the OS setting costs nothing and none of them carry
-   layout. Global rather than per-rule: guarding only one of them would leave a
-   still tool icon beside a pulsing rail icon, which reads as a bug. */
+/* Two arms, and they work differently on purpose.
+
+   `animation: none` is global because every @keyframes in this file is either a
+   decorative "in progress" loop — spin, pulse, bounce — or a one-shot entry
+   fade, and none of them carry layout. Guarding only one would leave a still
+   tool icon beside a pulsing rail icon, which reads as a bug. The cost is that a
+   keyframe-driven affordance degrades to its end state, which is why the ask
+   modal's scroll fades are a static mask rather than a scroll-driven animation.
+
+   `transition` is NOT killed globally, and must not be. One rule deliberately
+   routes through `transition` precisely to escape this block — `[data-item-id]`'s
+   gutter flash — and it carries real information rather than decoration.
+   Collapsing the duration TOKENS is the equivalent that leaves it alone:
+   everything built on --dur-* becomes instant, and anything with a hardcoded
+   duration has opted out by saying so. */
 @media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-1: 1ms;
+    --dur-2: 1ms;
+    --dur-3: 1ms;
+  }
   *,
   *::before,
   *::after {
@@ -393,6 +446,12 @@ select {
      over the rounded native window and the mismatch shows. */
   border-radius: 12px;
   overflow: hidden;
+  /* The dock opening and closing, and every per-panel width override with it.
+     Chromium interpolates a grid template track-by-track as long as the track
+     COUNT matches, which is the whole reason the closed state below sets the
+     third column to 0 rather than dropping it. Killed during a drag by
+     .app[data-resizing] — see there. */
+  transition: grid-template-columns var(--dur-3) var(--ease-in-out);
 }
 
 /* The divider, drawn on each pane's leading edge. box-sizing is border-box
@@ -403,18 +462,44 @@ select {
   border-left: 1px solid rgb(var(--stroke-2));
 }
 
-/* Right pane closed — the default. `display: none` generates no box at all, so
-   .side stops being a grid item and no implicit third column appears; gap:1px
-   then yields exactly one hairline (rail↔chat), which is what we want.
+/* Right pane closed — the default. THREE COLUMNS EITHER WAY, with the third at
+   zero: this is the largest layout change in the app and it used to happen in
+   one frame, and a template that drops a track cannot be interpolated with one
+   that has it.
+
+   `display: none` on .side is gone, and can be. Its original justification was
+   that a missing box means no implicit third column, so `gap: 1px` yielded
+   exactly one hairline — and the gap trick died when the dividers moved onto the
+   panes' own border-left (above). What replaces it, in order:
+
+    - a 1px border in a zero-width border box does not collapse, it paints. So
+      the closed pane's divider has to go transparent or a hairline sits on the
+      window's right edge with nothing behind it.
+    - `content-visibility` restores the layout skip `display: none` used to give
+      for free. Without it the three panels lay out at zero width forever —
+      which is not merely wasted work, it is the pathological case: every line of
+      a long diff wrapping at one character per row. `allow-discrete` is what
+      makes it compatible with the animation: content-visibility flips to the
+      VISIBLE value at 0% and to the hidden one at 100%, so the pane's contents
+      are there for the whole of the open AND the whole of the close.
+    - the resize handle keeps its `display: none`. No pane to resize means no
+      seam to grab, and a col-resize strip on the window edge is worse than
+      useless.
+
    Driven off the attribute rather than a modifier class because the attribute
    already IS the state: nothing to keep in sync, and per-panel width overrides
    (`.app[data-panel='files']`, further down) come free without touching the
    TSX. */
 .app:not([data-panel]) {
-  grid-template-columns: var(--rail-w) minmax(0, 1fr);
+  grid-template-columns: var(--rail-w) minmax(0, 1fr) 0;
 }
-.app:not([data-panel]) > .side,
-/* No pane to resize means no seam to grab. */
+.side {
+  transition: content-visibility var(--dur-3) allow-discrete;
+}
+.app:not([data-panel]) > .side {
+  border-left-color: transparent;
+  content-visibility: hidden;
+}
 .app:not([data-panel]) > .rs-side {
   display: none;
 }
@@ -483,10 +568,15 @@ select {
 .rs[data-active]::after {
   opacity: 0.55;
 }
-/* Text selection would otherwise run away with the pointer mid-drag. */
+/* Text selection would otherwise run away with the pointer mid-drag.
+   `transition: none` is the other half, and it is not cosmetic: a drag rewrites
+   --side-w on every pointermove, and .app transitions grid-template-columns —
+   so without this the seam would trail the pointer by --dur-3 and the pane
+   would still be settling for a quarter-second after the button came up. */
 .app[data-resizing] {
   user-select: none;
   cursor: col-resize;
+  transition: none;
 }
 
 .pane {
@@ -497,11 +587,46 @@ select {
   overflow: hidden;
 }
 
-/* Tab bodies inside the side pane: fill the height left under the header,
-   otherwise they size to content and the terminal stops halfway down. */
+/* The dock's three tab bodies, stacked in ONE cell and crossfaded rather than
+   swapped with `display`.
+ *
+ * `.pane.side`, not a bare `.side`: `.pane` above sets `display: flex` at the
+ * same (0,1,0) specificity, so a one-class selector two hundred lines earlier
+ * would lose the tie on source order — the same trap `.plan-modal.settings`
+ * documents. Two classes settles it whichever way the file is reordered.
+ *
+ * All three panels stay mounted (App.tsx says why: DiffPanel holds an unsent
+ * commit message), so this only changes how they are hidden. `visibility` is
+ * the half that matters: it is transitionable and it keeps the outgoing panel
+ * VISIBLE for the whole duration before flipping, which is what makes a fade
+ * out possible at all — and it still removes the hidden ones from hit-testing
+ * and from the tab order, which `opacity: 0` alone would not. */
+.pane.side {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
 .pane-body {
-  flex: 1;
+  /* Row 2, column 1 — every panel in the same cell, so the cell is as tall as
+     the pane rather than as tall as three panels. */
+  grid-area: 2 / 1;
   min-height: 0;
+  opacity: 0;
+  visibility: hidden;
+  transition:
+    opacity var(--dur-2) var(--ease-out),
+    visibility var(--dur-2);
+}
+/* The half `visibility` cannot do. It is held at `visible` for the whole
+   --dur-2 of the exit — that is what makes the fade possible — and `opacity`
+   has never affected hit-testing, so without this the outgoing panel keeps
+   taking clicks over the incoming one for the length of every tab switch. All
+   three share one grid cell, so it is directly on top of it. */
+.pane-body:not([data-active]) {
+  pointer-events: none;
+}
+.pane-body[data-active] {
+  opacity: 1;
+  visibility: visible;
 }
 
 /* Quiet. No uppercase, no letter-spacing, no rule underneath, no weight — all
@@ -839,6 +964,11 @@ body[data-keys] .tip[data-show] {
    .home-recent / .home-remove pair. */
 .rail-row {
   position: relative;
+  /* A new conversation lifts into the list rather than appearing in it. Safe to
+     put on every row because the rows are keyed by session id: a row is created
+     once, so this fires on a genuinely new session (and on the launch fill,
+     where the whole list arriving together reads as the app opening). */
+  animation: row-in var(--dur-1) var(--ease-out);
 }
 /* Absolute, not a flex sibling. A flex sibling would permanently spend ~24px of
    a 244px rail on a control that is invisible most of the time, and every title
@@ -1002,6 +1132,19 @@ body[data-keys] .tip[data-show] {
   }
 }
 
+/* A row arriving. Was `q-in`, local to the queue tray; three lists and a
+   settings pane want the same --dur-1 lift now, so it is one keyframe with a
+   name that does not claim an owner. ENTER ONLY, always — a leave animation
+   needs the row to outlive the state that removed it, and none of the callers
+   can honestly do that. `from` only, so the end pose is whatever the element's
+   own rules say. */
+@keyframes row-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
 /* Language-server readiness, between the session list and the buttons.
    Deliberately thin: the rows themselves are plain `.meter`s, so all this owns
    is the seam, the failed colour, and the "busy with no number" case. */
@@ -1055,10 +1198,20 @@ body[data-keys] .tip[data-show] {
   border: 1px solid rgb(var(--stroke-2));
   color: rgb(var(--text-dim));
   font-size: var(--fs-sm);
+  /* On the tokens rather than the 0.12s literal the rest of the file still
+     carries, because this rule had to be edited for the press below anyway —
+     which is the only reason any of the old ones move. */
   transition:
-    background 0.12s ease,
-    color 0.12s ease,
-    border-color 0.12s ease;
+    background var(--dur-1) ease,
+    color var(--dur-1) ease,
+    border-color var(--dur-1) ease,
+    transform var(--dur-1) var(--ease-out);
+}
+/* The button gives under the pointer. `:active` never matches a disabled button,
+   so a dead control still reads as dead. Small on purpose: 0.97 of a 26px pill
+   is under a pixel of travel, which is felt rather than watched. */
+.btn:active {
+  transform: scale(0.97);
 }
 .btn:hover {
   background: rgb(var(--fill-hover));
@@ -1116,17 +1269,20 @@ body[data-keys] .tip[data-show] {
      that legitimately overflows sideways scrolls itself: `.code-wrap pre` and
      `.md table` both carry their own overflow-x. */
   overflow-x: hidden;
-  /* Capped at Cursor's --composer-max-width so the transcript is a readable
-     column rather than a full-bleed sheet, and the composer below caps itself
-     at the same number — that is what keeps the two on one axis as the pane
-     resizes.
+  /* Capped so the transcript is a readable column rather than a full-bleed
+     sheet. --convo-max-w defaults to --composer-max-w, which is what kept the
+     two on one axis as the pane resized; the Appearance setting can now widen
+     this one WITHOUT moving the composer, because a 32-inch display asks for a
+     wider document and not for a wider prompt box.
 
      The cap is PADDING, not `max-width` + `margin: auto`. Constraining the
      scroller itself would drag the scrollbar in off the pane edge with it and
      leave it floating in the middle of the window; growing the inline padding
-     centres the column while the scroll container stays full width. */
+     centres the column while the scroll container stays full width. That is
+     also what keeps the wheel live with the pointer out over the gutter, which
+     matters more at 'wide' than it ever did at 840px. */
   padding-block: var(--sp-6) var(--sp-2);
-  padding-inline: max(var(--sp-5), calc((100% - var(--composer-max-w)) / 2));
+  padding-inline: max(var(--sp-5), calc((100% - var(--convo-max-w)) / 2));
   display: flex;
   flex-direction: column;
   gap: var(--convo-gap);
@@ -1184,6 +1340,17 @@ body[data-keys] .tip[data-show] {
 .convo > [data-item-id] {
   content-visibility: auto;
   contain-intrinsic-size: auto 120px;
+  /* A row arriving lifts into the transcript. ON THE WRAPPER, NOT ON THE CARD
+     INSIDE IT, and that is the whole of what makes it safe here: an animation on
+     a DESCENDANT of a `content-visibility: auto` element is skipped while the
+     row is offscreen and starts over when it scrolls back, so the transcript
+     would replay its arrivals on every scroll up. The element carrying
+     content-visibility is not itself skipped, so this runs once, on creation.
+
+     Rows are keyed by item id, so "creation" means a genuinely new item — plus
+     the two places a whole subtree is rebuilt: a session switch, and unfolding a
+     turn. Both are arrivals as far as the eye is concerned. */
+  animation: row-in var(--dur-1) var(--ease-out);
 }
 
 /* A tool row is ONE LINE — about 24px, not 120. The guess only matters until a
@@ -2306,8 +2473,14 @@ button.tool-line:hover {
    why a menu rendered in place gets clipped by its own pane.
 
    z-index sits ABOVE the modal scrims (60) and below the tooltip (70), because
-   Settings and the plan modals both contain pickers. At the .ac's 30 a menu
-   opened inside Settings would paint behind it. */
+   Settings contains pickers — nine of them, since its rebuild; before that this
+   was true of nothing, and the ordering was carrying a claim it had outlived. At
+   the .ac's 30 a menu opened inside Settings would paint behind it.
+
+   It works because `.app`, which Menu portals to, is `position: relative` with
+   `z-index: auto` and so is NOT a stacking context — the menu and the scrim
+   compare their z-indexes directly in the root one. Give .app a z-index and this
+   silently stops being true. */
 .menu {
   position: fixed;
   z-index: 65;
@@ -3186,98 +3359,159 @@ button.diff-more:hover {
 
 /* --------------------------------------------------------------- settings */
 
-/* Settings reuses the plan modal's scrim/frame/head wholesale — it only needs
-   to be narrower and to lay its sliders out. The old `.pop` rules lived here;
-   these last two are those, renamed. It used to be right-anchored inside the
-   side pane, which is no longer a place that reliably exists. */
+/* Settings shares the plan modal's CHROME — scrim, frame, head, close — and owns
+   its layout below that. The line is exactly there for a reason: `.plan-scrim`
+   is what ApprovalCard queries to suppress its auto-focus while a modal is up,
+   so this must keep the class or an approval silently re-arms behind it.
+
+   `.plan-body` is the one it stopped sharing. It and the old `.settings-body`
+   were both (0,1,0) with `.plan-body` defined LATER, so `.settings-body`'s
+   padding never applied at all — the exact hazard the note below warns about,
+   landed. The fix is to stop sharing, not to escalate specificity. */
+
 /* Two classes, not one: .plan-modal sets width too and is defined LATER in this
    file, so a bare `.settings` loses the specificity tie on source order. */
 .plan-modal.settings {
-  width: min(400px, 90vw); /* four sliders, not an 860px plan document */
+  /* 760, under the ask modal's 880 and the plan's 1040 — a settings sheet is a
+     list of short rows, not a document. `%` rather than vw for the reason
+     .plan-scrim gives at length: one value that is right at both mount points. */
+  width: min(760px, 92%);
+  /* `height`, NOT `max-height`, and for two reasons that both bite. .settings-pane
+     is `overflow: auto` inside a grid track, and a track in an auto-height parent
+     gives it nothing to scroll against — it just grows and takes the modal with
+     it. And a category with two rows would otherwise resize the whole window
+     under the pointer that clicked it. */
+  height: min(600px, 86vh);
 }
-.settings-body {
+
+/* Nav left, detail right. The nav is fixed-width; the detail pane takes the
+   rest and is the only thing that scrolls. */
+.settings-main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 180px minmax(0, 1fr);
+}
+
+.settings-nav {
   display: flex;
   flex-direction: column;
-  gap: 14px;
-  padding: 16px 20px 20px;
+  gap: 1px;
+  padding: var(--sp-2);
+  border-right: 1px solid rgb(var(--border));
+  overflow-y: auto;
 }
-.settings-body label {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-  font-size: 11px;
-  color: rgb(var(--text-dim));
-}
-.settings-body input[type='range'] {
-  width: 100%;
-  accent-color: rgb(var(--accent));
-}
-.settings-body .select {
-  width: 100%;
-  max-width: none;
-  padding: 6px 8px;
-}
-/* Section rule, so "what a new session starts with" reads as a different kind
-   of setting from the appearance sliders below it. */
-.settings-sect {
-  font-size: 10px;
-  font-weight: 650;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: rgb(var(--text-faint));
-  padding-bottom: 2px;
-  border-bottom: 1px solid rgb(var(--border));
-}
-.settings-sect:not(:first-child) {
-  margin-top: 6px;
-}
-.settings-lbl {
+.settings-nav button {
   display: flex;
   align-items: center;
-  gap: 5px;
+  gap: var(--sp-2);
+  width: 100%;
+  padding: var(--sp-1-5) var(--sp-2);
+  border-radius: var(--r-sm);
+  text-align: left;
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-dim));
+  transition:
+    background var(--dur-1) ease,
+    color var(--dur-1) ease;
 }
-/* Why a setting exists, under the control. Several of these are decisions with
-   a real cost or a real consequence, and a bare label can't say which. */
-.settings-hint {
-  font-size: 10px;
+.settings-nav button:hover {
+  background: rgb(var(--fill-hover));
+  color: rgb(var(--text));
+}
+/* A fill, not the near-white .palette-row[data-sel] treatment: this is a list
+   you read while you work in the pane beside it, and an inverted row would be
+   the loudest thing in the modal. Same call .menu-row[data-sel] makes. */
+.settings-nav button[data-active] {
+  background: rgb(var(--fill-2));
+  color: rgb(var(--text));
+}
+.settings-nav svg {
+  flex: none;
+  color: rgb(var(--text-faint));
+}
+.settings-nav button[data-active] svg {
+  color: rgb(var(--text-dim));
+}
+
+.settings-pane {
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--sp-3) var(--sp-5) var(--sp-5);
+  display: flex;
+  flex-direction: column;
+  /* The category switch. The pane is keyed by category in the TSX so it is a new
+     element each time, which is what makes a one-shot animation replay — there
+     is only ever one pane mounted, so there is nothing to cross-FADE with. */
+  animation: row-in var(--dur-1) var(--ease-out);
+}
+
+/* ONE ROW SHAPE, label left and control right, and it is what turns a ~51px
+   stacked block into a ~32px line. Was `.settings-toggle`, which had this grid
+   already and applied it only to switches — the select rows could not join it
+   because a `width: 100%` <select> could not sit beside its own label. Now the
+   control is a `.picker` sized to its text, so the toggle row IS the choice row
+   and the special case is gone, `:has(.settings-hint)` span hack and all.
+
+   `align-items: start` rather than center: a row whose hint runs to two lines
+   should keep its control level with the LABEL, not floating in the middle of a
+   paragraph. */
+.setting {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--sp-2) var(--sp-4);
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid rgb(var(--stroke-4));
+}
+.setting:last-child {
+  border-bottom: 0;
+}
+/* The whole row is the hit target for a switch, and only for a switch —
+   SettingRow renders a <div> precisely because a <label> around a Picker's
+   <button> would label nothing. See SettingRow.tsx. */
+label.setting {
+  cursor: pointer;
+}
+.setting-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+.setting-label {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  font-size: var(--fs-base);
+  color: rgb(var(--text));
+}
+.setting-label svg {
+  flex: none;
+  color: rgb(var(--text-faint));
+}
+/* Why a setting exists, under its label. Several of these are decisions with a
+   real cost or a real consequence, and a bare label can't say which. */
+.setting-hint {
+  font-size: var(--fs-xs);
   line-height: 1.45;
   color: rgb(var(--text-faint));
 }
-/* A boolean row: label and hint on the left, the switch on the right. The
-   mirror of the select rows above, which stack label over control — a switch is
-   small and reads as a state rather than a choice, so it belongs beside the
-   thing it describes instead of under it, and the eye can run down one column of
-   switches to see what is on.
-
-   Selector is `.settings-body .settings-toggle`, not a bare `.settings-toggle`:
-   `.settings-body label` above is (0,1,1) and would otherwise beat a (0,1,0)
-   class outright — no source order fixes that — leaving `display: flex;
-   flex-direction: column` in place and stacking the switch under its own label.
-   The old `.settings-check` had the same collision and lost it silently. */
-.settings-body .settings-toggle {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  align-items: center;
-  gap: 4px 12px;
-  cursor: pointer;
+/* The control column. `.picker` is 12px faint chrome in the composer's status
+   row; here it is the thing you came to change, so it gets the weight and a
+   hairline to sit in. margin-top nudges it onto the label's baseline, since the
+   row aligns to `start`. */
+.settings-pane .picker {
+  max-width: 280px;
+  margin-top: 1px;
+  padding: 3px var(--sp-2);
+  border-color: rgb(var(--stroke-2));
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-dim));
 }
-/* Both text rows stay in column 1 and the switch spans them, so a row with a
-   hint and a row without still centre their switch the same way. */
-.settings-body .settings-toggle .settings-hint {
-  grid-column: 1;
-}
-.settings-body .settings-toggle .switch {
-  grid-column: 2;
-  align-self: center;
-}
-/* Span both text rows so the switch centres against the label AND its hint, not
-   just the label. `grid-row: 1 / -1` looks like the way to say that and is not:
-   -1 counts back through the EXPLICIT grid, and these rows are all implicit, so
-   it collapses to row 1 and the switch rides 16px high. Matching on :has instead
-   of `span 2` unconditionally, because a hintless row would otherwise grow an
-   empty second row and a 4px gap it does not need. */
-.settings-body .settings-toggle:has(.settings-hint) .switch {
-  grid-row: 1 / span 2;
+.settings-pane .picker:hover,
+.settings-pane .picker[data-open] {
+  color: rgb(var(--text));
 }
 
 /* A native <input type="checkbox"> with only its box replaced. appearance:none
@@ -3325,9 +3559,6 @@ button.diff-more:hover {
 .switch:focus-visible {
   outline: 2px solid rgb(var(--accent) / 0.7);
   outline-offset: 2px;
-}
-.settings-body label:has(> .select:disabled) {
-  opacity: 0.45;
 }
 
 /* ─────────────────────────────────────────────────────── markdown */
@@ -3607,6 +3838,25 @@ button.diff-more:hover {
   border-radius: var(--r-lg);
   box-shadow: 0 24px 70px rgb(0 0 0 / 0.5);
   overflow: hidden;
+}
+/* The .plan-scrim pair's twin — same mechanism, same tokens, see the long note
+   there. The pose differs only in direction: the palette hangs from the top of
+   the window, so it drops IN rather than rising. */
+.palette-scrim {
+  transition: opacity var(--dur-2) var(--ease-out);
+}
+.palette-scrim[data-state='closed'] {
+  opacity: 0;
+  pointer-events: none;
+}
+.palette {
+  transition:
+    opacity var(--dur-2) var(--ease-out),
+    transform var(--dur-2) var(--ease-out);
+}
+.palette-scrim[data-state='closed'] .palette {
+  opacity: 0;
+  transform: translateY(-6px) scale(0.985);
 }
 .palette-input {
   padding: 13px 16px;
@@ -4573,9 +4823,9 @@ button.diff-more:hover {
   /* Rows arrive with a short lift, so a queued message announces itself
      somewhere other than where you were looking. Deliberately ENTER ONLY: a
      leave animation needs the row to outlive its own state, and holding a sent
-     message in the tray for 140ms after it started running is exactly the lie
+     message in the tray for --dur-1 after it started running is exactly the lie
      this whole change exists to stop telling. */
-  animation: q-in 140ms ease-out;
+  animation: row-in var(--dur-1) var(--ease-out);
 }
 .q-row:hover {
   opacity: 1;
@@ -4626,12 +4876,6 @@ button.diff-more:hover {
   resize: none;
   outline: none;
 }
-@keyframes q-in {
-  from {
-    opacity: 0;
-    transform: translateY(4px);
-  }
-}
 
 /* ───────────────────────────────────────────── AskUserQuestion card */
 
@@ -4664,34 +4908,78 @@ button.diff-more:hover {
   color: rgb(var(--text-faint));
   flex-shrink: 0;
 }
+/* THE OPTION FRAME — a <div>, and the clickable row is .ask-opt-main inside it.
+   It was one <button> wrapping everything, which was invalid HTML the moment an
+   option carried a preview (a code block's Copy is an interactive descendant)
+   and cost a real bug: copying a preview flipped the selection. See QuestionCard.
+
+   The frame owns the border, the radius and the selected fill; the PADDING lives
+   on the row inside, so a preview or the Other field can be a full-width child
+   of the frame rather than an indented one. --r-md, not --r-sm: the .code-wrap a
+   preview renders is itself --r-md, and an 8px outer around a 10px inner reads
+   as a mistake.
+
+   `overflow: hidden` clips the preview's own corners to the frame's, and is what
+   lets the focus ring below sit inset instead of outside the border. */
 .ask-opt {
-  display: block;
-  width: 100%;
-  text-align: left;
+  display: flex;
+  flex-direction: column;
   border: 1px solid rgb(var(--border));
-  border-radius: var(--r-sm);
-  padding: 7px 10px;
-  margin-bottom: 6px;
+  border-radius: var(--r-md);
   background: rgb(var(--surface-2) / 0.5);
+  overflow: hidden;
+  transition:
+    border-color var(--dur-1) ease,
+    background var(--dur-1) ease;
 }
 .ask-opt[data-on] {
   border-color: rgb(var(--accent));
   background: rgb(var(--accent) / 0.14);
 }
+/* The row you actually click. Label and description on the left, the shortcut
+   chip in a gutter on the right — see .ask-key for why that gutter exists. */
+.ask-opt-main {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  width: 100%;
+  padding: var(--sp-3) var(--sp-4);
+  text-align: left;
+  transition: background var(--dur-1) ease;
+}
+/* Hover sits on the BUTTON, not on the frame, and that is the honest placement:
+   the preview inside the frame is not clickable, and a tint spanning it would
+   promise that it is. Nothing in this file gave an option any hover at all
+   before — the only cue that a 760px row was a control was the cursor. */
+.ask-opt-main:hover {
+  background: rgb(var(--fill-hover));
+}
+/* Matching .btn's deliberate ring rather than Chromium's default, and inset
+   because the frame clips — an outside ring would be cut off by `overflow`. */
+.ask-opt-main:focus-visible {
+  outline: 2px solid rgb(var(--accent) / 0.55);
+  outline-offset: -3px;
+}
+.ask-opt-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
 .ask-opt-label {
-  display: block;
   font-weight: 600;
   font-size: 12.5px;
 }
 .ask-opt-desc {
-  display: block;
   font-size: 11.5px;
   color: rgb(var(--text-dim));
-  margin-top: 2px;
 }
+/* Inside the frame, under the row, and full-bleed to the frame's padding rather
+   than to the row's — a code block is the widest thing in the modal and every
+   pixel it does not spend on indent is a column of code it can show. */
 .ask-preview {
-  display: block;
-  margin-top: 6px;
+  padding: 0 var(--sp-4) var(--sp-3);
 }
 /* Used by RewindCard, not by QuestionCard — the question modal puts its buttons
    in .plan-actions instead. Same for .ask, .ask-head above. */
@@ -4703,44 +4991,69 @@ button.diff-more:hover {
 
 /* The paged question modal reuses PlanCard's whole frame; only the pager and
    the option shortcut are new. Still narrower than a plan — a question and its
-   options is far less content than a 20KB document — but not as narrow as it
-   was: the question text itself is unbounded, and at 620px a long one needed
-   six or seven lines before it had said anything. */
+   options is far less content than a 20KB document.
+
+   880 is derived rather than picked: after the body's, the option's, the code
+   wrap's and the <pre>'s padding, the code column is W − 110, and SF Mono at
+   11.5px runs about 6.9px a character — so this clears ~112 columns, which is
+   past every line-length convention a preview is likely to follow. The ladder
+   stays ordered: 760 settings / 880 here / 1040 plan / 1240 terminal / 1400 file.
+
+   `%`, NOT `vw`, and that is a bug fix rather than a style: this scrim renders
+   inside .convo, and `.pane-fill`'s `contain: paint` makes the chat pane its
+   containing block — so a `vw` cap is measured against a window the modal does
+   not live in. With the rail and the dock open the pane can be 600px while 92vw
+   computes 1300. `.plan-scrim` is `position: fixed; inset: 0`, so its own box IS
+   the containing block and a percentage resolves correctly at BOTH mount points
+   with one value. */
 .plan-modal.ask-modal {
-  width: min(760px, 92vw);
+  width: min(880px, 94%);
 }
-/* .ask-q is now the page — one question's options, nothing else. */
+/* .ask-q is now the page — one question's options, nothing else. The gap
+   replaces .ask-opt's old `margin-bottom: 6px`, which is what let the Other
+   field tuck under its own option without a wrapper. */
 .ask-q {
   display: flex;
   flex-direction: column;
+  gap: var(--sp-2-5);
 }
+/* The shortcut chip, in a reserved gutter at the end of the row. It used to be
+   `float: right`, which is not a gutter at all — a long label WRAPPED AROUND the
+   number and the second line ran under it. A flex item cannot do that.
+   min-width keeps single- and double-width chips on one right edge. */
 .ask-key {
-  float: right;
-  margin-left: 8px;
+  flex: none;
+  min-width: 1.1em;
+  text-align: right;
   font-family: var(--mono);
   font-size: 10px;
+  line-height: 18px;
   color: rgb(var(--text-faint));
 }
 .ask-opt[data-on] .ask-key {
   color: rgb(var(--accent));
 }
 
-/* The Other row: a wrapper holding the .ask-opt button AND its field, because
-   .ask-opt is a <button> and a <button> cannot contain an <input>. The button
-   keeps its own margin-bottom, so the wrapper adds none. */
-.ask-other {
-  display: flex;
-  flex-direction: column;
-}
 /* Deliberately .plan-feedback's look rather than a new field style — same
-   modal, same frame, same job. Only the margin differs: this one tucks under
-   the option it belongs to. */
+   modal, same frame, same job.
+
+   `field-sizing: content` is what retires `rows={2}`: the field grew to two
+   lines and stopped, so a 500-character answer was typed into a two-line
+   window. It grows with what is in it now. min-height is the floor `rows` used
+   to be — the field must not start smaller than it used to be — and max-height
+   is the ceiling that keeps a long answer from pushing the footer off a short
+   modal. A fixed length rather than a vh, because this modal is pane-confined:
+   see .plan-scrim. */
 .ask-other-input {
-  resize: vertical;
+  resize: none;
+  field-sizing: content;
+  min-height: 4.2em;
+  max-height: 240px;
+  overflow-y: auto;
   font: inherit;
   font-size: 12.5px;
   padding: 7px 9px;
-  margin: 0 0 6px;
+  margin: 0 var(--sp-4) var(--sp-3);
   color: rgb(var(--text));
   background: rgb(var(--bg) / 0.6);
   border: 1px solid rgb(var(--border-strong));
@@ -4749,6 +5062,10 @@ button.diff-more:hover {
 .ask-other-input:focus {
   outline: none;
   border-color: rgb(var(--accent) / 0.7);
+}
+/* The note field is not inside an option frame, so it pays none of that inset. */
+.ask-note .ask-other-input {
+  margin: 0;
 }
 /* A labelled field rather than a fake option: a note is not a choice, and
    giving it the .ask-opt frame would imply it could be picked. */
@@ -4771,27 +5088,118 @@ button.diff-more:hover {
   margin-right: auto;
 }
 .ask-dot {
+  position: relative;
   width: 7px;
   height: 7px;
   padding: 0;
   border-radius: 99px;
   border: 1px solid rgb(var(--border-strong));
   background: transparent;
+  transition:
+    background var(--dur-1) ease,
+    border-color var(--dur-1) ease,
+    transform var(--dur-1) var(--ease-out);
+}
+/* A 17px hit target around a 7px dot, as a transparent pseudo-element rather
+   than as real padding. Real padding would need `box-sizing: content-box` to
+   ADD (the global is border-box), and even then the 1px border would be drawn
+   around the padding box — a 17px ring instead of a 7px dot.
+   17 and not 19: `inset` resolves against the PADDING box, which this element's
+   1px border leaves at 5px, so -6px a side gives 5 + 12.
+   Keeping [data-on]'s scale(1.4) on .ask-dot does NOT spare this box — a
+   transform applies to the element and its whole subtree, generated content
+   included — so it is counter-scaled below instead. */
+.ask-dot::after {
+  content: '';
+  position: absolute;
+  inset: -6px;
 }
 .ask-dot[data-answered] {
   background: rgb(var(--accent) / 0.55);
   border-color: rgb(var(--accent) / 0.55);
 }
+/* The current page's dot grows 40% and used to do it in one frame — the pager is
+   the only thing on screen that says which question you are on, so the jump was
+   both the loudest movement in the modal and the one carrying the most meaning. */
 .ask-dot[data-on] {
   background: rgb(var(--accent));
   border-color: rgb(var(--accent));
   transform: scale(1.4);
+}
+/* 1/1.4, undoing the scale above on the hit target only.
+   A transform scales the whole subtree, ::after included, so unchecked the 17px
+   box rides out to ±11.9px on a 13px pitch (7px dot + 6px gap) and covers the
+   inner 2.4px of the PREVIOUS dot's face — which it then WINS, being the later
+   positioned box in tree order. Clicking that dot would do nothing.
+   Deliberately not transitioned: while the parent grows, the effective factor
+   dips below 1 and the active dot's own target is briefly smaller than 17px,
+   which costs nothing — that dot is the page you are already on. */
+.ask-dot[data-on]::after {
+  transform: scale(0.714);
 }
 .ask-count {
   margin-left: 4px;
   font-size: 10px;
   color: rgb(var(--text-faint));
   font-variant-numeric: tabular-nums;
+}
+
+/* The header's tag is `q.header`, which the agent writes and can make as long as
+   it likes. `flex-shrink: 0` — right for RewindCard's fixed "Rewind" — let it
+   take width straight out of the question itself. Capped and elided here, and
+   ONLY here, so RewindCard's is untouched. */
+.plan-head .ask-tag {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 30%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* "choose any" is a constant, so it only has to promise never to wrap. */
+.plan-head .ask-multi {
+  white-space: nowrap;
+}
+
+/* Both of this modal's scroll regions fade at the cut.
+ *
+ * Scrollbars are deleted app-wide (see the top of this file), so a list of nine
+ * options and a question taller than .plan-head's ceiling both simply appear to
+ * STOP at a border, with nothing saying there is more. A static mask rather than
+ * a scroll-driven one: the global reduced-motion rule kills `animation`
+ * outright, so a scroll-timeline fade would be the one affordance in the app
+ * that disappears for the people most likely to need it — and this needs no JS
+ * either. .rail-list already does exactly this.
+ *
+ * A mask does not scroll with the content, so the fade always sits over the last
+ * 20px of the BOX. Both regions end in at least that much padding, which is why
+ * nothing is ever permanently ghosted: scrolled to the end, the fade lands on
+ * empty padding.
+ *
+ * Safe despite `mask` making an element a containing block for fixed-position
+ * descendants — there are none in here. Do not add this to `.file-body`, which
+ * hosts Monaco's overflow widgets. */
+.ask-modal .plan-body {
+  -webkit-mask-image: linear-gradient(180deg, #000 calc(100% - 20px), transparent);
+  mask-image: linear-gradient(180deg, #000 calc(100% - 20px), transparent);
+}
+/* Three stops on the header, not two, and the third is load-bearing: a mask
+   covers the BORDER box, so a plain fade to transparent takes .plan-head's own
+   border-bottom with it and the modal loses its one horizontal rule. The last
+   pixel goes back to opaque to keep the hairline. */
+.ask-modal .plan-head {
+  -webkit-mask-image: linear-gradient(
+    180deg,
+    #000 calc(100% - 14px),
+    transparent calc(100% - 1px),
+    #000 calc(100% - 1px)
+  );
+  mask-image: linear-gradient(
+    180deg,
+    #000 calc(100% - 14px),
+    transparent calc(100% - 1px),
+    #000 calc(100% - 1px)
+  );
 }
 
 /* ─────────────────────────────────────────────────────────────── plan review */
@@ -4827,6 +5235,39 @@ button.diff-more:hover {
   padding: 1px 7px;
 }
 
+/* PERCENTAGES AND FIXED LENGTHS, NOT VIEWPORT UNITS, and that is the whole
+ * point. Three rules in this family keep a vh; all three are named at the end,
+ * because an exception nobody wrote down reads as an oversight the next time.
+ *
+ * This class mounts in two different boxes. Settings, FileModal and TerminalModal
+ * render it at .app level, where `fixed; inset: 0` is the window. PlanCard and
+ * QuestionCard render it inside .convo, where `.pane-fill`'s `contain: paint`
+ * makes the CHAT PANE the containing block — deliberately, so a plan stays over
+ * the conversation it belongs to. A vh/vw measurement is right for the first
+ * pair and simply wrong for the second: with the rail and the dock open the
+ * pane can be 600px wide and 3vw of gutter was budgeting for 1440.
+ *
+ * A percentage resolves against whatever box this scrim actually got, so one
+ * value is correct at both mount points. No `container-type` and no `cqw` is
+ * needed to make that work, which matters — .pane-fill explicitly refuses to
+ * carry a container-type (see the session panel).
+ *
+ * The gutter is a FIXED length for the same reason: 3vh/3vw was a percentage of
+ * a window this scrim may have nothing to do with.
+ *
+ * The three that keep a vh, and why:
+ *
+ *  - `.term-modal { height: 80vh }` and `.file-modal { height: 88vh }`, both
+ *    deliberate and both documented at their own rules. Each needs a DEFINITE
+ *    height for xterm and Monaco to measure against, and each only ever mounts
+ *    at .app level, where the two boxes are the same box anyway.
+ *  - `.plan-head { max-height: 38vh }`, which is NOT deliberate — under PlanCard
+ *    and QuestionCard it is 38% of the window inside a pane-sized scrim, exactly
+ *    the mismatch above. It stays because the obvious conversion does not work:
+ *    `38%` resolves against .plan-modal, whose height is auto for the plan, ask
+ *    and settings modals, and a percentage max-height against an indefinite
+ *    parent computes to `none` — no ceiling at all, in precisely the two modals
+ *    whose long headers it exists to cap. */
 .plan-scrim {
   position: fixed;
   inset: 0;
@@ -4835,12 +5276,17 @@ button.diff-more:hover {
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 3vh 3vw;
+  padding: var(--sp-6) var(--sp-5);
   background: rgb(0 0 0 / 0.42);
 }
 .plan-modal {
-  width: min(1040px, 94vw);
-  max-height: 92vh;
+  width: min(1040px, 94%);
+  /* `100%` of the scrim's content box, so the gutter above is honoured rather
+     than competed with. 3vh of padding plus a 92vh ceiling came to 98vh inside a
+     pane only `100vh - --titlebar-h` tall, and an over-tall modal centred in it
+     overflowed at BOTH ends — where `contain: paint` clipped the header and the
+     footer buttons away. A modal you cannot press Cancel on. */
+  max-height: 100%;
   display: flex;
   flex-direction: column;
   background: rgb(var(--surface) / 0.98);
@@ -4848,6 +5294,45 @@ button.diff-more:hover {
   border-radius: var(--r-lg);
   box-shadow: 0 24px 70px rgb(0 0 0 / 0.5);
   overflow: hidden;
+}
+
+/* Enter and exit, for all five members of the family at once — this is the whole
+   payoff of them sharing a scrim and a frame.
+ *
+ * `data-state` comes from usePresence, which is what makes the EXIT possible at
+ * all: every one of these modals is `{cond && <X/>}`, so without a hook holding
+ * the element in the DOM for the length of the transition there is nothing left
+ * to animate. `@starting-style` would cover the entry with no JS and still leave
+ * the exit a one-frame pop, which is the half everybody notices.
+ *
+ * pointer-events on the closing scrim is not a detail: it covers the window for
+ * --dur-2 after the click that dismissed it, and would otherwise eat the next
+ * one. */
+.plan-scrim {
+  transition: opacity var(--dur-2) var(--ease-out);
+}
+.plan-scrim[data-state='closed'] {
+  opacity: 0;
+  pointer-events: none;
+}
+.plan-modal {
+  transition:
+    opacity var(--dur-2) var(--ease-out),
+    transform var(--dur-2) var(--ease-out);
+}
+.plan-scrim[data-state='closed'] .plan-modal {
+  opacity: 0;
+  transform: translateY(6px) scale(0.985);
+}
+/* NO SCALE on these two. Monaco and xterm each measure a character cell with
+   getBoundingClientRect one frame after they attach — which lands inside this
+   transition — and a scale factor is baked into that rect's WIDTH and HEIGHT,
+   poisoning every metric cached from it. That is the half-height-scrollbar bug
+   .term-modal documents above, reached from a new direction. A pure translate
+   moves a rect without resizing it, so these two rise without shrinking. */
+.plan-scrim[data-state='closed'] .file-modal,
+.plan-scrim[data-state='closed'] .term-modal {
+  transform: translateY(6px);
 }
 
 .plan-head {
@@ -4863,7 +5348,9 @@ button.diff-more:hover {
   /* Only .plan-body scrolls and this is flex:none, so without a ceiling a
      pathologically long question would push the options and the action buttons
      off the bottom of the modal. Rare enough that it does not need to be pretty,
-     but it does need to not strand the buttons. */
+     but it does need to not strand the buttons.
+     The one grudging `vh` in this family — .plan-scrim's note above carves it
+     out and says why `38%` cannot take its place. */
   max-height: 38vh;
   overflow-y: auto;
 }
@@ -4923,7 +5410,7 @@ button.diff-more:hover {
 .plan-buttons {
   display: flex;
   /* Four buttons plus the plan path fit at the modal's 1040px and do not at
-     94vw on a small window. Wrapping costs the footer a second line; not
+     94% on a small window. Wrapping costs the footer a second line; not
      wrapping costs .plan-path its entire width and then overflows anyway. */
   flex-wrap: wrap;
   gap: 7px;
@@ -5081,17 +5568,22 @@ button.diff-more:hover {
 
 /* ----------------------------------------------------------- terminal modal
 
-   The fifth member of the .plan-modal family. Ladder: 400 (settings) /
-   760 (ask) / 1040 (plan) / 1240 here / 1400 (file).
+   The fifth member of the .plan-modal family. Ladder: 760 (settings) /
+   880 (ask) / 1040 (plan) / 1240 here / 1400 (file).
 
    `height`, not `max-height`, and it is the file modal's reason below reached
    from the other side: .term-host is `flex: 1; min-height: 0`, which resolves to
    ZERO against an auto-height parent — and xterm measures its character cell at
    open() exactly as Monaco does, so a zero-height box caches a bogus cell and
    FitAddon then divides the real height by it. That is the half-height-scrollbar
-   bug TerminalPane documents. The modal has to be told how big it is. */
+   bug TerminalPane documents. The modal has to be told how big it is.
+
+   `%` for the cap and `vh` for the height, on purpose: the cap is a percentage
+   of the scrim (see .plan-modal), while the height is a deliberate fraction of
+   the WINDOW — this modal only ever mounts at .app level, where the two agree,
+   and .plan-modal's `max-height: 100%` catches it if the gutter ever wins. */
 .plan-modal.term-modal {
-  width: min(1240px, 92vw);
+  width: min(1240px, 92%);
   height: 80vh;
 }
 
@@ -5130,15 +5622,17 @@ button.diff-more:hover {
    defined later in the file, so a bare .file-modal loses the specificity tie on
    source order.
 
-   The width ladder is now 400 (settings) / 760 (ask) / 1040 (plan) / 1400 here.
+   The width ladder is now 760 (settings) / 880 (ask) / 1040 (plan) /
+   1240 (terminal) / 1400 here.
 
    `height`, not `max-height`, and that is the one real departure from the other
    modals: .plan-body is `flex: 1; min-height: 0`, which resolves to zero against
    an auto-height parent — and Monaco measures its character cell on attach, so a
    zero-height box poisons every metric it caches. The other modals grow to fit
-   their content; this one has to be told how big it is. */
+   their content; this one has to be told how big it is. Settings is the second
+   now, for the same reason from the layout side rather than the metrics one. */
 .plan-modal.file-modal {
-  width: min(1400px, 96vw);
+  width: min(1400px, 96%);
   height: 88vh;
 }
 
@@ -5243,9 +5737,10 @@ button.diff-more:hover {
   background: rgb(var(--accent) / 0.05);
 }
 
-/* The row the gutter jumped to. A transition rather than an animation, so the
-   global prefers-reduced-motion rule — which only kills `animation` — leaves a
-   still-legible highlight instead of nothing at all. */
+/* The row the gutter jumped to. A transition rather than an animation, and with
+   a HARDCODED duration rather than a --dur-* token, so the reduced-motion block
+   at the top of this file — which kills `animation` and collapses the tokens —
+   leaves a still-legible highlight instead of nothing at all. */
 [data-item-id] {
   border-radius: var(--r-md);
   transition: background 0.35s ease;
@@ -5264,7 +5759,6 @@ button.diff-more:hover {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  grid-column: 1 / -1; /* the settings grid is two columns; this wants both */
 }
 .lsp-head {
   display: flex;
@@ -5366,6 +5860,30 @@ button.diff-more:hover {
   padding: 10px 0;
   color: rgb(var(--text-faint));
   font-size: 12px;
+}
+
+/* The highlight-only languages, folded away.
+ *
+ * THERE IS DELIBERATELY NO `.lsp-more` RULE. The <details> element has to stay a
+ * block box: the UA behaviour that hides a closed disclosure's children only
+ * holds for one, and giving it `display: flex` renders every row whether it is
+ * open or not — a fold that does not fold. The column goes on the inner div,
+ * which is why LspServers renders one. */
+.lsp-more > summary {
+  padding: 6px 0;
+  color: rgb(var(--text-faint));
+  font-size: 11.5px;
+  cursor: pointer;
+  list-style-position: inside;
+}
+.lsp-more > summary:hover {
+  color: rgb(var(--text-dim));
+}
+.lsp-more-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 6px;
 }
 
 /* The strip inside the file modal. Between the header and the editor, so it
