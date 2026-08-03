@@ -12,6 +12,7 @@ import type {
   RewindResult,
   SendContent,
   SessionMeta,
+  WorktreeInfo,
 } from '../../shared/types'
 import { newestSession, projectKey } from './derive.mts'
 import { pinToBottom } from './scrollPin'
@@ -180,7 +181,39 @@ interface State {
   newSession(worktreeBranch?: string): Promise<void>
   /** Always asks for a folder — the "different repo" case ⌘N no longer covers. */
   openProject(worktreeBranch?: string): Promise<void>
-  resume(sessionId: string, cwd: string, title: string): Promise<void>
+  /** `worktree` is carried through to the new host rather than re-derived: a
+   *  session standing in a worktree has a cwd main cannot tell apart from an
+   *  ordinary directory, and losing it detaches the branch badge, the diff
+   *  panel's root and the spend the sidecar books against the project. */
+  resume(sessionId: string, cwd: string, title: string, worktree?: WorktreeInfo): Promise<void>
+  /**
+   * Open a stored conversation with NOTHING behind it — see SessionMeta.asleep.
+   *
+   * What `resume` used to do from a Recent row, minus the ~2 GB: a host, a
+   * `claude` CLI, its MCP fleet and a language server, all started to read a
+   * conversation that already exists on disk. The transcript comes from
+   * IPC.sessionTranscript instead, which is the same normaliseTranscript the
+   * host runs — so the preview is the resumed session, without the processes.
+   *
+   * Synchronous: it puts the row up and selects it, and the transcript arrives
+   * behind `hydrating` like every other one. Nothing here is awaitable because
+   * nothing downstream has anything to wait for.
+   */
+  preview(sdkSessionId: string, cwd: string, title: string): void
+  /** Give an asleep conversation a host again. Resolves to the live session, or
+   *  null if starting it failed — the composer has to know before it clears a
+   *  draft. Called on send, which is the only thing that needs an agent. */
+  wake(id: string): Promise<SessionMeta | null>
+  /**
+   * Retitle a conversation, live or asleep.
+   *
+   * In the store rather than fired straight at the bridge from the rail, because
+   * the local patch is not optional: main writes the new title to disk and then
+   * pushes `setTitle` to the HOST, which is where the evtMeta that repaints the
+   * row comes from. An asleep conversation has no host, so a rename looked like
+   * a no-op until the row was re-read from disk.
+   */
+  rename(id: string, title: string): void
   fork(upToMessageId?: string): Promise<void>
   /** Dry-run preview awaiting confirmation, or null. */
   rewindPreview: { messageId: string; result: RewindResult } | null
@@ -191,7 +224,18 @@ interface State {
   /** Check a branch out under the active session. `remote` non-null means the
    *  branch exists only on that remote, so a tracking branch is created. */
   checkoutBranch(cwd: string, name: string, remote: string | null): Promise<void>
-  send(content: SendContent): Promise<void>
+  /**
+   * `sessionId` names the conversation explicitly, for a caller that started
+   * one and must not lose it to a rail click.
+   *
+   * The default — the active session — is right for the composer's ordinary
+   * send, which happens in the same tick as the keystroke. It is NOT right after
+   * an await: `wake()` boots a host, a CLI and an MCP fleet, which takes
+   * seconds, and it repoints activeId only if the user has not moved. One click
+   * during the wait and the message lands in whatever conversation they moved
+   * to. Same shape in `hopThenSend`, over a shorter window.
+   */
+  send(content: SendContent, sessionId?: string): Promise<void>
   setAppearance(patch: Partial<Appearance>): void
   bootstrap(): void
 }
@@ -463,6 +507,96 @@ function flushDeltas(): void {
   })
 }
 
+/**
+ * A conversation with no host behind it, as a rail row.
+ *
+ * KEYED BY THE SDK'S ID, because that is the only id a stored conversation has:
+ * `meta.id` is minted by main when a host starts, and an asleep session has not
+ * got one. The two coincide for a fresh session, which is precisely why
+ * `bySdkId` below has to check both fields before a row is added.
+ *
+ * Everything else is the neutral value rather than a guess. Cost and tokens are
+ * on disk in the usage sidecar and are NOT read back here: a row claiming $0.00
+ * is honestly saying "no agent is spending anything", where a stale total would
+ * be reported a second time the moment the session woke and reported its own.
+ */
+function sleepingMeta(sdkSessionId: string, cwd: string, title: string): SessionMeta {
+  return {
+    id: sdkSessionId,
+    title,
+    cwd,
+    status: 'idle',
+    model: null,
+    costUsd: 0,
+    inputTokens: 0,
+    outputTokens: 0,
+    turnStartedAt: null,
+    turnTokens: 0,
+    contextTokens: null,
+    permissionMode: 'default',
+    createdAt: Date.now(),
+    effort: null,
+    promptSuggestion: null,
+    backgroundTasks: [],
+    sdkSessionId,
+    asleep: true,
+  }
+}
+
+/**
+ * The row already showing this stored conversation, if there is one.
+ *
+ * NOT hypothetical. `sdkSessionId` EQUALS `meta.id` for a fresh session, so a
+ * Recent row routinely names the conversation that is live in the rail right
+ * now — and `resume()` appended unconditionally, which is how one conversation
+ * could end up open twice with two hosts and two CLIs behind it. Both fields are
+ * tested because `sdkSessionId` is null until the host has reported one.
+ */
+const bySdkId = (
+  sessions: readonly SessionMeta[],
+  sdkSessionId: string,
+): SessionMeta | undefined =>
+  sessions.find((x) => x.sdkSessionId === sdkSessionId || x.id === sdkSessionId)
+
+/**
+ * Every slice keyed by a session id, dropped together.
+ *
+ * ONE reducer for two paths that used to disagree, and the disagreement was the
+ * leak. `close()` dropped items, queued and drafts but left diffCounts,
+ * branches, hydrating and the delta buffer behind; `onRemoved` dropped the row
+ * alone and stranded the whole transcript with nothing left that could address
+ * it. A session can go away from either side, so both have to mean the same
+ * thing.
+ *
+ * PURE — callers flush the delta buffer themselves before entering `set`.
+ * Calling flushDeltas() in here would be a nested setState against a snapshot
+ * this reducer is about to overwrite.
+ *
+ * `newestSession` rather than `sessions[0]` for the selection repair: the array
+ * is in insertion order, so [0] is the OLDEST — the rail's bottom row.
+ */
+function forgetSession(s: State, id: string): Partial<State> {
+  const sessions = s.sessions.filter((x) => x.id !== id)
+  const { [id]: _items, ...items } = s.items
+  const { [id]: _queued, ...queued } = s.queued
+  // The draft goes with the conversation it belonged to. Left behind it would be
+  // resurrected by a future session that happened to reuse the id.
+  const { [id]: _draft, ...drafts } = s.drafts
+  const { [id]: _diff, ...diffCounts } = s.diffCounts
+  const { [id]: _branch, ...branches } = s.branches
+  const { [id]: _hydrating, ...hydrating } = s.hydrating
+  return {
+    sessions,
+    items,
+    queued,
+    drafts,
+    diffCounts,
+    branches,
+    hydrating,
+    activeId: s.activeId === id ? (newestSession(sessions)?.id ?? null) : s.activeId,
+  }
+}
+
 export const useStore = create<State>((set, get) => ({
   sessions: [],
   activeId: null,
@@ -565,6 +699,32 @@ export const useStore = create<State>((set, get) => ({
       // Cached so Settings has a list before any session exists — see loadModels.
       localStorage.setItem('foreman.models', JSON.stringify(models))
     })
+
+    /* AN ASLEEP CONVERSATION KEEPS ITS TRANSCRIPT ON DISK AND NOWHERE ELSE.
+       Hibernation drops `items[id]` on purpose — that is what makes it reclaim
+       renderer heap as well as the process tree — so opening one reads it back
+       here. Deliberately the ONE place that does: a row can become asleep by
+       being previewed from Recent, by idling out, or by losing its host, and
+       three fetches would be three chances to disagree.
+
+       Guarded on the transcript being empty rather than on a flag, so an
+       ordinary rail click on a session already in memory costs nothing. */
+    const s = get().sessions.find((x) => x.id === id)
+    if (!s?.asleep || !s.sdkSessionId || get().items[id]?.length) return
+    // Raised before the read, for the reason resume() gives: this is what stops
+    // a transcript still in flight painting the centred empty state.
+    set((st) => ({ hydrating: { ...st.hydrating, [id]: true } }))
+    void window.foreman
+      .sessionTranscript(s.sdkSessionId, s.cwd)
+      .then((items: ChatItem[]) => set((st) => ({ items: { ...st.items, [id]: items } })))
+      // Cleared on the error path as well, or an unreadable conversation waits
+      // forever for a transcript that is never coming.
+      .finally(() =>
+        set((st) => {
+          const { [id]: _done, ...hydrating } = st.hydrating
+          return { hydrating }
+        }),
+      )
   },
 
   async openPath(cwd, worktreeBranch) {
@@ -607,7 +767,16 @@ export const useStore = create<State>((set, get) => ({
     await get().openPath(cwd, worktreeBranch)
   },
 
-  async resume(sessionId, cwd, title) {
+  async resume(sessionId, cwd, title, worktree) {
+    // Select rather than append when this conversation is already open — see
+    // bySdkId. Without it, resuming a session that is live in the rail starts a
+    // SECOND host on the same transcript, and the two then race each other's
+    // writes to disk.
+    const open = bySdkId(get().sessions, sessionId)
+    if (open) {
+      get().select(open.id)
+      return
+    }
     // These are the FALLBACK on resume, not the winner. The Session constructor
     // resolves `prior.permissionMode ?? init.permissionMode ?? 'default'` off
     // the per-conversation sidecar, so a conversation reopened after being put
@@ -621,6 +790,10 @@ export const useStore = create<State>((set, get) => ({
       cwd,
       resume: sessionId,
       title,
+      // createSession only mints a worktree when it is asked to CREATE one, so
+      // an existing checkout has to be handed back in or the session comes up
+      // standing in it while claiming it is not. See the interface note above.
+      ...(worktree ? { worktree } : {}),
       ...sessionPrefs(get().prefs),
     })
     // Raised BEFORE the session is on screen, which is the whole point: the
@@ -645,6 +818,120 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
+  preview(sdkSessionId, cwd, title) {
+    // Same guard as resume(), and the same reason: a Recent row can name the
+    // conversation already on screen, and a stub keyed by the SDK id would
+    // collide with it outright.
+    const open = bySdkId(get().sessions, sdkSessionId)
+    if (open) {
+      get().select(open.id)
+      return
+    }
+    // The row, and nothing else. select() reads the transcript in — see there
+    // for why that is the only place it happens.
+    const stub = sleepingMeta(sdkSessionId, cwd, title)
+    set((s) => ({ sessions: [...s.sessions, stub], notice: null }))
+    get().select(stub.id)
+  },
+
+  /**
+   * Start a host for a conversation that had none.
+   *
+   * The stub is replaced IN PLACE rather than dropped and re-appended, so the
+   * row keeps its position and the conversation you are reading does not jump to
+   * the top of the rail under the click that woke it. Main mints a fresh
+   * `meta.id` for the new host, so everything keyed by the stub's id moves with
+   * it — the transcript above all, which the host is about to replay under the
+   * SAME item ids (normaliseTranscript is deterministic), so the two merge by
+   * upsert instead of doubling.
+   */
+  async wake(id) {
+    const stub = get().sessions.find((x) => x.id === id)
+    if (!stub?.asleep || !stub.sdkSessionId) return null
+
+    let meta: SessionMeta
+    try {
+      meta = await window.foreman.resumeSession({
+        cwd: stub.cwd,
+        resume: stub.sdkSessionId,
+        title: stub.title,
+        // Or a worktree session wakes up standing in its checkout while
+        // reporting that it has none — no branch badge, a diff panel rooted at
+        // the wrong tree, and spend booked to the worktree directory rather
+        // than the project. See resume()'s interface note.
+        ...(stub.worktree ? { worktree: stub.worktree } : {}),
+        ...sessionPrefs(get().prefs),
+      })
+    } catch (err) {
+      // Said out loud rather than swallowed: the composer still holds the draft
+      // and the attachments, and a send that quietly did nothing is worse than a
+      // send that says why.
+      set({ notice: ipcMessage(err) })
+      return null
+    }
+
+    // Before the rekey, exactly as close() and the two event handlers do: a
+    // buffered tail landing after the move would be flushed into `items[id]`
+    // under an id nothing addresses any more.
+    flushDeltas()
+    pendingText.delete(id)
+    // A terminal opened on the asleep row spawned a login shell in MAIN under
+    // the stub id, and after this set() nothing will ever name that id again —
+    // not killPty, not the slot registry, which watches for the row leaving
+    // `sessions`. This is the one teardown with no event of its own behind it.
+    void window.foreman.killPty(id)
+
+    set((s) => {
+      // EVERY slice keyed by the stub id moves or goes. Leaving diffCounts,
+      // branches or hydrating behind would be the same orphan class 4a-4e
+      // exists to remove, only minted by the fix for it.
+      const { [id]: carried, ...items } = s.items
+      // The parked DRAFT is deliberately not carried, and that is not an
+      // oversight: waking happens on send, so the message is already in flight,
+      // and Composer's switch effect reloads the draft for whatever id it now
+      // has — carrying it would restore the text that was just sent.
+      const { [id]: _draft, ...drafts } = s.drafts
+      // These two ARE carried: both are read from git against a cwd, in main,
+      // with no host involved — so they are just as true of the woken session,
+      // and dropping them would blank the badge until the next diff event.
+      const { [id]: diff, ...diffCounts } = s.diffCounts
+      const { [id]: branch, ...branches } = s.branches
+      const { [id]: _hydrating, ...hydrating } = s.hydrating
+      return {
+        sessions: s.sessions.map((x) => (x.id === id ? meta : x)),
+        items: { ...items, [meta.id]: carried ?? [] },
+        drafts,
+        ...(diff ? { diffCounts: { ...diffCounts, [meta.id]: diff } } : {}),
+        ...(branch !== undefined ? { branches: { ...branches, [meta.id]: branch } } : {}),
+        activeId: s.activeId === id ? meta.id : s.activeId,
+        hydrating: { ...hydrating, [meta.id]: true },
+      }
+    })
+    get().select(meta.id)
+    try {
+      await window.foreman.replaySessions()
+    } finally {
+      set((s) => {
+        const { [meta.id]: _done, ...hydrating } = s.hydrating
+        return { hydrating }
+      })
+    }
+    return meta
+  },
+
+  rename(id, title) {
+    const t = title.trim()
+    const s = get().sessions.find((x) => x.id === id)
+    // The stored transcript is addressed by the SDK's id, never by meta.id.
+    if (!t || !s?.sdkSessionId) return
+    void window.foreman.renameSession(s.sdkSessionId, t)
+    // Patched locally as well as written to disk — see the interface note. A
+    // live session's host echoes the same value back through evtMeta a moment
+    // later, so this is not a second writer, just the only one an asleep
+    // conversation has.
+    set((st) => ({ sessions: st.sessions.map((x) => (x.id === id ? { ...x, title: t } : x)) }))
+  },
+
   /**
    * Branch the active conversation, optionally slicing it at a message.
    *
@@ -660,7 +947,10 @@ export const useStore = create<State>((set, get) => ({
       `${cur.title} (branch)`,
     )
     if (!forked) return
-    await get().resume(forked, cur.cwd, `${cur.title} (branch)`)
+    // The fork stands in the same checkout the original does — same cwd, so the
+    // same worktree. Dropping it here would book the fork's spend against the
+    // worktree directory instead of the project.
+    await get().resume(forked, cur.cwd, `${cur.title} (branch)`, cur.worktree)
   },
 
   /**
@@ -711,27 +1001,25 @@ export const useStore = create<State>((set, get) => ({
   async close(id) {
     // Closing a worktree session may leave the checkout behind on purpose, and
     // that only comes back from main — the renderer can't tell if it was dirty.
-    const { notice } = (await window.foreman.closeSession(id)) ?? {}
-    set((s) => {
-      const sessions = s.sessions.filter((x) => x.id !== id)
-      const { [id]: _drop, ...items } = s.items
-      const { [id]: _dropQueued, ...queued } = s.queued
-      // The draft goes with the conversation it belonged to. Left behind it
-      // would be resurrected by a future session that happened to reuse the id.
-      const { [id]: _dropDraft, ...drafts } = s.drafts
-      return {
-        sessions,
-        items,
-        queued,
-        drafts,
-        // newestSession, not sessions[0]: this array is in insertion order, so
-        // its [0] is the OLDEST — which is the rail's bottom row now that the
-        // rail draws newest-first. Closing a session would send the selection
-        // to the far end of the list.
-        activeId: s.activeId === id ? (newestSession(sessions)?.id ?? null) : s.activeId,
-        notice: notice ?? s.notice,
-      }
-    })
+    //
+    // The worktree rides out from THIS row, because an asleep session's is
+    // unnameable otherwise: main dropped its meta when the host went away, and
+    // this is the only remaining record that the conversation had a checkout at
+    // all. Main prefers its own copy where it still has one.
+    const worktree = get().sessions.find((x) => x.id === id)?.worktree
+    const { notice } = (await window.foreman.closeSession(id, worktree)) ?? {}
+    // Before the set, not inside it: forgetSession is a pure reducer and a
+    // nested setState would be applied under the snapshot it is handed.
+    flushDeltas()
+    pendingText.delete(id)
+    // The row is usually already gone by now — main emits evtRemoved before this
+    // invoke resolves, and onRemoved runs the same reducer — so this is the
+    // backstop plus the notice, and the guard keeps it from minting a whole set
+    // of fresh slice identities to say nothing.
+    set((s) => ({
+      ...(s.sessions.some((x) => x.id === id) ? forgetSession(s, id) : {}),
+      notice: notice ?? s.notice,
+    }))
   },
 
   /**
@@ -764,8 +1052,8 @@ export const useStore = create<State>((set, get) => ({
     }
   },
 
-  async send(content) {
-    const id = get().activeId
+  async send(content, sessionId) {
+    const id = sessionId ?? get().activeId
     if (!id) return
     // Blocks are only built when there's an attachment, and an attachment with
     // no text is still worth sending.
@@ -846,15 +1134,58 @@ export const useStore = create<State>((set, get) => ({
       // are unreachable and the tail is simply lost.
       flushDeltas()
       pendingText.delete(sessionId)
+      // The same reducer close() runs, and that is the fix rather than tidiness:
+      // this used to drop the row alone, stranding the transcript, the queue, the
+      // draft and the diff counts with nothing left that could ever name them.
+      //
+      // Guarded, because closeSession now emits this for a session main was no
+      // longer holding — so close()'s own reducer has usually already run, and
+      // forgetSession would otherwise mint a fresh `sessions` array and re-render
+      // the app for nothing.
+      set((s) => (s.sessions.some((x) => x.id === sessionId) ? forgetSession(s, sessionId) : s))
+    })
+
+    /**
+     * The host went away; the CONVERSATION did not.
+     *
+     * The row stays and turns asleep — that is the whole difference from
+     * onRemoved above, and it is what makes an idle sweep safe to run: nothing
+     * the user can see disappears, and sending wakes it straight back up.
+     */
+    window.foreman.onHibernated(({ sessionId }: { sessionId: string }) => {
+      flushDeltas()
+      pendingText.delete(sessionId)
       set((s) => {
-        const sessions = s.sessions.filter((x) => x.id !== sessionId)
-        // Repair the selection here, not only in close(): a session can also go
-        // away from main's side, and a dangling activeId renders the empty
-        // state while a perfectly good session sits in the rail.
+        if (!s.sessions.some((x) => x.id === sessionId)) return s
+        // DROPPING THE TRANSCRIPT IS THE POINT, not an oversight. It is on disk,
+        // and selecting the row re-reads it through the same sessionTranscript a
+        // Recent row uses — so hibernation reclaims renderer heap as well as the
+        // process tree, and an asleep session has exactly ONE transcript source
+        // however it came to be asleep.
+        const { [sessionId]: _items, ...items } = s.items
+        // The input queue lived in the host that just went away, so nothing will
+        // ever pick those messages up. A tray offering to cancel them would be
+        // offering to cancel something that is already gone.
+        const { [sessionId]: _queued, ...queued } = s.queued
         return {
-          sessions,
-          // newestSession for the same reason as close() above.
-          activeId: s.activeId === sessionId ? (newestSession(sessions)?.id ?? null) : s.activeId,
+          items,
+          queued,
+          sessions: s.sessions.map((x) =>
+            x.id === sessionId
+              ? {
+                  ...x,
+                  asleep: true,
+                  // Whatever it was doing, it is not doing it now. activityOf
+                  // reads `asleep` first, but Composer's own busy test reads the
+                  // raw status — left at 'running' it would strand a Stop button
+                  // over a process that no longer exists.
+                  status: 'idle' as const,
+                  turnStartedAt: null,
+                  turnTokens: 0,
+                  backgroundTasks: [],
+                }
+              : x,
+          ),
         }
       })
     })
@@ -1053,6 +1384,23 @@ export const useStore = create<State>((set, get) => ({
       .catch(() => undefined)
   },
 }))
+
+/**
+ * Tell main which conversation is on screen, so its idle sweep never reclaims
+ * the one being read.
+ *
+ * A SUBSCRIPTION rather than a line inside `select()`, because select is not the
+ * only writer of `activeId` — `forgetSession` repoints it when the selected
+ * session is closed or removed from main's side, and neither goes through
+ * select. One writer here means every one of those paths reaches main, and a
+ * session that is merely NOT on screen can never be mistaken for one that is.
+ *
+ * An id main has no host for is a good answer rather than a miss: it says
+ * nothing live is being read, which is exactly true of an asleep row.
+ */
+useStore.subscribe((s, prev) => {
+  if (s.activeId !== prev.activeId) void window.foreman.setActiveSession(s.activeId)
+})
 
 // Follow the OS while the theme is 'auto'. Registered here, once, rather than
 // inside applyAppearance — which runs on every slider drag and would stack a

@@ -979,6 +979,12 @@ body[data-keys] .tip[data-show] {
 .activity[data-activity='idle'] {
   opacity: 0.5;
 }
+/* Faint and static — it marks a conversation that is costing nothing, so it must
+   not read as a state you need to attend to. Quieter than every other glyph
+   here, and the only one that means "no process behind this row". */
+.activity[data-activity='asleep'] {
+  color: rgb(var(--text-faint));
+}
 
 @keyframes spin {
   to {
@@ -2160,6 +2166,22 @@ button.tool-line:hover {
    under an empty composer. They are gone with the row that held them — a third
    line of chrome on the one shape that should be smallest, each one restating a
    control that sits four pixels below it. */
+
+/* "Send to wake", beside send, only while the conversation has no agent behind
+   it. Faint and borderless on purpose: it is a caption for the button next to
+   it, not a second control competing with it — the one bordered thing in this
+   card is still the one you click. `flex: none` so it never takes width from
+   the field, and it disappears the moment the session is awake. */
+.composer-wake {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding-right: var(--sp-1);
+  font-size: var(--fs-sm);
+  color: rgb(var(--text-faint));
+  white-space: nowrap;
+}
 
 /* The worktree opt-in, sitting on the picker row as a sibling of the pickers.
    A native checkbox with its own label, deliberately NOT `.switch`: that is a

@@ -47,6 +47,7 @@ import {
   commitFiles,
 } from './gitdiff'
 import { listProjectFiles, FILE_LIMIT } from '../files'
+import { killPty } from '../pty'
 
 /**
  * Live agents, by session id.
@@ -60,6 +61,21 @@ const sessions = new Map<string, HostClient>()
 
 /** Messages read back from a stored session. Long enough for any real session. */
 const TRANSCRIPT_LIMIT = 5000
+
+/**
+ * The session the user is looking at, from the renderer.
+ *
+ * MAIN HOLDS THIS rather than asking the renderer to veto each hibernation, and
+ * the difference matters: a veto is a round trip that can be missed, after which
+ * main believes it reclaimed a session it did not. Null, or an id main has no
+ * host for, both mean the same true thing — nothing live is on screen, which is
+ * exactly the case when an asleep row is selected.
+ */
+let onScreenSessionId: string | null = null
+
+/** How often the idle sweep looks. Far finer than the timeout it enforces, so
+ *  the granularity of "30 minutes" is a minute rather than thirty. */
+const IDLE_SWEEP_MS = 60_000
 
 /** ponytail: search reads this many recent sessions per query, newest first.
  *  Fine for a local JSONL scan; add an index only if it starts dragging. */
@@ -187,6 +203,7 @@ export async function createSession(
     { ...rest, cwd, ...(title ? { title } : {}), ...(worktree ? { worktree } : {}) },
     sessionId,
   )
+  host.onLost = hostLost
   sessions.set(host.meta.id, host)
   return host.meta
 }
@@ -214,6 +231,7 @@ export async function adoptHosts(): Promise<SessionMeta[]> {
     }
     try {
       const host = await HostClient.adopt(f)
+      host.onLost = hostLost
       sessions.set(host.meta.id, host)
       adopted.push(host.meta)
     } catch (err) {
@@ -229,19 +247,124 @@ export async function adoptHosts(): Promise<SessionMeta[]> {
  * Returns a note when a worktree was deliberately left behind, so the renderer
  * can say where the work went. Silent otherwise.
  */
-export async function closeSession(id: string): Promise<{ notice?: string }> {
+export async function closeSession(
+  id: string,
+  fromRenderer?: WorktreeInfo,
+): Promise<{ notice?: string }> {
   const s = sessions.get(id)
-  if (!s) return {}
-  const { worktree } = s.meta
-  // shutdown, not detach: closing a session is the one case where the user
-  // really does mean "stop the agent", and it reaps the host's directory too.
-  await s.shutdown()
-  sessions.delete(id)
+  // ONLY the host half is conditional. This used to return early when the map
+  // had no entry, which after hibernation is EVERY sleeping session — so
+  // archiving one skipped the single removeWorktree call site in the app. The
+  // damage compounds: `git worktree remove` never runs, so the repo's
+  // `.git/worktrees/<name>` admin entry survives; the directory still exists, so
+  // `git worktree prune` will not collect it; and that entry keeps the branch
+  // registered as checked out, so `git checkout` of it in the main tree fails
+  // with "already checked out at …" permanently. `git branch -d` never runs
+  // either, so refs pile up — the exact pile-up uniqueBranch exists to walk past.
+  if (s) {
+    // shutdown, not detach: closing a session is the one case where the user
+    // really does mean "stop the agent", and it reaps the host's directory too.
+    await s.shutdown()
+    sessions.delete(id)
+  }
+  // node-pty lives in MAIN, not in the host — so nothing in the host's teardown
+  // collects it, and a login shell survived per closed session until app quit.
+  // Unconditional, because an asleep session can have opened a terminal too.
+  killPty(id)
+  // Emitted even for a session main was no longer holding: it is what tells the
+  // renderer's own listeners (the terminal's slot registry) that this id is
+  // finished. onRemoved ignores a row it has already dropped.
   send(IPC.evtRemoved, { sessionId: id })
 
+  // Main's own copy wins where it has one; the renderer's row is the fallback
+  // for a session main no longer holds, which is the only way a hibernated
+  // worktree can be named at all. Everything downstream is still git's to
+  // refuse: removeWorktree checks for uncommitted work, `worktree remove`
+  // rejects a path this repository never registered, and `branch -d` rejects a
+  // branch carrying commits.
+  const worktree = s?.meta.worktree ?? fromRenderer
   if (!worktree) return {}
   const { removed, reason } = await removeWorktree(worktree)
   return removed ? {} : { notice: reason }
+}
+
+/**
+ * Give a session's processes back without ending the conversation.
+ *
+ * ONE LINE SEPARATES THIS FROM closeSession, and it is the line that is not
+ * here: **removeWorktree is never called**. A session that merely went idle must
+ * keep its checkout — deleting a user's working tree because they stopped typing
+ * for half an hour is unrecoverable. The other difference is the event:
+ * `evtHibernated`, so the renderer turns the row asleep instead of dropping it.
+ *
+ * `shutdown()` is reused exactly as it is. It kills the host, and with it the
+ * `claude` CLI, its MCP fleet and its language servers — measured at about 2 GB
+ * for one live session — and removes the host's directory. That last part is
+ * correct rather than a cost: waking re-hydrates from the CLI's own transcript
+ * through hydrateInto, which is what `resume` has always done.
+ */
+export async function hibernateSession(id: string): Promise<void> {
+  const s = sessions.get(id)
+  if (!s) return
+  await s.shutdown()
+  sessions.delete(id)
+  killPty(id)
+  send(IPC.evtHibernated, { sessionId: id })
+}
+
+/**
+ * A host that went away without being asked to — a crash, or its own idle exit.
+ *
+ * This is what `hostclient.ts` used to only claim happened. The row degrades to
+ * asleep, which is honest and recoverable: the conversation is still on disk and
+ * sending wakes it. Synchronous and idempotent, because it runs from a socket
+ * event and a `close` can fire more than once.
+ */
+function hostLost(id: string): void {
+  if (!sessions.delete(id)) return
+  killPty(id)
+  console.warn(`[hosts] lost contact with ${id}; the conversation is now asleep`)
+  send(IPC.evtHibernated, { sessionId: id })
+}
+
+/**
+ * Hibernate every live session that nobody is using.
+ *
+ * MAIN DRIVES THIS, not the host, and that is not where it started. `armIdleExit`
+ * in the host begins `if (clients.size > 0) return`, and main holds a socket to
+ * every host for the app's whole life — so the host's own idle timer is
+ * permanently disarmed while Foreman is open. It is a crash backstop, not a
+ * policy. Main is also the only side that can answer the two questions that
+ * matter: which session is on screen, and how long each one has been quiet.
+ *
+ * Four conditions, all required:
+ *  - not the session being read. Reclaiming what the user is looking at would
+ *    make the app feel broken however cheap the wake is.
+ *  - not busy. A turn in flight, or a prompt waiting on an answer, is work that
+ *    must not be thrown away.
+ *  - no live background tasks. This is NOT covered by the status test and that
+ *    is the whole reason `activityOf` has a `background` activity outranking
+ *    idle: a session whose turn has ended while a build or a dev server keeps
+ *    running reports `idle`, and emits no event frames while it does — so
+ *    `lastActivity` goes stale and the sweep would shut down exactly the work
+ *    the user cannot see. The host's own test omits this too, which was
+ *    harmless only because that test was unreachable while the app was open.
+ *  - quiet for longer than the configured timeout. 0 still means never — see
+ *    the mapping in hostclient's spawn env, which this deliberately mirrors.
+ */
+async function sweepIdleSessions(): Promise<void> {
+  if (policy.idleMinutes <= 0) return
+  const limit = policy.idleMinutes * 60_000
+  const now = Date.now()
+  // A copy: hibernateSession deletes from the map this is walking.
+  for (const [id, h] of [...sessions]) {
+    if (id === onScreenSessionId) continue
+    if (h.meta.status === 'running' || h.meta.status === 'awaiting-approval') continue
+    if (h.meta.backgroundTasks.length > 0) continue
+    if (now - h.lastActivity < limit) continue
+    console.log(`[hosts] hibernating ${id} after ${policy.idleMinutes}m idle`)
+    await hibernateSession(id).catch((err) => console.warn('[hosts] hibernate failed:', err))
+  }
 }
 
 /**
@@ -320,9 +443,19 @@ function clearMcpFailureCache(name: string): void {
 }
 
 export function registerSessionIpc(): void {
+  // Registered once at startup, and deliberately never cleared: it outlives
+  // every session, and unref'ing it would let a sweep be skipped whenever the
+  // event loop happened to be otherwise empty.
+  setInterval(() => void sweepIdleSessions(), IDLE_SWEEP_MS)
+
   ipcMain.handle(IPC.sessionCreate, (_e, init: SessionInit & { worktreeBranch?: string }) =>
     createSession(init),
   )
+
+  ipcMain.handle(IPC.sessionActive, (_e, { sessionId }: { sessionId: string | null }) => {
+    onScreenSessionId = sessionId
+    return true
+  })
 
   ipcMain.handle(
     IPC.agentPolicy,
@@ -460,8 +593,13 @@ export function registerSessionIpc(): void {
     createSession(init),
   )
 
-  ipcMain.handle(IPC.sessionClose, (_e, { sessionId }: { sessionId: string }) =>
-    closeSession(sessionId),
+  // `worktree` rides along from the renderer's row, because a hibernated
+  // session's checkout is otherwise unnameable — main dropped its meta when the
+  // host went away. See closeSession.
+  ipcMain.handle(
+    IPC.sessionClose,
+    (_e, { sessionId, worktree }: { sessionId: string; worktree?: WorktreeInfo }) =>
+      closeSession(sessionId, worktree),
   )
 
   ipcMain.handle(IPC.sessionList, () => [...sessions.values()].map((s) => s.meta))
@@ -513,10 +651,18 @@ export function registerSessionIpc(): void {
 
   // The popover wants a bare list and a short one; the tree wants the cap and a
   // `truncated` flag. Same git call, two callers, one implementation in files.ts.
-  ipcMain.handle(IPC.sessionFiles, async (_e, { sessionId }: { sessionId: string }) => {
-    const s = get(sessionId)
-    return s ? (await listProjectFiles(s.meta.cwd, FILE_LIMIT)).paths : []
-  })
+  //
+  // The renderer's cwd is the fallback, the same posture the diff handlers take:
+  // this is a git read against a directory and holds no session state, so
+  // answering only for a session with a live host made `@`-file completion come
+  // back empty on every ASLEEP conversation. Main's own copy still wins.
+  ipcMain.handle(
+    IPC.sessionFiles,
+    async (_e, { sessionId, cwd }: { sessionId: string; cwd?: string }) => {
+      const dir = get(sessionId)?.meta.cwd ?? cwd
+      return dir ? (await listProjectFiles(dir, FILE_LIMIT)).paths : []
+    },
+  )
 
   // Fire-and-forget from the renderer's point of view: replies come back as
   // evtLspMessage pushes, because a JSON-RPC reply is just another frame.

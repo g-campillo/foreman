@@ -161,6 +161,44 @@ export function branchSlug(raw: string): string {
 }
 
 /**
+ * How far the `-2`, `-3`… walk goes before falling back to a timestamp.
+ *
+ * The fallback is unreachable in practice and exists so a broken predicate
+ * cannot spin: `exists` answers from `git rev-parse`, which reports "no such
+ * ref" for a repository it cannot read at all — so a hundred yeses in a row
+ * means something is wrong that a hundred and first try will not fix.
+ */
+const MAX_BRANCH_SUFFIX = 100
+
+/**
+ * `foreman/<slug>`, or the first `-2`, `-3`… suffix the predicate says is free.
+ *
+ * A COLLISION IS THE ORDINARY CASE, not the exceptional one, which is why this
+ * uniquifies instead of refusing. Two sessions in one project routinely want the
+ * same label, and `removeWorktree` only deletes a branch git can prove is
+ * merged — so a ref carrying real work outlives every checkout that ever stood
+ * on it. Hard-failing on that ref meant a second worktree session in a project
+ * could never be created again, for the life of the repository.
+ *
+ * The existence check is a parameter rather than a git call so `check:policy`
+ * can drive the suffix walk against a fake set, with no repository to set up.
+ */
+export async function uniqueBranch(
+  slug: string,
+  exists: (ref: string) => Promise<boolean>,
+): Promise<string> {
+  const base = `foreman/${slug}`
+  if (!(await exists(base))) return base
+  for (let n = 2; n <= MAX_BRANCH_SUFFIX; n++) {
+    const ref = `${base}-${n}`
+    if (!(await exists(ref))) return ref
+  }
+  // Same disambiguator the worktree DIRECTORY has always carried, for the same
+  // reason: it is the one suffix that cannot collide with itself.
+  return `${base}-${Date.now().toString(36)}`
+}
+
+/**
  * True when `path` is `dir` or sits underneath it.
  *
  * Via `relative` rather than a prefix test, because `'/repo-other'.startsWith('/repo')`

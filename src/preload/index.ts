@@ -7,6 +7,7 @@ import {
   type McpActionResult,
   type McpStatus,
   type PermissionAnswer,
+  type WorktreeInfo,
 } from '../shared/types'
 
 function on(channel: string, cb: (payload: any) => void): () => void {
@@ -19,10 +20,19 @@ const api = {
   // sessions
   createSession: (init: unknown) => ipcRenderer.invoke(IPC.sessionCreate, init),
   resumeSession: (init: unknown) => ipcRenderer.invoke(IPC.sessionResume, init),
-  closeSession: (sessionId: string) => ipcRenderer.invoke(IPC.sessionClose, { sessionId }),
+  /** `worktree` is the renderer's own copy off the session row, and is the only
+   *  way an ASLEEP session's checkout can be named — main dropped its meta when
+   *  the host went away. Ignored when main still holds the session. */
+  closeSession: (sessionId: string, worktree?: WorktreeInfo) =>
+    ipcRenderer.invoke(IPC.sessionClose, { sessionId, worktree }),
   listSessions: () => ipcRenderer.invoke(IPC.sessionList),
   listPastSessions: (dir?: string) => ipcRenderer.invoke(IPC.sessionPastList, { dir }),
   replaySessions: () => ipcRenderer.invoke(IPC.sessionReplay),
+  /** The session on screen, so the idle sweep leaves it alone. Sent on every
+   *  selection, including onto an asleep row — an id main does not have is the
+   *  correct answer to "which live session is the user looking at": none. */
+  setActiveSession: (sessionId: string | null) =>
+    ipcRenderer.invoke(IPC.sessionActive, { sessionId }),
 
   // time travel + actions
   rewind: (sessionId: string, messageId: string, dryRun: boolean) =>
@@ -63,7 +73,10 @@ const api = {
     ipcRenderer.invoke(IPC.sessionEditQueued, { sessionId, itemId, content }),
   supportedCommands: (sessionId: string) =>
     ipcRenderer.invoke(IPC.sessionCommands, { sessionId }),
-  projectFiles: (sessionId: string) => ipcRenderer.invoke(IPC.sessionFiles, { sessionId }),
+  /** `cwd` is the fallback for a session main holds no host for — an asleep
+   *  conversation still has a project to complete `@` mentions against. */
+  projectFiles: (sessionId: string, cwd?: string) =>
+    ipcRenderer.invoke(IPC.sessionFiles, { sessionId, cwd }),
   interrupt: (sessionId: string) => ipcRenderer.invoke(IPC.sessionInterrupt, { sessionId }),
   setPermissionMode: (sessionId: string, mode: string) =>
     ipcRenderer.invoke(IPC.sessionSetMode, { sessionId, mode }),
@@ -190,6 +203,7 @@ const api = {
   onDelta: (cb: (p: any) => void) => on(IPC.evtDelta, cb),
   onMeta: (cb: (p: any) => void) => on(IPC.evtMeta, cb),
   onRemoved: (cb: (p: any) => void) => on(IPC.evtRemoved, cb),
+  onHibernated: (cb: (p: any) => void) => on(IPC.evtHibernated, cb),
   onQueue: (cb: (p: any) => void) => on(IPC.evtQueue, cb),
   onPermissionRequest: (cb: (p: any) => void) => on(IPC.permRequest, cb),
   onPermissionResolved: (cb: (p: any) => void) => on(IPC.permResolved, cb),

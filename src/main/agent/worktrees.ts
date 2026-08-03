@@ -14,7 +14,7 @@ import { app } from 'electron'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { basename, dirname, join } from 'node:path'
-import { branchSlug } from './policy.mts'
+import { branchSlug, uniqueBranch } from './policy.mts'
 import type { WorktreeInfo } from '../../shared/types'
 
 const exec = promisify(execFile)
@@ -65,6 +65,10 @@ async function mainRoot(cwd: string): Promise<string | null> {
  * share a basename and two sessions can ask for the same branch name; `git
  * worktree add` fails on a non-empty target, so a collision would surface as a
  * confusing error rather than silently sharing a checkout.
+ *
+ * The BRANCH gets the same treatment via uniqueBranch, and used to get none at
+ * all: an existing ref was a refusal, and since removeWorktree leaves refs
+ * behind on purpose, the second worktree session in a project failed forever.
  */
 export async function createWorktree(
   cwd: string,
@@ -80,11 +84,16 @@ export async function createWorktree(
     return { ok: false, error: 'This repository has no commits yet — make one first.' }
   }
 
-  const branch = `foreman/${branchSlug(branchName)}`
-  const exists = await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`])
-  if (exists.ok) return { ok: false, error: `Branch ${branch} already exists.` }
+  const slug = branchSlug(branchName)
+  // `--quiet` so a missing ref is an exit code rather than a line on stderr:
+  // this asks the question dozens of times in the pathological case, and every
+  // miss is the ANSWER rather than a problem.
+  const branch = await uniqueBranch(
+    slug,
+    async (ref) => (await git(root, ['rev-parse', '--verify', '--quiet', `refs/heads/${ref}`])).ok,
+  )
 
-  const dir = join(worktreeRoot(), `${basename(root)}-${branchSlug(branchName)}-${Date.now().toString(36)}`)
+  const dir = join(worktreeRoot(), `${basename(root)}-${slug}-${Date.now().toString(36)}`)
   const made = await git(root, ['worktree', 'add', '-b', branch, dir, 'HEAD'])
   if (!made.ok) return { ok: false, error: made.error }
 
@@ -106,6 +115,10 @@ export async function uncommittedCount(path: string): Promise<number> {
  * Uncommitted changes are the opposite: `git worktree remove` deletes the
  * directory, so this refuses and reports the path instead. Committing from the
  * diff panel first is the way through.
+ *
+ * The branch ref goes too when git agrees it carries nothing — see the `-d`
+ * below. Without that, every worktree session a project ever had left a ref
+ * behind, and those refs are what the uniquifier then has to walk past.
  */
 export async function removeWorktree(
   info: WorktreeInfo,
@@ -120,5 +133,13 @@ export async function removeWorktree(
 
   const r = await git(info.repoRoot, ['worktree', 'remove', info.path])
   if (!r.ok) return { removed: false, reason: `${info.branch} kept: ${r.error}` }
+
+  // -d, NEVER -D: git refuses a branch with unmerged commits, so this cannot
+  // lose work — which is what lets it run unconditionally. An empty branch (the
+  // common case, and the one that used to accumulate) is an ancestor of HEAD and
+  // goes. Failure is the expected outcome for a branch carrying real commits, and
+  // is deliberately silent: the ROADMAP's rule is that the ref outlives the
+  // checkout, and git refusing here is that rule enforcing itself.
+  await git(info.repoRoot, ['branch', '-d', info.branch])
   return { removed: true }
 }

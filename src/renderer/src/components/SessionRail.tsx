@@ -9,6 +9,7 @@ import {
   GitBranchPlus,
   LoaderCircle,
   MessageCircleQuestion,
+  Moon,
   Plus,
   Search,
   TriangleAlert,
@@ -38,6 +39,12 @@ const ACTIVITY_ICON: Record<Activity, typeof Circle | null> = {
   awaiting: MessageCircleQuestion,
   starting: LoaderCircle,
   error: TriangleAlert,
+  // The one glyph that marks an ABSENCE rather than an activity: no host, no
+  // CLI, no MCP fleet, no language server. It is here because `idle` is not —
+  // with both blank, an idle conversation holding ~2 GB and a sleeping one
+  // holding nothing rendered identically, and the rail could not tell you which
+  // row to close. A mark means free; a bare row means live.
+  asleep: Moon,
   // Nothing at all. An idle session used to paint a hollow Circle, so a rail of
   // twelve finished conversations was a column of twelve identical dots saying
   // "not running" twelve times. Cursor leaves the slot empty and collapses it,
@@ -52,6 +59,7 @@ const ACTIVITY_TIP: Record<Activity, string> = {
   awaiting: 'Waiting for you',
   starting: 'Starting up',
   error: 'Last turn failed',
+  asleep: 'Asleep — no agent running. Send a message to wake it',
   idle: 'Idle',
 }
 
@@ -83,7 +91,12 @@ export default function SessionRail(): React.JSX.Element {
   const select = useStore((s) => s.select)
   const close = useStore((s) => s.close)
   const newSession = useStore((s) => s.newSession)
-  const resume = useStore((s) => s.resume)
+  /* NOT `resume`. Clicking a row here used to start a host, a `claude` CLI, its
+     whole MCP fleet and a language server — about 2 GB — to READ a conversation
+     that is already on disk. `preview` opens the same transcript with none of
+     it, and the first message sent wakes the agent. */
+  const preview = useStore((s) => s.preview)
+  const rename = useStore((s) => s.rename)
 
   // In a memo, never in the selector: groupSessions allocates fresh objects and
   // arrays on every call, and zustand reads a new identity as a changed store —
@@ -148,10 +161,12 @@ export default function SessionRail(): React.JSX.Element {
     return () => clearTimeout(t)
   }, [query, scope])
 
-  const commitRename = (sdkSessionId: string | null, title: string): void => {
+  /* Through the store rather than straight at the bridge: main pushes the new
+     title to the session's HOST, and an asleep conversation has none — so the
+     row kept its old title until it was re-read from disk. See store.rename. */
+  const commitRename = (id: string, title: string): void => {
     setRenaming(null)
-    const t = title.trim()
-    if (t && sdkSessionId) void window.foreman.renameSession(sdkSessionId, t)
+    rename(id, title)
   }
 
   /**
@@ -272,9 +287,9 @@ export default function SessionRail(): React.JSX.Element {
                   className="rename-input"
                   defaultValue={s.title}
                   autoFocus
-                  onBlur={(e) => commitRename(s.sdkSessionId, e.target.value)}
+                  onBlur={(e) => commitRename(s.id, e.target.value)}
                   onKeyDown={(e) => {
-                    if (e.key === 'Enter') commitRename(s.sdkSessionId, e.currentTarget.value)
+                    if (e.key === 'Enter') commitRename(s.id, e.currentTarget.value)
                     if (e.key === 'Escape') setRenaming(null)
                   }}
                 />
@@ -367,10 +382,11 @@ export default function SessionRail(): React.JSX.Element {
                     key={h.sessionId}
                     className="session"
                     title={tildePath(h.cwd ?? '', window.foreman.homeDir)}
-                    // Without a cwd the CLI searches the wrong project directory
-                    // and reports "No conversation found", so don't offer it.
+                    // Without a cwd the transcript is read from the wrong
+                    // project directory and comes back empty — the same reason
+                    // this was disabled when the click meant resume.
                     disabled={!h.cwd}
-                    onClick={() => void resume(h.sessionId, h.cwd ?? '', h.summary.slice(0, 40))}
+                    onClick={() => preview(h.sessionId, h.cwd ?? '', h.summary.slice(0, 40))}
                   >
                     <span className="dot" />
                     <span className="session-body">
@@ -388,7 +404,7 @@ export default function SessionRail(): React.JSX.Element {
                     key={p.sessionId}
                     className="session"
                     title={tildePath(p.cwd ?? '', window.foreman.homeDir)}
-                    onClick={() => void resume(p.sessionId, p.cwd ?? '', p.summary.slice(0, 40))}
+                    onClick={() => preview(p.sessionId, p.cwd ?? '', p.summary.slice(0, 40))}
                     disabled={!p.cwd}
                   >
                     <span className="dot" />

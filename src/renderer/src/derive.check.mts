@@ -7,7 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem, SessionMeta } from '../../shared/types'
-import { activityOf, answeredQuestions, ANSWER_PREFIX, armedApproval, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, contextView, swatch, level, triggerAt, askQuestions, projectKey, relPath, tildePath, baseName, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, VERB_STRIDE, sessionTokens, meterElapsed, buildTree, focusTarget, authorEdits, resolveAnchors, mcpName, titleCase, summarise, editStat, toolFailed, groupRuns, runSummary } from './derive.mts'
+import { activityOf, answeredQuestions, ANSWER_PREFIX, armedApproval, branchLabel, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, contextView, swatch, level, triggerAt, askQuestions, projectKey, relPath, tildePath, baseName, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, VERB_STRIDE, sessionTokens, meterElapsed, buildTree, focusTarget, authorEdits, resolveAnchors, mcpName, titleCase, summarise, editStat, toolFailed, groupRuns, runSummary } from './derive.mts'
 
 let seq = 0
 const tool = (name: string, input: unknown, result?: string): ChatItem => ({
@@ -75,6 +75,16 @@ const todo = (content: string, status: string): unknown => ({ content, status })
   assert.equal(activityOf(s('running', 'default', bg)), 'working')
   assert.equal(activityOf(s('awaiting-approval', 'default', bg)), 'awaiting')
   assert.equal(activityOf(s('error', 'default', bg)), 'error')
+
+  // Asleep outranks the lot, because none of the rest is true any more: the
+  // status, the mode and the task list are all whatever they were when the host
+  // went away. A hibernated error must not keep reporting the error, and a
+  // hibernated run must not keep spinning.
+  for (const st of ['idle', 'starting', 'running', 'awaiting-approval', 'error'] as const)
+    assert.equal(activityOf({ ...s(st, 'plan', bg), asleep: true }), 'asleep', `asleep beats ${st}`)
+
+  // ...and the flag is absent on every live session, so nothing else moves.
+  assert.equal(activityOf({ ...s('idle'), asleep: false }), 'idle')
 }
 
 /** Mirrors the live tool: the id is assigned in the RESULT, not the input. */
@@ -1831,6 +1841,61 @@ assert.equal(baseName(''), '')
     buildTree(['my dir/café 🎉.ts']).map((n) => n.children![0]!.path),
     ['my dir/café 🎉.ts'],
   )
+}
+
+// --------------------------------------------------------------- branchLabel
+//
+// This string becomes a git ref via branchSlug, and the rail's title for the
+// session with it. Its failure mode is quiet: a bad label is still a legal
+// branch name, it just says nothing — which is the bug it was written to fix.
+
+// The ordinary case: the ask, with the filler words gone.
+assert.equal(branchLabel('Fix the parser crash'), 'fix-parser-crash')
+assert.equal(branchLabel('Can you please add tests for the worktree module'), 'add-tests-worktree-module')
+
+// Capped, so a paragraph does not become a 200-character ref.
+assert.equal(
+  branchLabel('rewrite the session rail so that every project group collapses on click'),
+  'rewrite-session-rail-every-project-group',
+)
+assert.equal(branchLabel('one two three four five six seven eight').split('-').length, 6)
+
+// A message that is only filler has no label in it. '' is the caller's cue to
+// fall back — branchSlug('') would be 'agent', which says less than nothing.
+for (const raw of ['', '   ', 'the a an', 'please can you', '!!! ???', '🎉'])
+  assert.equal(branchLabel(raw), '', `nothing usable: ${JSON.stringify(raw)}`)
+
+// Prose only. A pasted stack trace or diff would otherwise spend the whole
+// six-word budget on code, and a link on its URL.
+assert.equal(branchLabel('fix this\n```\nfoo.bar(baz)\n```\n'), 'fix')
+assert.equal(branchLabel('speed up `normaliseTranscript`'), 'speed-up-normalisetranscript')
+assert.equal(branchLabel('see [the issue](https://github.com/x/y/issues/3) and fix it'), 'see-issue-fix')
+assert.equal(branchLabel('read https://example.com/a/b/c then patch it'), 'read-then-patch')
+
+// `@src/main/agent/policy.mts` is composer syntax for "here is the context",
+// not the subject — and it alone is six words' worth of path.
+assert.equal(branchLabel('@src/main/agent/policy.mts add a cap'), 'add-cap')
+// ...but only at a word boundary, which is the same rule triggerAt applies when
+// it decides whether an `@` opens a mention at all. An email address is not one.
+assert.ok(
+  branchLabel('mail gabriel@example.com the log').includes('gabriel'),
+  'a mid-word @ is an address, not a mention',
+)
+
+// Contractions stay one word rather than leaving `s`/`ve`/`ll` debris behind.
+assert.equal(branchLabel("the parser doesn't handle tabs"), 'parser-doesnt-handle-tabs')
+
+// Survives branchSlug unchanged — the two run in series, and a label the slug
+// then rewrites would make the branch and the rail title disagree.
+for (const raw of [
+  'Fix the parser crash',
+  'add a cap of 500 to MAX_TURNS',
+  "the parser doesn't handle tabs",
+  'UPPER CASE SHOUTING',
+]) {
+  const label = branchLabel(raw)
+  assert.ok(/^[a-z0-9][a-z0-9-]*$/.test(label), `not ref-safe: ${raw} -> ${label}`)
+  assert.ok(!label.includes('--') && !label.endsWith('-'), `malformed: ${raw} -> ${label}`)
 }
 
 console.log('derive: ok')

@@ -78,6 +78,27 @@ export class HostClient {
    * Undefined means "older build", which is the same stale case.
    */
   pathId: string | undefined
+  /**
+   * When this host last did anything, for the idle sweep in the manager.
+   *
+   * Bumped on EVENT FRAMES ONLY — see onLine. Not on `call`, deliberately: the
+   * read-only panels poll through `callOr`, so counting a call would let an open
+   * side panel keep a session alive forever, which is the same "the timer never
+   * fires" bug the host's own armIdleExit has. A user message is not missed by
+   * this: it produces evtItem and evtMeta from the host within milliseconds.
+   */
+  lastActivity = Date.now()
+  /**
+   * Called when the socket closes WITHOUT a detach or a shutdown.
+   *
+   * The comment that used to sit on the close handler said "the manager reaps on
+   * close", and it described behaviour that did not exist: a dead host left a
+   * rail row backed by a HostClient with `sock === null`, which answered every
+   * call with a rejection and could never be revived. The manager sets this so a
+   * lost host degrades to an asleep row — a conversation you can wake — rather
+   * than a lie about a running agent.
+   */
+  onLost: ((sessionId: string) => void) | undefined
   private sock: Socket | null = null
   private nextId = 1
   private readonly pending = new Map<
@@ -182,15 +203,27 @@ export class HostClient {
         })
         sock.on('data', makeLineReader((line) => this.onLine(line, resolve)))
         sock.on('error', () => {
+          // An error on a socket that HAS connected is a lost host, not the
+          // startup race this retry loop exists for — and the close handler
+          // below owns it. Reconnecting anyway would leave a second client
+          // forwarding frames for a row `onLost` has already marked asleep,
+          // with nothing on screen that names the connection keeping the agent
+          // alive. Harmless before `onLost` existed; not any more.
+          const live = this.sock === sock
           sock.destroy()
+          if (live) return
           // 50 x 100ms — the host has to boot Node and construct a Session.
           if (++tries > 50) return reject(new Error(`host did not come up: ${sockPath}`))
           setTimeout(tryOnce, 100)
         })
         sock.on('close', () => {
-          if (this.sock === sock) this.sock = null
-          // Not an error: the host may have exited on purpose. Callers see
-          // rejections from in-flight calls, and the manager reaps on close.
+          // A socket that never reached 'connect' was never this client's.
+          // The retry loop below destroys each failed attempt, which fires this
+          // handler too — and treating that as a loss would latch `closed`
+          // before the host had even come up, disarming shutdown() forever.
+          const wasLive = this.sock === sock
+          if (wasLive) this.sock = null
+          // Not an error in itself: the host may have exited on purpose.
           for (const [id, p] of this.pending) {
             p.reject(new Error('host disconnected'))
             this.pending.delete(id)
@@ -200,6 +233,12 @@ export class HostClient {
           // these parked would strand `hydrating`, which suppresses the empty
           // state, so the composer would sit bottom-pinned over nothing forever.
           for (const done of this.replayWaiters.splice(0)) done()
+          // `closed` is set by detach() and shutdown() BEFORE they end the
+          // socket, so this fires only for a close nobody asked for — the host
+          // crashed, or exited on its own idle timer. See onLost.
+          if (!wasLive || this.closed) return
+          this.closed = true
+          this.onLost?.(this.meta.id)
         })
       }
       tryOnce()
@@ -241,7 +280,11 @@ export class HostClient {
       return
     }
 
-    // An event. Keep our copy of meta in step, then forward verbatim.
+    // An event — the agent actually did something. This is the clock the
+    // manager's idle sweep reads; see lastActivity for why replies are not.
+    this.lastActivity = Date.now()
+
+    // Keep our copy of meta in step, then forward verbatim.
     if (frame.channel === IPC.evtMeta) {
       const p = frame.payload as { sessionId: string; patch: Partial<SessionMeta> }
       this.meta = { ...this.meta, ...p.patch }

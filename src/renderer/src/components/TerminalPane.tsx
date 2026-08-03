@@ -122,6 +122,32 @@ function slotFor(session: SessionMeta): Slot {
   return slot
 }
 
+/**
+ * Give a session's terminal back.
+ *
+ * `slots` had no `delete` anywhere, and that is a leak with real weight: a 10 000
+ * line scrollback, its Terminal instance, its renderer and a detached DOM tree,
+ * retained for every session that ever opened a terminal, until the app quit.
+ *
+ * TerminalModal's own note — that unmounting the modal must NOT dispose, because
+ * the pty outlives it and remounting re-parents the same terminal — stays exactly
+ * true. This is session teardown, which is a different event: the conversation
+ * itself is going away or giving its processes back, and there is nothing left
+ * for the scrollback to belong to.
+ */
+export function disposeSlot(sessionId: string): void {
+  const slot = slots.get(sessionId)
+  if (!slot) return
+  // Deleted first: dispose() tears down xterm's DOM and listeners, and a
+  // late onPtyData frame finding a disposed terminal in the map would throw.
+  slots.delete(sessionId)
+  try {
+    slot.term.dispose()
+  } catch {
+    /* already torn down */
+  }
+}
+
 window.foreman.onPtyData(({ sessionId, data }: { sessionId: string; data: string }) => {
   slots.get(sessionId)?.term.write(data)
 })
@@ -130,6 +156,32 @@ window.foreman.onPtyExit(({ sessionId }: { sessionId: string }) => {
   if (!slot) return
   slot.started = false
   slot.term.writeln('\r\n\x1b[2m[process exited]\x1b[0m')
+})
+/**
+ * ONE RULE: a slot exists only for a row that is live in the rail.
+ *
+ * Watched here rather than driven from the store, because the store must not
+ * import a component it is itself imported by — see the note on `Attachment` in
+ * shared/types.ts. But it is a subscription rather than a pair of IPC listeners
+ * for a stronger reason: an event per teardown was NOT complete. `close()` of an
+ * asleep session reached main with no host to remove, `wake()` rekeys a row from
+ * the stub id to the host's without any event at all, and either one left a
+ * 10 000-line scrollback with nothing that could ever name it again. Membership
+ * of `sessions` is the fact this actually depends on, so it is the fact to read.
+ *
+ * `asleep` counts as gone: the conversation has given its processes back, and
+ * its shell went with them.
+ *
+ * The `slots.size` bail matters — this runs on every meta patch, which during a
+ * turn is several a second, and the map is empty for anyone who never opens a
+ * terminal.
+ */
+useStore.subscribe((s, prev) => {
+  if (!slots.size || s.sessions === prev.sessions) return
+  for (const id of [...slots.keys()]) {
+    const row = s.sessions.find((x) => x.id === id)
+    if (!row || row.asleep) disposeSlot(id)
+  }
 })
 
 export default function TerminalPane({

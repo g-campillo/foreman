@@ -17,9 +17,14 @@ import { toHunks } from '../../shared/diff.mts'
 /**
  * What a session is actually doing, for the rail's icon.
  *
- * Richer than `SessionStatus` in exactly two places, both of which the raw
+ * Richer than `SessionStatus` in exactly three places, all of which the raw
  * status gets wrong:
  *
+ *  - **`asleep`.** No host behind the conversation at all — previewed from disk,
+ *    hibernated, or left over from a host that died. `status` is whatever it last
+ *    was, which is why this OUTRANKS EVERYTHING: a session that errored an hour
+ *    ago and has since been reclaimed must not still be reporting the error, and
+ *    one that was hibernated mid-anything must not paint a spinner forever.
  *  - **`background`.** A session whose turn has ended but which still has live
  *    background tasks reports `idle`. It is not idle — it is waiting on work
  *    the user cannot otherwise see. So a non-empty `backgroundTasks` outranks
@@ -31,9 +36,15 @@ import { toHunks } from '../../shared/diff.mts'
  *
  * An in-flight turn still outranks background work: the foreground is what the
  * user is waiting on.
+ *
+ * `idle` deliberately stays the one activity with NO glyph (see ACTIVITY_ICON),
+ * which is what makes `asleep` legible: a row with a mark is a conversation
+ * costing nothing, and a row with none is one holding a CLI, its MCP fleet and a
+ * language server. Marking both would be the column of identical dots again.
  */
 export type Activity =
   | 'idle'
+  | 'asleep'
   | 'starting'
   | 'planning'
   | 'working'
@@ -42,8 +53,9 @@ export type Activity =
   | 'error'
 
 export function activityOf(
-  s: Pick<SessionMeta, 'status' | 'permissionMode' | 'backgroundTasks'>,
+  s: Pick<SessionMeta, 'status' | 'permissionMode' | 'backgroundTasks'> & { asleep?: boolean },
 ): Activity {
+  if (s.asleep) return 'asleep'
   if (s.status === 'error') return 'error'
   if (s.status === 'awaiting-approval') return 'awaiting'
   if (s.status === 'running') return s.permissionMode === 'plan' ? 'planning' : 'working'
@@ -693,6 +705,75 @@ export function triggerAt(text: string, caret: number): Trigger | null {
     if (ch === '/' && i === 0) return { kind: 'command', query: before.slice(1), start: 0 }
   }
   return null
+}
+
+// -------------------------------------------------------------- branch names
+
+/**
+ * Words carrying no information in a branch name.
+ *
+ * LIGHT ON PURPOSE. This is not a search index — dropping too much turns "fix
+ * the parser for me" into something shorter than it is useful, and a label the
+ * user cannot recognise is no better than the project name it replaces. So it is
+ * articles, conjunctions, common prepositions, the copula, pronouns and the
+ * politeness that opens half of all first messages, and nothing else.
+ */
+const BRANCH_STOPWORDS = new Set([
+  'a', 'an', 'the',
+  'and', 'or', 'but', 'so',
+  'to', 'of', 'in', 'on', 'at', 'for', 'with', 'from', 'by', 'into', 'as', 'this', 'that',
+  'is', 'are', 'was', 'were', 'be',
+  'i', 'we', 'you', 'it', 'me', 'my', 'our', 'your', 'its',
+  'please', 'can', 'could', 'would', 'should', 'let', 'lets',
+  'do', 'does', 'did',
+])
+
+/** Long enough to read as a phrase, short enough to read at a glance in the rail. */
+const BRANCH_WORDS = 6
+
+/**
+ * The opening message, as a branch label. '' when there is nothing usable.
+ *
+ * THE BUG THIS EXISTS FOR: the Worktree checkbox named its branch from
+ * `session.title`, which for a fresh conversation is `basename(cwd)` — so every
+ * worktree in a project asked for the same branch, the app's own `foreman/`
+ * namespace made it `foreman/<project>`, and the second one failed. A label out
+ * of the message carries information AND collides far less often; `uniqueBranch`
+ * in main handles the collisions that are left.
+ *
+ * Prose only. Fenced code, link targets and `@` mentions are removed before the
+ * split, because a pasted stack trace or an `@src/main/agent/policy.mts` would
+ * otherwise spend the entire word budget on a path — and the file is the context
+ * of the request, not the request.
+ *
+ * Returns '' rather than something degenerate, and that is the caller's cue to
+ * fall back rather than a value to pass on: `branchSlug('')` is 'agent', which
+ * says less than the project name did.
+ */
+export function branchLabel(text: string): string {
+  const prose = text
+    // Fences first, or ``` survives as a separator and the code inside it as
+    // words — a stack trace is the worst possible source for a six-word label.
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/`([^`]*)`/g, ' $1 ')
+    // Keep a link's text, drop its target: a bare URL slugs to `https-github-com`.
+    .replace(/!?\[([^\]]*)\]\([^)]*\)/g, ' $1 ')
+    .replace(/https?:\/\/\S+/gi, ' ')
+    // Composer syntax rather than prose.
+    .replace(/(^|\s)@\S+/g, ' ')
+    // Removed, not split on, so a contraction stays one word — splitting leaves
+    // the `s`/`ve`/`ll` half behind as debris the length filter then has to catch.
+    .replace(/['’]/g, '')
+
+  const words = prose
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    // Same allow-list branchSlug enforces, so the label survives it unchanged.
+    // Single characters go with the stopwords: what is left of a contraction
+    // after the apostrophe, or a stray initial, is never the subject.
+    .filter((w) => w.length > 1 && !BRANCH_STOPWORDS.has(w))
+
+  return words.slice(0, BRANCH_WORDS).join('-')
 }
 
 // --------------------------------------------------------------- tool names

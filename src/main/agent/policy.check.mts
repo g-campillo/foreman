@@ -15,6 +15,7 @@ import {
   resultText,
   notifyBody,
   normaliseSend,
+  uniqueBranch,
   within,
 } from './policy.mts'
 
@@ -206,5 +207,66 @@ for (const raw of ['', '   ', '!!!', '///', '...', '---'])
 // through the UI can't drift the branch away from the directory.
 for (const raw of ['Fix the parser', '../etc', 'a..b', 'x'.repeat(200), ''])
   assert.equal(branchSlug(branchSlug(raw)), branchSlug(raw), `not idempotent: ${raw}`)
+
+// --------------------------------------------------------------- uniqueBranch
+//
+// The bug this exists for: `foreman/<slug>` used to be a hard failure when the
+// ref was taken, and removeWorktree deliberately never deleted refs — so the
+// SECOND worktree session in any project failed forever.
+
+{
+  /** A fake ref store, so the suffix walk is checked without a repository. */
+  const taken = (...refs: string[]) => {
+    const set = new Set(refs)
+    const seen: string[] = []
+    return {
+      seen,
+      exists: async (ref: string): Promise<boolean> => {
+        seen.push(ref)
+        return set.has(ref)
+      },
+    }
+  }
+
+  // Nothing taken: the plain name, with no suffix to explain.
+  {
+    const t = taken()
+    assert.equal(await uniqueBranch('fix-parser', t.exists), 'foreman/fix-parser')
+    assert.deepEqual(t.seen, ['foreman/fix-parser'], 'one probe when the name is free')
+  }
+
+  // The suffix sequence starts at 2 — `-1` would imply a `-0` somewhere — and
+  // walks upward one at a time, taking the first gap rather than the end.
+  {
+    const t = taken('foreman/fix-parser')
+    assert.equal(await uniqueBranch('fix-parser', t.exists), 'foreman/fix-parser-2')
+  }
+  {
+    const t = taken('foreman/fix-parser', 'foreman/fix-parser-2', 'foreman/fix-parser-3')
+    assert.equal(await uniqueBranch('fix-parser', t.exists), 'foreman/fix-parser-4')
+    assert.deepEqual(t.seen, [
+      'foreman/fix-parser',
+      'foreman/fix-parser-2',
+      'foreman/fix-parser-3',
+      'foreman/fix-parser-4',
+    ])
+  }
+  {
+    const t = taken('foreman/x', 'foreman/x-3')
+    assert.equal(await uniqueBranch('x', t.exists), 'foreman/x-2', 'takes the first gap')
+  }
+
+  // Bounded. A predicate that always says yes must terminate with something
+  // usable rather than spinning — and what it returns is still a valid ref.
+  {
+    const spun = await uniqueBranch('busy', async () => true)
+    assert.ok(spun.startsWith('foreman/busy-'), `bounded fallback: ${spun}`)
+    assert.equal(branchSlug(spun.slice('foreman/'.length)), spun.slice('foreman/'.length))
+  }
+
+  // The slug is passed through verbatim: branchSlug has already run on it, and
+  // re-slugging here would be a second writer of the same rule.
+  assert.equal(await uniqueBranch('agent', async () => false), 'foreman/agent')
+}
 
 console.log('policy: ok')

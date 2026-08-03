@@ -164,14 +164,17 @@ export default function Settings({ onClose }: { onClose: () => void }): React.JS
             </span>
           </label>
 
+          {/* No longer gated on `agentLifetime`. It used to be, because this only
+              ever applied to an agent left running after a quit — and the select
+              greying out is how a knob that now runs while the app is open would
+              have become unreachable for anyone who chose "Stop agents". */}
           <label>
             <span className="settings-lbl">
-              <Gauge size={12} /> Stop an unattended agent after
+              <Gauge size={12} /> Put an idle agent to sleep after
             </span>
             <select
               className="select"
               value={prefs.agentIdleMinutes}
-              disabled={prefs.agentLifetime !== 'persist'}
               onChange={(e) => setPrefs({ agentIdleMinutes: Number(e.target.value) })}
             >
               {IDLE_CHOICES.map((m) => (
@@ -180,9 +183,15 @@ export default function Settings({ onClose }: { onClose: () => void }): React.JS
                 </option>
               ))}
             </select>
+            {/* The old hint read "Only counts while nothing is attached", which
+                was the bug in one sentence: Foreman holds a socket to every agent
+                for as long as it is open, so the timer never started and a live
+                agent — around 2 GB of CLI, MCP servers and language server — was
+                never reclaimed. It counts while the app is open now. */}
             <span className="settings-hint">
-              Only counts while nothing is attached and no turn is running. Applies to agents
-              started from now on.
+              A sleeping agent gives its processes back; the conversation stays in the list and
+              reads exactly as it did. Sending a message starts it again. Never counts a running
+              turn, a waiting approval, or the conversation on screen.
             </span>
           </label>
 

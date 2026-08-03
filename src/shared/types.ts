@@ -197,6 +197,21 @@ export interface SessionMeta {
    * needs this one, not `id`.
    */
   sdkSessionId: string | null
+  /**
+   * No host behind this conversation: previewed from disk, or hibernated.
+   *
+   * RENDERER-OWNED. Main never sets it, because main's `sessions` map is
+   * `Map<id, HostClient>` and a HostClient *is* a live host — a hostless entry
+   * in there would muddy `sessionsUnder`, `callOr` and `replaySessions`, each of
+   * which is written on the assumption that membership means "there is a process
+   * to talk to". Main says a session went away (`evtHibernated`); the renderer
+   * decides that the row stays and what it now looks like.
+   *
+   * An asleep session's transcript comes from `IPC.sessionTranscript` on demand
+   * and its items are ordinary ChatItems, so nothing downstream of the store —
+   * Conversation included — needs to know about this at all.
+   */
+  asleep?: boolean
   /** Set when this session runs in its own worktree instead of the project cwd. */
   worktree?: WorktreeInfo
   /**
@@ -690,7 +705,16 @@ export interface Prefs {
    * is still adopted rather than orphaned.
    */
   agentLifetime: AgentLifetime
-  /** Minutes an unattended agent keeps running before stopping itself. 0 = forever. */
+  /**
+   * Minutes an idle agent keeps its processes before going to sleep. 0 = never.
+   *
+   * It used to mean "after the app has let go of it", which never happened:
+   * main holds a socket to every host for as long as Foreman is open, so the
+   * host's own idle timer was permanently disarmed and this number did nothing
+   * while the app ran. Main enforces it now — see sweepIdleSessions — and it
+   * enforces it as SLEEP rather than as a stop: the conversation stays in the
+   * rail, and sending to it starts the agent again.
+   */
   agentIdleMinutes: number
 
   // --- conversation behaviour ---
@@ -910,6 +934,20 @@ export const IPC = {
   evtDelta: 'session:delta',
   evtMeta: 'session:meta',
   evtRemoved: 'session:removed',
+  /**
+   * The host behind a session is gone, but the CONVERSATION is not.
+   *
+   * Deliberately not evtRemoved, and the difference is everything downstream:
+   * removed means the row goes and the worktree is reclaimed, this means the row
+   * stays and turns asleep. Emitted by the idle sweep, and by a host that
+   * disconnected without being asked to — a dead host degrades to a row you can
+   * wake rather than a row that lies about having an agent behind it.
+   */
+  evtHibernated: 'session:hibernated',
+  /** Renderer -> main: which session is on screen, so the idle sweep never
+   *  reclaims the one being read. Main has to hold this rather than asking the
+   *  renderer to veto, or main can believe it hibernated a session it did not. */
+  sessionActive: 'session:active',
   /** A queued user message left the queue: 'started' (now running) or 'dropped'. */
   evtQueue: 'session:queue',
 

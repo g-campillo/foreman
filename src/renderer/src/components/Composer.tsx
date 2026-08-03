@@ -6,6 +6,7 @@ import {
   GitBranch,
   ListChecks,
   ListPlus,
+  Moon,
   Pencil,
   Plus,
   SendToBack,
@@ -31,7 +32,7 @@ import {
 } from '../../../shared/types'
 import { useStore } from '../store'
 import { composerBox } from '../composerBox'
-import { baseName, filterEntries, recentProjects, tildePath, triggerAt } from '../derive.mts'
+import { baseName, branchLabel, filterEntries, recentProjects, tildePath, triggerAt } from '../derive.mts'
 import Autocomplete, { type Suggestion } from './Autocomplete'
 import MarkdownInput from './MarkdownInput'
 import type { MenuItem } from './Menu'
@@ -61,6 +62,14 @@ export const EFFORTS: { value: EffortLevel | ''; label: string }[] = [
 
 /** Cap on suggestions rendered at once — a 4000-file repo must not build 4000 rows. */
 const MAX_SUGGESTIONS = 50
+
+/** What a message SAYS, images dropped — branchLabel wants prose and an image
+ *  block carries a quarter-megabyte of base64. flatMap rather than filter,
+ *  because a filter does not narrow the SendBlock union. */
+const textOf = (content: SendContent): string =>
+  typeof content === 'string'
+    ? content
+    : content.flatMap((b) => (b.type === 'text' ? [b.text] : [])).join(' ')
 
 /** Drop a trailing context-window suffix: 'claude-opus-5[1m]' -> 'claude-opus-5'.
  *  Exported so the empty chat state resolves a display name the same way the
@@ -233,6 +242,7 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
   // collision means knowing what the other rows render as.
   const modelRows = useMemo(() => modelLabels(models), [models])
   const close = useStore((s) => s.close)
+  const wake = useStore((s) => s.wake)
   const openPath = useStore((s) => s.openPath)
   const openProject = useStore((s) => s.openProject)
   // Only for the picker's pre-first-turn fallback: the session was created with
@@ -291,8 +301,20 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
   const saveDraft = useStore((s) => s.saveDraft)
   const dropDraft = useStore((s) => s.dropDraft)
 
+  /**
+   * The session can still be moved into a worktree: nothing said yet, not
+   * already in one, and it HAS a host to move.
+   *
+   * `!session.asleep` is the load-bearing third clause. `fresh` is
+   * `items.length === 0`, which is true of an asleep row while its transcript is
+   * still being read — and permanently if sessionTranscript comes back empty,
+   * which it does on any read error. Ticking the box then ran hopThenSend:
+   * a brand-new empty session, followed by `close()` on the asleep one. The
+   * conversation being read would vanish and be replaced by an empty one.
+   */
+  const canWorktree = fresh && !session.worktree && !session.asleep
   /** Ticked for THIS session, and it still has somewhere to go. */
-  const wantWorktree = wantFor === session.id && fresh && !session.worktree
+  const wantWorktree = wantFor === session.id && canWorktree
 
   const busy = session.status === 'running' || session.status === 'awaiting-approval'
   /** Nothing to send. Drives both the disabled state and its tooltip. */
@@ -351,8 +373,8 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
   // exactly the ones you want to mention. Refetched when a mention opens rather
   // than once per session, which is one git call per `@` typed, not per keystroke.
   useEffect(() => {
-    if (mentioning) void window.foreman.projectFiles(session.id).then(setFiles)
-  }, [mentioning, session.id])
+    if (mentioning) void window.foreman.projectFiles(session.id, session.cwd).then(setFiles)
+  }, [mentioning, session.id, session.cwd])
 
   /** The mention has left the project: `@/Users/…` or `@~/…`. Null otherwise. */
   const browsing = mentioning && /^[~/]/.test(trigger.query) ? trigger.query : null
@@ -453,7 +475,34 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
       return
     }
 
+    // Sending is the only thing that needs an agent, so it is the only thing
+    // that starts one. Reading the conversation costs nothing.
+    if (session.asleep) {
+      void wakeThenSend(content)
+      return
+    }
+
     void send(content)
+    clearDraft()
+  }
+
+  /**
+   * The asleep conversation, woken by the message that needs it.
+   *
+   * WAKE, THEN SEND — the same create-then-act ordering hopThenSend uses below
+   * and for the same reason: if starting the host fails, the draft and the
+   * attachments are all still here and the notice says why.
+   *
+   * The id is passed EXPLICITLY rather than left to the store's activeId. Waking
+   * boots a host, a CLI and an MCP fleet — seconds — and wake() repoints
+   * activeId only if the user has not moved in the meantime. Without this, one
+   * rail click during the wait delivers the message to whichever conversation
+   * they moved to.
+   */
+  const wakeThenSend = async (content: SendContent): Promise<void> => {
+    const woken = await wake(session.id)
+    if (!woken) return
+    await send(content, woken.id)
     clearDraft()
   }
 
@@ -483,21 +532,31 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
    * session, the draft and the attachments are all still here, and openPath has
    * already put git's reason in the rail notice.
    *
-   * No id threading: `send` reads the store's activeId, which openPath has
-   * already repointed at the new session. The message itself is `content`,
-   * captured before any of this — it does NOT ride on the composer's text, which
-   * the per-session draft swap clears the moment the session changes under it.
+   * The new session's id IS threaded through to `send`, where this used to lean
+   * on the store's activeId. openPath does repoint it — but a rail click between
+   * the create and the send would repoint it again, and the message would land
+   * in someone else's conversation. The message itself is `content`, captured
+   * before any of this — it does NOT ride on the composer's text, which the
+   * per-session draft swap clears the moment the session changes under it.
    */
   const hopThenSend = async (content: SendContent): Promise<void> => {
     // Not a worktree yet, so cwd is the project directory — the right base. The
     // branch name is derived rather than prompted: a checkbox that opens a text
     // field isn't a checkbox. Never blank — branchSlug('') makes a degenerate ref.
-    const name = session.title?.trim() || `session-${Date.now().toString(36)}`
+    //
+    // FROM THE MESSAGE, not from `session.title`. The title of a fresh
+    // conversation is `basename(cwd)`, so every worktree in a project asked for
+    // the same branch and the second one failed outright. What the user just
+    // typed is both unique enough and the only thing on screen that says what
+    // this agent is for. The title falls in behind it for the rare message with
+    // no words in it at all — see branchLabel.
+    const name =
+      branchLabel(textOf(content)) || session.title?.trim() || `session-${Date.now().toString(36)}`
     const moved = await openPath(session.cwd, name)
     if (!moved) return
 
     await close(session.id)
-    await send(content)
+    await send(content, moved.id)
     setWantFor(null)
     clearDraft()
   }
@@ -584,7 +643,9 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
      are standing on, and git's own status says it in those words. Still falls
      back to `no branch` before the first read, which is all the store's null
      branch can honestly claim. */
-  const branchLabel =
+  /* Named for what it holds rather than where it is drawn: `branchLabel` is the
+     derivation that names a NEW branch from a message, imported above. */
+  const currentBranch =
     branch ??
     session.worktree?.branch ??
     (branchList?.detachedAt ? `detached at ${branchList.detachedAt}` : 'no branch')
@@ -626,7 +687,7 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
         // at all. A menu that opens empty reads as broken; this reads as loading.
         [
           { kind: 'section' as const, label: 'Branch' },
-          { id: 'current', label: branchLabel, icon: <GitBranch size={14} />, checked: true },
+          { id: 'current', label: currentBranch, icon: <GitBranch size={14} />, checked: true },
         ]
 
   const current =
@@ -703,7 +764,7 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
     <Picker
       className="composer-branch"
       icon={<GitBranch size={12} />}
-      label={branchLabel}
+      label={currentBranch}
       items={branchItems}
       ariaLabel="Branch"
       tip="Branch this session is working on — pick another to check it out"
@@ -1003,6 +1064,18 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
             </button>
           </>
         )}
+        {/* Said BEFORE the click rather than after, and beside send rather than
+            in a modal: starting an agent takes a few seconds and about 2 GB, so
+            it is worth knowing that ⏎ is what does it. A label, not a button —
+            the send button is still the control, this just names what it will
+            do. Gone the instant the session is awake. */}
+        {session.asleep && (
+          <span className="composer-wake" data-tip="This conversation has no agent running">
+            <Moon size={12} />
+            Send to wake
+          </span>
+        )}
+
         {/* Icon-only: this is the core loop, bound to ⏎ and pressed hundreds of
             times a session — the two glyphs read the state better than the two
             words did, and the word was pure chrome. ArrowUp rather than a paper
@@ -1015,9 +1088,11 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
           data-tip={
             empty
               ? 'Type a message first'
-              : busy
-                ? 'Queue this message — the agent picks it up when the turn ends  ⏎'
-                : 'Send  ⏎'
+              : session.asleep
+                ? 'Start the agent and send this  ⏎'
+                : busy
+                  ? 'Queue this message — the agent picks it up when the turn ends  ⏎'
+                  : 'Send  ⏎'
           }
         >
           <button
@@ -1056,8 +1131,9 @@ export default function Composer({ session }: { session: SessionMeta }): React.J
             happens until ⏎, and unticking it costs nothing.
 
             Only offered while the session can still move: its cwd is fixed at
-            creation, so once a message exists there is nowhere to go. */}
-        {fresh && !session.worktree && (
+            creation, so once a message exists there is nowhere to go — and an
+            asleep session has no host to move. See `canWorktree`. */}
+        {canWorktree && (
           <label className="composer-worktree" data-tip="Run this in its own worktree and branch">
             <input
               type="checkbox"
