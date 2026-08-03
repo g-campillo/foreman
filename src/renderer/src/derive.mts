@@ -93,6 +93,12 @@ function normaliseStatus(raw: unknown): TodoStatus {
  *
  * TaskCreate assigns the id in its *result*, not its input, so this string is
  * the only place the id↔task mapping exists on the renderer side.
+ *
+ * It parses TWO INDEPENDENT ID SPACES with one regex, and they collide: a
+ * subagent numbers its own tasks from 1 exactly as the parent does. Nothing in
+ * this string says which thread wrote it and nothing here tries to guess — the
+ * caller keeps them apart by `parentId`, and a "3" from a subagent is only ever
+ * looked up inside that subagent's own frame.
  */
 function createdId(result: string | undefined): string | null {
   const m = /task\s*#(\d+)/i.exec(result ?? '')
@@ -118,6 +124,77 @@ function parseTodoWrite(input: Record<string, unknown> | null): Todo[] | null {
 }
 
 /**
+ * The join key between two id spaces that have nothing in common but text.
+ *
+ * A subagent numbers its tasks from 1 exactly as its parent does, so the only
+ * thing the two threads share about a step is its WORDING — which is why the
+ * prompts in main/agent/plan.ts insist the wording be copied, not summarised.
+ * This normalises away what a model varies without meaning anything by it:
+ * casing, the backticks and asterisks it sprinkles over identifiers, the
+ * whitespace a re-wrapped line leaves behind, a "1. " it re-adds after being
+ * told to keep plan order, and a trailing full stop.
+ *
+ * Deliberately does NOT strip `_` (snake_case identifiers are step text, not
+ * emphasis) or internal punctuation. Everything removed here is noise a model
+ * adds; nothing that carries meaning is, BECAUSE A FALSE MERGE TICKS OFF A STEP
+ * NOBODY DID — the one failure in this fold the user cannot see. A miss, by
+ * contrast, leaves a row visibly pending, and ORCHESTRATION's step 5 (in
+ * main/agent/plan.ts) exists to close those.
+ *
+ * The leading-number strip requires whitespace after the delimiter, so a step
+ * that opens with a version ("3.11 drops…") keeps its own number.
+ */
+function subjectKey(subject: string): string {
+  return subject
+    .toLowerCase()
+    .replace(/[`*]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/^\d{1,3}\s*[.)]\s+/, '')
+    .replace(/[.,;:!]+$/, '')
+    .trim()
+}
+
+/**
+ * One subagent's private task namespace.
+ *
+ * Keyed by the `parentId` every item a subagent emits carries — the id of its
+ * own Task card — which is the only thing keeping the id spaces apart, and it
+ * is enough for all three shapes this has to survive: delegations in sequence,
+ * delegations in parallel, and a subagent inside a subagent. Each gets its own
+ * card, so each gets its own frame without any of them knowing about the rest.
+ */
+interface Frame {
+  /** child task id → `subjectKey` of the subject it was created with. */
+  subjects: Map<string, string>
+  /** child task id → 0-based creation index, for the positional fallback. */
+  order: Map<string, number>
+  /**
+   * The plan's key order as it stood when this frame's FIRST create landed, and
+   * the ONLY thing the positional fallback may index into.
+   *
+   * A snapshot rather than the live map, because the parent goes on editing the
+   * list while the subagent works — CHECKLIST (main/agent/plan.ts) tells it in
+   * so many words to delete a step the plan turned out not to need. A delete
+   * does two things at once to the live map: it shrinks `size` back past the
+   * count guard, and it slides every later row up one index. Together those tick
+   * off rows nobody worked on, which is the one failure in this fold the user
+   * cannot see.
+   *
+   * Frozen here, the nth key is either the row it named when this frame opened
+   * or gone from `byId` altogether — never a DIFFERENT row. That holds because
+   * parent creates only append, deletes only remove, and TodoWrite, the one call
+   * that re-keys existing rows, empties this.
+   */
+  plan: string[]
+  /** Creates seen. Stands in for an id whose result is late, and guards the
+   *  fallback — a frame that is not the same length as the plan is not it. */
+  count: number
+  /** One subject matched a parent row, so this subagent CAN quote the plan. */
+  anchored: boolean
+}
+
+/**
  * The agent's current plan, or null when there's nothing worth pinning.
  *
  * Folds the transcript rather than reading one call, because the installed SDK
@@ -125,6 +202,41 @@ function parseTodoWrite(input: Record<string, unknown> | null): Todo[] | null {
  * (one call per status change), so the list only exists as the sum of events.
  * TodoWrite is still handled — it's a whole-list rewrite, so it resets the fold —
  * since other model or tool configurations may still emit it.
+ *
+ * TWO ID SPACES, JOINED ON TEXT. A subagent's task calls arrive here too,
+ * tagged with `parentId`, under ids that collide with the parent's — both are
+ * 1-based and monotonic within their own process. They used to be dropped, and
+ * that drop is why the strip sat perfectly still through an entire delegated
+ * implementation: ORCHESTRATION has the parent spawn one implementer for the
+ * whole plan and WAIT for it, so the parent regains control only at the moment
+ * everything ticks at once. So the two are merged instead, on the one thing
+ * they share (see `subjectKey`), under a division of powers:
+ *
+ *  - The MAIN THREAD OWNS THE LIST'S SHAPE. Only it creates rows, deletes them
+ *    and fixes their order, and each row's subject is indexed into `bySubject`,
+ *    where the first row still standing wins.
+ *  - A SUBAGENT MAY ONLY MOVE A ROW'S STATUS. Its TaskCreate records a subject
+ *    and an order in its `Frame` and adds nothing; its TaskUpdate resolves
+ *    child id → subject → parent row, and drops when nothing matches; its
+ *    'deleted' is ignored, and so is a TodoWrite it sends.
+ *  - POSITIONAL FALLBACK, for a subagent that reworded every step and therefore
+ *    matched nothing: it still worked through them in plan order, so if its
+ *    frame holds exactly as many tasks as the plan had rows WHEN THE FRAME
+ *    OPENED, its nth task is the nth row of that snapshot (see `Frame.plan` —
+ *    counting or indexing against the live map lets a parent delete tick off
+ *    rows nobody touched). A single anchor turns this off for the frame — one
+ *    good match proves the subagent can quote the plan, which makes a later miss
+ *    a step of its own rather than a rewording, and guessing there would tick
+ *    off work nobody did.
+ *
+ * Three invariants hold whatever a subagent does with its own list. Render
+ * order is always the parent's insertion order, because a `Map.set` on an
+ * existing key does not move it — so out-of-order work still paints in plan
+ * order. A child subject matching nothing is dropped, never appended: the user
+ * is watching the plan they approved, not a delegation's private breakdown of
+ * it. And this is a pure re-derivation over the whole item list, so a counter
+ * standing in for an id whose result has not landed yet self-corrects the
+ * instant it does.
  *
  * Tolerant by necessity: every field here is agent-authored JSON that reaches
  * the renderer as `unknown`, so malformed entries drop out rather than throwing
@@ -139,33 +251,133 @@ function parseTodoWrite(input: Record<string, unknown> | null): Todo[] | null {
  */
 export function latestTodos(items: readonly ChatItem[]): Todo[] | null {
   const byId = new Map<string, Todo>()
+  /** `subjectKey` → the key in `byId` of the first LIVE row that used it. Two
+   *  steps worded identically therefore share a row: the second stays pending,
+   *  which under-reports rather than ticking off a step nobody did.
+   *
+   *  "Live" is the load-bearing word, and first-wins alone did not give it.
+   *  Delete a row and its key stays behind here, shadowing every later step
+   *  worded the same way — a subagent could quote one of those exactly and still
+   *  move nothing, which is precisely what the parent dropping a step and
+   *  re-adding it looks like. So a create TAKES OVER an entry whose row has gone
+   *  from `byId`: only a row that is still there keeps its claim on a subject. */
+  const bySubject = new Map<string, string>()
+  const frames = new Map<string, Frame>()
   let created = 0
 
   for (const item of items) {
     if (item.kind !== 'tool') continue
-    // Subagent tasks are the subagent's own plan, under ids that collide with
-    // the parent's — both are 1-based and monotonic within their own process —
-    // so folding them in here would overwrite the list the user is watching
-    // with rows from a delegation they cannot see.
-    if (item.parentId) continue
     const input = (item.input ?? null) as Record<string, unknown> | null
+
+    if (item.parentId) {
+      if (item.name === 'TaskCreate') {
+        if (typeof input?.subject !== 'string') continue
+        let frame = frames.get(item.parentId)
+        if (!frame) {
+          // The plan is snapshotted HERE, once, and never refreshed: this is the
+          // list the subagent was handed, and the fallback's whole claim is that
+          // it is walking THAT list in order.
+          frame = {
+            subjects: new Map(),
+            order: new Map(),
+            plan: [...byId.keys()],
+            count: 0,
+            anchored: false,
+          }
+          frames.set(item.parentId, frame)
+        }
+        frame.count += 1
+        const subject = subjectKey(input.subject)
+        // Same standin as the parent's counter below, in the subagent's own
+        // 1-based space — which is exactly why it needs the frame around it.
+        const key = createdId(item.result) ?? String(frame.count)
+        frame.subjects.set(key, subject)
+        frame.order.set(key, frame.count - 1)
+        if (bySubject.has(subject)) frame.anchored = true
+      } else if (item.name === 'TaskUpdate') {
+        const frame = frames.get(item.parentId)
+        const raw = input?.taskId
+        const key = typeof raw === 'string' || typeof raw === 'number' ? String(raw) : null
+        const subject = frame && key !== null ? frame.subjects.get(key) : undefined
+        let target = subject === undefined ? undefined : bySubject.get(subject)
+        // A subject that resolves HERE is the same proof a create gives — this
+        // subagent can quote the plan — and it is the only proof available when
+        // the parent's row landed after the child's create, which is the case
+        // the create-time check cannot see. Without this such a frame goes on
+        // guessing for the rest of its life.
+        if (frame && target !== undefined) frame.anchored = true
+        // Nothing matched. If NOTHING in this frame ever has, and it holds one
+        // task per row of the plan it opened against, the subagent reworded the
+        // plan wholesale and is still walking it in order — so take its nth task
+        // as the nth row of that snapshot. Never of the live map: see
+        // `Frame.plan` for what a parent delete does to both the count and the
+        // index.
+        if (frame && key !== null && !frame.anchored && target === undefined) {
+          const i = frame.count === frame.plan.length ? frame.order.get(key) : undefined
+          if (i !== undefined) target = frame.plan[i]
+        }
+        const prev = target === undefined ? undefined : byId.get(target)
+        // Both routes above end in a KEY, and this lookup is the single place
+        // either of them fails: a row the parent has since deleted leaves its
+        // key behind in `bySubject` and in the frame's snapshot alike, and
+        // neither has a row behind it any more — so a subagent cannot revive
+        // one. Nothing about the anchor check sitting before the count check
+        // buys that, and it never did; the fallback runs only when both pass, so
+        // neither is "first" in any sense that matters, and a frame that can
+        // quote its subjects has already resolved and never arrives there.
+        // 'deleted' from a subagent is refused for the same reason the deletion
+        // itself would be: removal is the list's shape, and the shape is the
+        // main thread's.
+        if (prev && target !== undefined && input && 'status' in input) {
+          if (typeof input.status !== 'string' || input.status.toLowerCase() !== 'deleted') {
+            byId.set(target, { ...prev, status: normaliseStatus(input.status) })
+          }
+        }
+      }
+      // Anything else a subagent sends — including a TodoWrite, which claims to
+      // replace the whole list — is not this list's business.
+      continue
+    }
 
     if (item.name === 'TodoWrite') {
       const list = parseTodoWrite(input)
       if (!list) continue
       byId.clear()
+      bySubject.clear()
       created = 0
-      list.forEach((t, i) => byId.set(`w${i}`, t))
+      list.forEach((t, i) => {
+        byId.set(`w${i}`, t)
+        const subject = subjectKey(t.content)
+        if (!bySubject.has(subject)) bySubject.set(subject, `w${i}`)
+      })
+      // `frames` deliberately survives: a rewrite of the parent's list says
+      // nothing about which id a subagent gave which subject, and the subjects
+      // it already recorded re-resolve against the new index for free.
+      //
+      // Their POSITIONAL pictures do not survive, and that exception is what
+      // keeps `Frame.plan`'s invariant true. A rewrite re-keys every row from
+      // `w0`, so an old snapshot's nth key can now name a completely different
+      // row — the one way a stale key resolves to something rather than to
+      // nothing. Emptied, the count guard can never pass again for these frames,
+      // and they are left with the subjects they can prove.
+      for (const f of frames.values()) f.plan = []
     } else if (item.name === 'TaskCreate') {
       if (typeof input?.subject !== 'string') continue
       created += 1
       // The result hasn't arrived yet while the call is still pending; the ids
       // observed are 1-based in creation order, so the counter matches.
-      byId.set(createdId(item.result) ?? String(created), {
+      const key = createdId(item.result) ?? String(created)
+      byId.set(key, {
         content: input.subject,
         status: 'pending',
         activeForm: typeof input.activeForm === 'string' ? input.activeForm : undefined,
       })
+      const subject = subjectKey(input.subject)
+      // First wins, except over a row that is no longer there: a deleted row's
+      // key would otherwise shadow this one out of the strip permanently, and
+      // the parent re-adding a step it had removed is exactly when that happens.
+      const held = bySubject.get(subject)
+      if (held === undefined || !byId.has(held)) bySubject.set(subject, key)
     } else if (item.name === 'TaskUpdate') {
       const raw = input?.taskId
       const key = typeof raw === 'string' || typeof raw === 'number' ? String(raw) : null
@@ -931,11 +1143,12 @@ export function toolVerb(name: string, pending = false): string {
 /**
  * Nouns, singular and plural.
  *
- * The counterpart to TOOL_VERB, for the folded run head — `12 steps · 5 reads,
- * 4 commands`. Same tuple shape and the same rule for the same reason: a table
- * of pairs is what stops `1 read` rendering as `1 reads`, and a name absent from
- * it falls back to the tool's own name rather than an invented noun, because an
- * invented noun for a tool we know nothing about misdescribes it.
+ * The counterpart to TOOL_VERB, for the folded run head and for the line a
+ * collapsed subagent wears — `12 steps · 5 reads, 4 commands`. Same tuple shape
+ * and the same rule for the same reason: a table of pairs is what stops `1 read`
+ * rendering as `1 reads`, and a name absent from it falls back to the tool's own
+ * name rather than an invented noun, because an invented noun for a tool we know
+ * nothing about misdescribes it.
  *
  * Coarser than TOOL_VERB on purpose. Glob and Grep are both `searches` and every
  * edit tool is `edits`, because the head is a count of what kind of work
@@ -954,6 +1167,12 @@ const TOOL_NOUN: Record<string, readonly [singular: string, plural: string]> = {
   WebSearch: ['lookup', 'lookups'],
   Skill: ['skill', 'skills'],
   ToolSearch: ['tool load', 'tool loads'],
+  /* A delegation never joins a run — joinsRun keeps it out — so these two only
+     ever count inside a SUBAGENT'S OWN nest, whose summary is taken over every
+     row rather than over one run. Missing, two sub-delegations there read
+     `2 Task`, which is the fallback misdescribing the one tool it names. */
+  Agent: ['delegation', 'delegations'],
+  Task: ['delegation', 'delegations'],
 }
 
 // ---------------------------------------------------------- tool arguments
@@ -1319,8 +1538,14 @@ export interface RunSummary {
   /** Calls in the run. `steps - sum(groups[].n)` is the `+N more` remainder. */
   steps: number
   /** At most MAX_RUN_GROUPS, in first-appearance order. `label` is the noun
-   *  alone — the caller prints `${n} ${label}`. */
-  groups: { label: string; n: number }[]
+   *  alone — the caller prints `${n} ${label}`.
+   *
+   *  `mcp` is provenance, and it is carried as DATA rather than re-derived by
+   *  whoever renders the chip, because past this function a group is a noun and
+   *  a count: `brain calls` is indistinguishable from a tool literally named
+   *  that. The single tool row already leads with the protocol's mark (see
+   *  ToolLine); the fold would otherwise be the one place that throws that away. */
+  groups: { label: string; n: number; mcp: boolean }[]
   failed: number
   added: number
   removed: number
@@ -1358,6 +1583,8 @@ export interface RunSummary {
 export function runSummary(rows: readonly Row[]): RunSummary {
   interface Bucket {
     noun: readonly [singular: string, plural: string]
+    /** Whether the calls in it came over MCP, carried out to the chip. */
+    mcp: boolean
     n: number
     /** Index of first appearance, which is the tie-break and the live order. */
     at: number
@@ -1385,16 +1612,20 @@ export function runSummary(rows: readonly Row[]): RunSummary {
     removed += stat.removed
 
     const noun = nounFor(item.name)
+    // One call, used twice: it decides the bucket AND rides out on the group, so
+    // the caller never has to ask the question again against a noun that no
+    // longer names the tool.
+    const mcp = mcpName(item.name) !== null
     // THE NOUN IS THE KEY, not the tool name: Edit, Write and NotebookEdit are
     // one bucket because they are one noun, which is what makes the head read
     // `3 edits` instead of `1 edit, 1 edit, 1 edit`. The `mcp:` prefix keeps the
     // two namespaces apart rather than resolving any particular collision — a
     // server's noun is `<server> calls`, so nothing can literally clash today,
     // and this is what keeps that true if either side of nounFor changes.
-    const key = mcpName(item.name) ? `mcp:${noun[1]}` : noun[1]
+    const key = mcp ? `mcp:${noun[1]}` : noun[1]
     const seen = buckets.get(key)
     if (seen) seen.n += 1
-    else buckets.set(key, { noun, n: 1, at: i })
+    else buckets.set(key, { noun, mcp, n: 1, at: i })
   }
 
   // Two passes, and the order of them is the point. Pick the five biggest, then
@@ -1406,7 +1637,7 @@ export function runSummary(rows: readonly Row[]): RunSummary {
 
   return {
     steps,
-    groups: top.map((b) => ({ label: b.noun[b.n === 1 ? 0 : 1], n: b.n })),
+    groups: top.map((b) => ({ label: b.noun[b.n === 1 ? 0 : 1], n: b.n, mcp: b.mcp })),
     failed,
     added,
     removed,

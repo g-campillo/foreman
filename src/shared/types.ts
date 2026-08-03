@@ -730,7 +730,9 @@ export interface Prefs {
   maxTurns: number
 }
 
-/** Appearance knobs the renderer persists and applies as CSS custom properties. */
+/** Appearance knobs the renderer persists and applies as CSS: custom properties
+ *  mostly, and attributes for the two a property cannot express — see railOpen
+ *  and trafficLights. */
 export interface Appearance {
   /**
    * Session rail width in px, as the user dragged it.
@@ -757,6 +759,17 @@ export interface Appearance {
    * control.
    */
   transcriptWidth: 'comfortable' | 'wide' | 'full'
+  /**
+   * Whether the session rail is showing at all. ⌘B.
+   *
+   * Beside the widths because it is the same kind of thing — where the user left
+   * the furniture — but it is the one Appearance key that does NOT ride out as a
+   * custom property. Collapsing takes the rail out of the grid entirely, and the
+   * rail is the FIRST track: a width of zero would still leave the column there
+   * for its divider and its resize seam to sit in. So App renders it as an
+   * attribute on `.app`, exactly as it does the open panel.
+   */
+  railOpen: boolean
   /**
    * 'auto' follows the OS live via matchMedia; the other two pin it.
    *

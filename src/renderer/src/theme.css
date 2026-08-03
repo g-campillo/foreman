@@ -191,6 +191,12 @@
      the toolbar gone this only has to clear the traffic lights, and main's
      trafficLightPosition.y is set to centre them in it — change both together. */
   --titlebar-h: 35px;
+  /* What the leftmost header strip reserves for the macOS window buttons. A
+     token rather than a number inside .rail-head, because WHICH header is
+     leftmost changes: the rail's normally, the chat pane's the moment ⌘B
+     collapses the rail out of the grid. One escape hatch for hidden buttons
+     (see :root[data-no-traffic-lights]) instead of one per carrier. */
+  --traffic-w: 84px;
 
   --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, sans-serif;
   --mono: 'SF Mono', ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -504,6 +510,41 @@ select {
   display: none;
 }
 
+/* Rail collapsed — ⌘B. Same idiom as the rule above, with one difference that
+   forces its own template rather than `display: none` alone: THE RAIL IS THE
+   FIRST TRACK. Dropping a grid item does not drop its track, it shifts every
+   later item back one — so the chat would inherit --rail-w and the panel the
+   1fr. The right pane gets away with `display: none` on its own only because it
+   is last. Two states times two states, and the two-attribute rule is what
+   disambiguates them; it out-specifies both singles, so the order of those three
+   does not matter. The border rule at the bottom of this block is the one that
+   does — see there. */
+.app[data-rail='closed'] {
+  grid-template-columns: minmax(0, 1fr) var(--side-w);
+}
+.app[data-rail='closed']:not([data-panel]) {
+  grid-template-columns: minmax(0, 1fr);
+}
+.app[data-rail='closed'] > .rail,
+/* No rail to resize means no seam to grab — and removing the element is also
+   what makes a JS guard unnecessary in App's onSeamDown: it cannot fire. */
+.app[data-rail='closed'] > .rs-rail {
+  display: none;
+}
+/* The non-obvious one. `.app > .pane ~ .pane` paints a divider on a pane's
+   LEADING edge, and a sibling combinator does not care that the rail is
+   `display: none` — so without this a 1px hairline runs down the window's own
+   left edge, cutting across .app's 12px corner radius. Exactly the same
+   specificity as that rule, so it has to stay BELOW it. */
+.app[data-rail='closed'] > .pane-chat {
+  border-left: none;
+}
+/* ...and the traffic lights land here instead. Same reservation, handed to
+   whichever header is now leftmost — see --traffic-w. */
+.app[data-rail='closed'] > .pane-chat > .pane-head {
+  padding-left: var(--traffic-w);
+}
+
 /* Resize handles.
 
    The visible divider is still the grid's own 1px gap painted over the
@@ -684,13 +725,15 @@ select {
 }
 
 .rail-head {
-  padding-left: 84px; /* clears the traffic lights */
+  padding-left: var(--traffic-w); /* clears the traffic lights */
 }
 /* With the buttons hidden that reservation is an 84px hole, so fall back to
-   .pane-head's own padding. Set by applyAppearance, same mechanism as
-   data-theme. */
-:root[data-no-traffic-lights] .rail-head {
-  padding-left: 12px;
+   .pane-head's own padding. Written as the TOKEN rather than as a padding on
+   .rail-head: the chat pane's header carries the same reservation while the rail
+   is collapsed, and this has to reach both. Set by applyAppearance, same
+   mechanism as data-theme. */
+:root[data-no-traffic-lights] {
+  --traffic-w: var(--sp-3);
 }
 
 /* The scroll edges fade instead of being cut off — Cursor's .agent-sidebar-body
@@ -921,10 +964,17 @@ body[data-keys] .tip[data-show] {
   padding-right: 26px;
 }
 
-/* The icon-only exception. Settings is a 14px glyph in a ~25px button, so a cap
-   inside it would land on the icon; it corner-anchors instead, exactly as
-   `.tab .badge` does and into the same 12px of `.pane-head` padding that one was
-   measured against. */
+/* The icon-only exception. A `.tab` is a 14px glyph in a ~30x24px button, so a
+   cap centred in it would land on the icon; it corner-anchors instead, exactly
+   as `.tab .badge` does.
+
+   TWO CARRIERS NOW, at opposite ends of `.pane-head`, and the 4px overhang has
+   empty space to sit in at both. Settings is the trailing button and overhangs
+   into the 12px of `.pane-head` padding this was measured against; the rail
+   toggle is the LEADING one and overhangs into the header's own 8px flex gap,
+   stopping 4px short of `.pane-title`. `right` pins the cap's right edge, so a
+   longer cap grows back over its own button rather than any further toward the
+   neighbour — the 4px is the whole of the reach, whatever the cap says. */
 .tab[data-key]::after {
   top: -2px;
   right: -4px;
@@ -1305,9 +1355,15 @@ body[data-keys] .tip[data-show] {
    Re-establishing a column flex context inside the wrapper hands them back
    without touching the JSX. `display: contents` would also work, but it would
    erase the wrapper's own [data-flash] background and radius, which is the whole
-   point of having it. Direct child on purpose: nested subagent items are
-   rendered by the byParent recursion with no wrapper, so .tool-nest's
-   align-self overrides must not be caught by this. */
+   point of having it.
+
+   Still a DIRECT child, though the reason has changed sides: a subagent's rows
+   carry the same wrapper now (see ToolItem), so they need this pair as much as
+   the transcript does — and .tool-nest repeats it verbatim rather than this
+   selector losing its `>`. Losing it would hand the nest the content-visibility
+   rule below as well, and an off-screen containment box inside a nest that is
+   itself capped and scrolled buys nothing while making its height a guess. One
+   selector per surface, each opting into what it needs. */
 .convo > [data-item-id] {
   display: flex;
   flex-direction: column;
@@ -1720,10 +1776,13 @@ body[data-keys] .tip[data-show] {
    items a narrow pane squeezes, and the diff stat wraps before .run-groups —
    which can ellipsise — has given up a single character.
 
-   .run-failed is keyed off the head's attribute rather than the class alone,
-   mirroring `.tool-line[data-failed] .tool-arg`: the head carries the state, and
-   the count is only its rendering of it. */
-.run-head .diff-stat {
+   .run-failed is keyed off the CARRIER's attribute rather than the class alone,
+   mirroring `.tool-line[data-failed] .tool-arg`: the carrier holds the state and
+   the count is only its rendering of it. Two carriers now — the run head and a
+   collapsed subagent's .tool-sum, which renders the same chips from the same
+   component — so both selectors name both. */
+.run-head .diff-stat,
+.tool-sum .diff-stat {
   flex: none;
   white-space: nowrap;
 }
@@ -1731,7 +1790,8 @@ body[data-keys] .tip[data-show] {
   flex: none;
   white-space: nowrap;
 }
-.run-head[data-failed] .run-failed {
+.run-head[data-failed] .run-failed,
+.tool-sum[data-failed] .run-failed {
   color: rgb(var(--danger));
 }
 .run-chevron {
@@ -1796,15 +1856,23 @@ button.tool-line:hover {
   color: rgb(var(--text-dim));
 }
 
-/* The MCP mark, standing in for the literal word `MCP` at the head of an MCP
-   row's verb.
+/* The MCP mark, standing in for the literal word `MCP` — at the head of an MCP
+   row's verb, and at the head of an MCP chip on a folded run's breakdown.
 
-   .tool-line is `align-items: baseline`, and an inline SVG sits with its BOTTOM
-   EDGE on the baseline — so untouched it rides high above the text beside it.
-   The fix is on the glyph, not on the verb: making .tool-verb an inline-flex box
-   would fix this one row and break every other, because an inline-flex box takes
-   its baseline from its first item and an SVG has none, so the whole verb would
-   desynchronise from .tool-arg on every row in the transcript. */
+   TWO CARRIERS, TWO MECHANISMS, ONE FIX. On .tool-line the container is
+   `align-items: baseline`, and an inline SVG sits with its BOTTOM EDGE on the
+   baseline — so untouched it rides high above the text beside it. The fix is on
+   the glyph, not on the verb: making .tool-verb an inline-flex box would fix
+   this one row and break every other, because an inline-flex box takes its
+   baseline from its first item and an SVG has none, so the whole verb would
+   desynchronise from .tool-arg on every row in the transcript.
+
+   On .run-groups nothing is baseline-aligned — .run-head is `align-items:
+   center` — but the chips are not flex items of it: .run-groups is itself the
+   flex item, so it is blockified and its chips are ordinary inline content in a
+   line box. Which puts the mark back in exactly the situation above, as an
+   inline replaced element on a text baseline. Same shift, arrived at from the
+   other direction, so one rule serves both. */
 .tool-mark {
   display: inline-block;
   vertical-align: -0.15em;
@@ -1848,7 +1916,13 @@ button.tool-line:hover {
 /* A subagent's live status, on its own line under the delegation. Indented to
    the width of the verb column so it reads as belonging to the row above rather
    than as another tool call. Quaternary — it is a progress report, and it is
-   replaced every few seconds. */
+   replaced every few seconds.
+
+   It has a SIBLING below it now: .tool-sum, the summary a collapsed subagent
+   wears. The two share the indent and the size deliberately, so what the agent
+   is doing and what it has already done read as one block hanging off the row
+   rather than as two unrelated lines that happen to be nearby. Same order as a
+   folded run's head, which puts its live line under its own count. */
 .tool-status {
   padding-left: var(--sp-3);
   font-size: var(--fs-sm);
@@ -1857,6 +1931,30 @@ button.tool-line:hover {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* What a collapsed subagent says about the work behind it. Same chips as a
+   folded run's head, from the same component (see RunChips), so the two folds
+   report identically and this one picks up the MCP mark for free.
+
+   NOT a .run-head, and that is the point of it being its own class: a run head
+   is a button, this is a readout. Giving it the hover fill and the pointer would
+   promise a click it does not own — the row above it is the control, and it
+   already carries the chevron.
+
+   `align-items: center` rather than baseline, matching .run-head: the diff stat
+   is 11px mono next to 12px prose, and on a shared baseline the two look
+   misaligned rather than aligned. */
+.tool-sum {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  min-width: 0;
+  padding-left: var(--sp-3);
+  font-size: var(--fs-sm);
+  line-height: var(--convo-lh);
+  color: rgb(var(--text-faint));
+  font-variant-numeric: tabular-nums;
 }
 
 /* What the card used to be, now behind the click. Inset under the verb so it
@@ -1870,23 +1968,76 @@ button.tool-line:hover {
   border-left: 1px solid rgb(var(--stroke-3));
 }
 
+/* A subagent's whole transcript, under the row that delegated it.
+
+   A SCROLL CONTAINER AGAIN, and the history is why that is safe this time. It
+   used to be max-height:460px + overflow-y:auto, and that pair was deleted for
+   a real reason: it made the nest a second scrollport inside .convo while
+   NOTHING EVER SCROLLED IT. .convo autoscrolled, the nest did not, and a
+   streaming subagent sat frozen on its opening lines with its live output
+   thousands of pixels below its own fold. What was missing was never the cap —
+   it was the pin. ToolLine hands the nest useTailPin now, which is .convo's own
+   following contract applied to this element, so the second scrollport scrolls
+   itself.
+
+   Uncapped, an expanded subagent is unbounded, and the thing it pushes off the
+   top of the screen first is the row that collapses it: the only control that
+   can put it away is the one it just took away. 50vh keeps it to half the pane
+   at any window size; the 560px is what stops it growing with a tall display
+   past what can be read in one glance.
+
+   It also improves the containment above it. The Task's own [data-item-id]
+   wrapper has content-visibility: auto, so a bounded height is a bounded
+   `contain-intrinsic-size: auto` — scrolling past a big open subagent stops
+   lurching the scrollbar. */
 .tool-nest {
   display: flex;
   flex-direction: column;
   gap: var(--convo-gap);
+  max-height: min(50vh, 560px);
+  overflow-y: auto;
+  /* Not redundant with overflow-y, the same quirk .convo handles: with one axis
+     non-visible the other computes to `auto`, leaving a latent horizontal
+     scroller across the whole nest. */
+  overflow-x: hidden;
+  /* A wheel that reaches the end of the nest stops there. Without this it chains
+     to .convo and the transcript lurches out from under the subagent the user
+     was reading — a gesture aimed at one thing moving another. */
+  overscroll-behavior: contain;
+}
+/* A subagent that spawned a subagent. ONE scrollport, not a stack of them:
+   nested caps would put a 560px scroller inside a 560px scroller, each with its
+   own tail pin, and a wheel whose target depends on where the pointer happened
+   to be. The outermost is also the only one scrollportOf will hand back, for the
+   same reason. */
+.tool-nest .tool-nest {
+  max-height: none;
+  overflow: visible;
 }
 /* Same reason as .convo > *: these must keep their natural height rather than
-   being squashed by the column flex.
-
-   Deliberately NOT a scroll container. It used to be max-height:460px +
-   overflow-y:auto, which made a subagent's transcript a second scrollport
-   nested inside .convo — and .convo autoscrolls while nothing ever scrolled
-   the nest, so a streaming subagent stayed frozen on its opening lines with
-   its live output thousands of pixels below the fold. Letting the nest take
-   its natural height hands the job back to .convo, which already does it. */
+   being squashed by the column flex, and let the nest scroll instead. */
 .tool-nest > * {
   flex-shrink: 0;
 }
+
+/* A subagent's rows go through the same `Rows` the transcript's do, so they
+   arrive [data-item-id]-wrapped — which means they need the same pair of rules
+   `.convo > [data-item-id]` gets, for the same two reasons.
+
+   The wrapper is the flex item now, not the message, so the align-self override
+   below is dead until a column context is re-established inside it. And the
+   second rule is NOT OPTIONAL: `[hidden] { display: none }` is a (0,1,0)
+   user-agent declaration and loses outright to the `display: flex` above it, so
+   a run folding inside a subagent would set the attribute, announce its rows as
+   hidden, and paint them anyway. */
+.tool-nest > [data-item-id] {
+  display: flex;
+  flex-direction: column;
+}
+.tool-nest > [data-item-id][hidden] {
+  display: none;
+}
+
 /* A subagent's own prompt echo would sit right-aligned like a user message and
    read as something you typed. Keep it in the flow instead. */
 .tool-nest .msg-user {

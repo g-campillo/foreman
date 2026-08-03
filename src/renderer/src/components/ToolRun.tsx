@@ -1,8 +1,9 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { createContext, Fragment, useContext, useEffect, useMemo, useState } from 'react'
 import { ChevronDown } from 'lucide-react'
-import type { Row } from '../derive.mts'
+import type { Row, RunSummary } from '../derive.mts'
 import { runSummary, summarise, toolVerb } from '../derive.mts'
-import { atBottom } from './ScrollDown'
+import { atBottom, scrollportOf } from './ScrollDown'
+import McpMark from './McpMark'
 
 /**
  * Whether the rows being rendered are inside a COLLAPSED run.
@@ -57,8 +58,10 @@ export const RevealContext = createContext<{
  * rendered by Conversation's `Rows`, because each one needs `Item` — and `Item`
  * lives in Conversation, so mapping them here would make the two modules a
  * cycle. A Fragment, not a wrapper, for the same reason `Turn` uses one: the
- * `[data-item-id]` wrappers have to stay direct `.convo` children or the
- * `.convo > [data-item-id]` rules stop applying.
+ * `[data-item-id]` wrappers have to stay direct children of whichever column
+ * they sit in — `.convo` in the transcript, `.tool-nest` inside a subagent,
+ * since a run folds in there too now — and both surfaces key their flex and
+ * `hidden` rules off that `>`.
  */
 export default function ToolRun({
   id,
@@ -90,12 +93,6 @@ export default function ToolRun({
   // row underneath renders exactly as it always did.
   const folds = rows.length >= 2
 
-  // Remaining CALLS, not remaining kinds, so the arithmetic against `N steps`
-  // adds up for whoever reads the line. runSummary has already capped and
-  // ordered `groups`; the cut is its decision, not a rendering one, because
-  // which five survive has to be checkable.
-  const more = sum.steps - sum.groups.reduce((n, g) => n + g.n, 0)
-
   /* The head's second line. The verb carries the tense — Cursor ships no
      spinner on any of this — and the rolling progress replaces the argument
      when the tool has one, exactly as it does on the row itself. */
@@ -111,17 +108,24 @@ export default function ToolRun({
     : ''
 
   /* Expanding twenty rows adds a few hundred pixels below the fold, so a
-     transcript that was sitting at the bottom is suddenly no longer there —
-     and nothing else will put it back, because the autoscroll effect watches
-     `items` and no item changed. Only when the user was already following;
-     scrolling someone who had deliberately scrolled back is the one thing
-     autoscroll must never do. Measured from the DOM before the toggle, which is
-     what `pinned` means anyway. */
+     scroller that was sitting at the bottom is suddenly no longer there — and
+     nothing else will put it back, because the autoscroll effect watches `items`
+     and no item changed. Only when the user was already following; scrolling
+     someone who had deliberately scrolled back is the one thing autoscroll must
+     never do. Measured from the DOM before the toggle, which is what `pinned`
+     means anyway.
+
+     WHICHEVER scroller that is. This used to say `.convo`, which stopped being
+     the answer when a subagent's nest gained a cap: a run inside an open
+     delegation is in the nest's scrollport, not the transcript's, and moving the
+     transcript instead would leave the rows it just expanded exactly where they
+     were. scrollportOf resolves the two — and see there for why `closest` is not
+     what does it. */
   const toggle = (e: React.MouseEvent<HTMLButtonElement>): void => {
-    const el = e.currentTarget.closest('.convo')
-    const following = el instanceof HTMLElement && atBottom(el)
+    const el = scrollportOf(e.currentTarget)
+    const following = el !== null && atBottom(el)
     setOpen((v) => !v)
-    if (el instanceof HTMLElement && following)
+    if (el && following)
       requestAnimationFrame(() => {
         el.scrollTop = el.scrollHeight
       })
@@ -142,29 +146,9 @@ export default function ToolRun({
             data-failed={sum.failed > 0 ? '' : undefined}
             onClick={toggle}
           >
-            {/* A span, NOT a bare text node. Loose text in a flex container
-                becomes an anonymous flex item, which no selector can reach — so
-                `flex: none` and `white-space: nowrap` could not be applied to
-                it, and the step count was the first thing a flex line squeezed:
-                it wrapped to `10` over `steps` and doubled the head's height
-                while .run-groups, which can ellipsise, gave up nothing. */}
-            <span className="run-steps">{sum.steps} steps</span>
-            {sum.groups.length > 0 && (
-              <span className="run-groups">
-                · {sum.groups.map((g) => `${g.n} ${g.label}`).join(', ')}
-                {more > 0 && ` +${more} more`}
-              </span>
-            )}
-            {/* The only colour the transcript has, summed across the run rather
-                than hidden with the rows that produced it. */}
-            {(sum.added > 0 || sum.removed > 0) && (
-              <span className="diff-stat">
-                {sum.added > 0 && <span className="a">+{sum.added}</span>}
-                {sum.removed > 0 && <span className="d">−{sum.removed}</span>}
-              </span>
-            )}
-            {/* A failure is the one outcome that must survive the fold. */}
-            {sum.failed > 0 && <span className="run-failed">{sum.failed} failed</span>}
+            <RunChips sum={sum} />
+            {/* Not in RunChips: the other carrier is a collapsed Task row, and
+                that row already has a chevron of its own. */}
             <ChevronDown size={12} className="run-chevron" />
           </button>
           {liveText && <div className="tool-status">{liveText}</div>}
@@ -188,6 +172,92 @@ export default function ToolRun({
           theme.css. The cost is bounded: a folded TURN never renders `Rows` at
           all, so hidden rows only ever exist inside a turn that is open. */}
       <FoldedContext.Provider value={folds && !open}>{children}</FoldedContext.Provider>
+    </>
+  )
+}
+
+/**
+ * What a summary says about the work behind it: `12 steps · 5 reads, 4 commands,
+ * 3 brain calls  +40 −12  1 failed`.
+ *
+ * TWO CARRIERS, ONE COMPONENT. The run head above, and the line a COLLAPSED
+ * SUBAGENT wears (see ToolLine's `nest`) — which is the same summary of the same
+ * shape, taken over a nest instead of over a run. Shared rather than copied
+ * because `+N more` is arithmetic against the summary, `steps` minus what the
+ * chips account for, and two copies of that would disagree the first time either
+ * side of it moved. Everything that is not the readout stays with the callers:
+ * the chevron, the `data-failed` attribute, and the element itself, because one
+ * of them is a button and the other is not.
+ */
+export function RunChips({ sum }: { sum: RunSummary }): React.JSX.Element {
+  // Remaining CALLS, not remaining kinds, so the arithmetic against `N steps`
+  // adds up for whoever reads the line. runSummary has already capped and
+  // ordered `groups`; the cut is its decision, not a rendering one, because
+  // which five survive has to be checkable.
+  const more = sum.steps - sum.groups.reduce((n, g) => n + g.n, 0)
+
+  return (
+    <>
+      {/* A span, NOT a bare text node. Loose text in a flex container becomes an
+          anonymous flex item, which no selector can reach — so `flex: none` and
+          `white-space: nowrap` could not be applied to it, and the step count
+          was the first thing a flex line squeezed: it wrapped to `10` over
+          `steps` and doubled the head's height while .run-groups, which can
+          ellipsise, gave up nothing.
+
+          Singular is reachable only from the second carrier: a run head needs
+          two rows before it renders at all, and every row in a run is a call, so
+          up there `steps` is never 1. A nest of one call is ordinary. The nouns
+          come off a table for exactly this reason (see TOOL_NOUN) and `1 steps`
+          would undo it on the same line. */}
+      <span className="run-steps">
+        {sum.steps} step{sum.steps === 1 ? '' : 's'}
+      </span>
+      {/* Elements rather than a `.join(', ')` string, so an MCP group can still
+          lead with the protocol's mark — the same pairing a single tool row
+          uses, at 11px because these chips are a step smaller than a row's verb.
+          The fold is otherwise the one place in the transcript that silently
+          drops provenance it already computed.
+
+          The anonymous-flex-item trap above does NOT repeat in here:
+          `.run-groups` is itself a flex item, so it is blockified, and its
+          children are inline content in a line box where `, ` is ordinary text.
+          That blockification is also what makes its ellipsis work, and
+          `.sr-only` is absolutely positioned, so it costs no width. Wrapper
+          spans would buy nothing and break both.
+
+          Keyed by index, which is safe here for a reason: runSummary guarantees
+          first-appearance order and a chip never moves, while the labels are NOT
+          unique — a tool noun and `<server> calls` share one namespace, so
+          `Read` really can appear twice. */}
+      {sum.groups.length > 0 && (
+        <span className="run-groups">
+          ·{' '}
+          {sum.groups.map((g, i) => (
+            <Fragment key={i}>
+              {i > 0 && ', '}
+              {g.mcp && (
+                <>
+                  <McpMark size={11} className="tool-mark" />
+                  <span className="sr-only">MCP </span>
+                </>
+              )}
+              {`${g.n} ${g.label}`}
+            </Fragment>
+          ))}
+          {more > 0 && ` +${more} more`}
+        </span>
+      )}
+      {/* The only colour the transcript has, summed across the fold rather than
+          hidden with the rows that produced it. */}
+      {(sum.added > 0 || sum.removed > 0) && (
+        <span className="diff-stat">
+          {sum.added > 0 && <span className="a">+{sum.added}</span>}
+          {sum.removed > 0 && <span className="d">−{sum.removed}</span>}
+        </span>
+      )}
+      {/* A failure is the one outcome that must survive the fold. */}
+      {sum.failed > 0 && <span className="run-failed">{sum.failed} failed</span>}
     </>
   )
 }

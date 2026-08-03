@@ -7,6 +7,7 @@
  */
 import { strict as assert } from 'node:assert'
 import type { ChatItem, SessionMeta } from '../../shared/types'
+import type { Row } from './derive.mts'
 import { activityOf, answeredQuestions, ANSWER_PREFIX, armedApproval, branchLabel, fmt, hms, latestTodos, score, filterEntries, schemaFields, contextBreakdown, contextView, swatch, level, triggerAt, askQuestions, projectKey, relPath, tildePath, baseName, recentProjects, groupSessions, newestSession, aggregateUsage, planProposal, planTitle, toolLabel, toolVerb, toolRender, transcriptRows, groupTurns, workingVerb, WORKING_VERBS, VERB_STRIDE, sessionTokens, meterElapsed, buildTree, focusTarget, authorEdits, resolveAnchors, mcpName, titleCase, summarise, editStat, toolFailed, groupRuns, runSummary } from './derive.mts'
 
 let seq = 0
@@ -93,6 +94,31 @@ const create = (n: number, subject: string, activeForm?: string): ChatItem =>
 const update = (n: number, status: string): ChatItem =>
   tool('TaskUpdate', { taskId: String(n), status }, `Updated task #${n} status`)
 
+/** The same two calls from a subagent: same tools, same 1-based numbering — that
+ *  collision is the whole problem — under the `parentId` of its Task card.
+ *
+ *  Written out in full rather than `{ ...create(n, s), parentId: under }`:
+ *  spreading a ChatItem widens it back to the union, and `parentId` is not a
+ *  member of the user/result/error variants, so the literal stops type-checking. */
+const kidCreate = (under: string, n: number, subject: string): ChatItem => ({
+  id: `k${++seq}`,
+  kind: 'tool',
+  name: 'TaskCreate',
+  input: { subject },
+  status: 'done',
+  result: `Task #${n} created successfully: ${subject}`,
+  parentId: under,
+})
+const kidUpdate = (under: string, n: number, status: string): ChatItem => ({
+  id: `k${++seq}`,
+  kind: 'tool',
+  name: 'TaskUpdate',
+  input: { taskId: String(n), status },
+  status: 'done',
+  result: `Updated task #${n} status`,
+  parentId: under,
+})
+
 // ---------------------------------------------------------------- latestTodos
 
 assert.equal(latestTodos([]), null, 'no items')
@@ -164,24 +190,416 @@ assert.equal(
   'deleting every task empties the strip',
 )
 
-// Subagent tasks share the parent's 1-based numbering, so folding them in would
-// overwrite the list the user is actually watching.
+// --------------------------------------------------- latestTodos · subagents
+
+// THE BUG THIS EXISTS FOR: with "Approve · subagents" the parent spawns one
+// implementer for the whole plan and blocks inside that single Agent call, so
+// the strip could not move until the moment everything moved at once. A
+// subagent's tasks live in their own 1-based id space, so the join is on the
+// step's TEXT — the child's numbering is REVERSED here, which is what makes an
+// id-based join give a visibly wrong answer rather than an indistinguishable one.
 {
-  const child: ChatItem = {
-    id: 'c1',
-    kind: 'tool',
-    name: 'TaskCreate',
-    input: { subject: 'subagent step' },
-    status: 'done',
-    result: 'Task #1 created successfully: subagent step',
-    parentId: 'agent-card',
-  }
+  const got = latestTodos([
+    create(1, 'Scope the export'),
+    create(2, 'Write the serializer'),
+    create(3, 'Wire the entry point'),
+    kidCreate('agent1', 1, 'Wire the entry point'),
+    kidCreate('agent1', 2, 'Write the serializer'),
+    kidCreate('agent1', 3, 'Scope the export'),
+    kidUpdate('agent1', 3, 'completed'),
+    kidUpdate('agent1', 2, 'in_progress'),
+  ])
   assert.deepEqual(
-    latestTodos([create(1, 'mine'), child])?.map((t) => t.content),
-    ['mine'],
+    got?.map((t) => t.status),
+    ['completed', 'in_progress', 'pending'],
+    'a subagent advances the parent plan by text, not by id',
+  )
+  assert.deepEqual(got?.map((t) => t.content), [
+    'Scope the export',
+    'Write the serializer',
+    'Wire the entry point',
+  ])
+}
+
+// The user is watching the plan they approved, not a delegation's private
+// breakdown of it, so a child task matching nothing is dropped rather than
+// appended. Two parent rows against the child's one, deliberately: that puts
+// the positional fallback below out of the picture, since its count guard fails.
+{
+  const got = latestTodos([
+    create(1, 'mine'),
+    create(2, 'also mine'),
+    kidCreate('agent1', 1, 'subagent step'),
+    kidUpdate('agent1', 1, 'completed'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.content),
+    ['mine', 'also mine'],
     'a subagent task never joins the parent plan',
   )
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['pending', 'pending'],
+    '...and an update it cannot resolve moves nothing',
+  )
 }
+
+// Everything subjectKey normalises is something a model varies without meaning
+// anything by it: backticks, `**emphasis**`, a re-wrapped line's whitespace, a
+// "1. " re-added after being told plan order, casing, a trailing full stop.
+//
+// THE THIRD PARENT ROW IS WHAT MAKES THIS AN ASSERTION. Two rows against two
+// child tasks is exactly the positional fallback's trigger, so with two of each
+// the answer below comes out right whether normalisation works or not — break
+// every rule in subjectKey and both subjects simply miss, the frame never
+// anchors, and position delivers the same list. A row the child never mentions
+// fails the count guard and leaves subjectKey as the only thing that can match.
+{
+  const got = latestTodos([
+    create(1, 'Rename `subjectKey` in derive.mts'),
+    create(2, 'Add the frame map'),
+    create(3, 'Leave this one alone'),
+    kidCreate('agent1', 1, '1. rename subjectKey in derive.mts.'),
+    kidCreate('agent1', 2, '**Add   the frame map**'),
+    kidUpdate('agent1', 1, 'completed'),
+    kidUpdate('agent1', 2, 'in_progress'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['completed', 'in_progress', 'pending'],
+    'ticks, emphasis, a re-added number, casing and a trailing stop all still match',
+  )
+}
+// ...but `_` is left alone, because snake_case identifiers ARE step text. A
+// false merge ticks off a step nobody did, which is the one failure here the
+// user cannot see; a miss leaves a visibly pending row.
+{
+  const got = latestTodos([
+    create(1, 'Handle parent_id'),
+    create(2, 'Handle the rest'),
+    kidCreate('agent1', 1, 'Handle the rest'),
+    kidCreate('agent1', 2, 'Handle parentid'),
+    kidUpdate('agent1', 2, 'completed'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['pending', 'pending'],
+    'an underscore is not noise',
+  )
+}
+
+// Two delegations in SEQUENCE, both numbering their tasks from 1, the second's
+// create still streaming — and that last detail is what makes one shared map
+// visible rather than self-healing. A finished create re-uses the key `1` and
+// quietly overwrites the first subagent's entry, so the answer comes out right
+// by luck; a create with no result yet falls back to the COUNTER, which under
+// one shared map is already at 1 and hands out `2`. The update that follows
+// then resolves through the first subagent's task and ticks its row again.
+{
+  const streaming: ChatItem = {
+    id: 'k2p',
+    kind: 'tool',
+    name: 'TaskCreate',
+    input: { subject: 'Step two' },
+    status: 'pending',
+    parentId: 'agent2',
+  }
+  const got = latestTodos([
+    create(1, 'Step one'),
+    create(2, 'Step two'),
+    kidCreate('agent1', 1, 'Step one'),
+    kidUpdate('agent1', 1, 'completed'),
+    streaming,
+    kidUpdate('agent2', 1, 'completed'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['completed', 'completed'],
+    "the second subagent's #1 is its own, not the first's",
+  )
+}
+// The same two frames INTERLEAVED, which is what two subagents in parallel look
+// like on the wire.
+{
+  const got = latestTodos([
+    create(1, 'Left half'),
+    create(2, 'Right half'),
+    kidCreate('agent1', 1, 'Left half'),
+    kidCreate('agent2', 1, 'Right half'),
+    kidUpdate('agent1', 1, 'in_progress'),
+    kidUpdate('agent2', 1, 'completed'),
+    kidUpdate('agent1', 1, 'completed'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['completed', 'completed'],
+    "parallel delegations never read each other's ids",
+  )
+}
+
+// A subagent that reworded EVERY step still worked through them in plan order,
+// so a frame that matched nothing and holds exactly one task per row falls back
+// to position.
+{
+  const got = latestTodos([
+    create(1, 'Scope the export'),
+    create(2, 'Write the serializer'),
+    create(3, 'Wire the entry point'),
+    kidCreate('agent1', 1, 'Figure out what to export'),
+    kidCreate('agent1', 2, 'Build the writer'),
+    kidCreate('agent1', 3, 'Hook it up in main'),
+    kidUpdate('agent1', 1, 'completed'),
+    kidUpdate('agent1', 2, 'in_progress'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['completed', 'in_progress', 'pending'],
+    'a wholly reworded frame of the right size is still the plan, walked in order',
+  )
+}
+// ...and a frame that is not the same length as the plan is not the plan.
+{
+  const got = latestTodos([
+    create(1, 'Scope the export'),
+    create(2, 'Write the serializer'),
+    create(3, 'Wire the entry point'),
+    kidCreate('agent1', 1, 'Figure out what to export'),
+    kidCreate('agent1', 2, 'Build the writer'),
+    kidUpdate('agent1', 1, 'completed'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['pending', 'pending', 'pending'],
+    'the count guard kills the fallback',
+  )
+}
+// ...and the count is taken against the plan AS THE FRAME FOUND IT, never the
+// live map, because the parent goes on editing the list while the subagent
+// works — CHECKLIST tells it to delete a step the plan turned out not to need.
+// Counted live, this exact sequence ticks off two steps nobody worked on: the
+// delete drops `byId` to three rows, the guard the frame already failed starts
+// passing, and the child's #2 and #3 index into a list that has slid up one.
+// Observed: A pending, C completed, D completed.
+{
+  const got = latestTodos([
+    create(1, 'Scope the export'),
+    create(2, 'Write the serializer'),
+    create(3, 'Wire the entry point'),
+    create(4, 'Delete the old path'),
+    kidCreate('agent1', 1, 'Figure out what to export'),
+    kidCreate('agent1', 2, 'Build the writer'),
+    kidCreate('agent1', 3, 'Hook it up in main'),
+    update(2, 'deleted'),
+    kidUpdate('agent1', 2, 'completed'),
+    kidUpdate('agent1', 3, 'completed'),
+  ])
+  assert.deepEqual(got?.map((t) => t.content), [
+    'Scope the export',
+    'Wire the entry point',
+    'Delete the old path',
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['pending', 'pending', 'pending'],
+    'a parent delete can never make a frame of the wrong size fit the plan',
+  )
+}
+// THE DISCIPLINE ASSERTION. One quoted subject proves this subagent CAN quote
+// the plan, which makes every later miss a step of its own rather than a
+// rewording — so the guessing stops for the whole frame. Under-reports by two
+// rows here, and ORCHESTRATION's step 5 is what closes them.
+{
+  const got = latestTodos([
+    create(1, 'Scope the export'),
+    create(2, 'Write the serializer'),
+    create(3, 'Wire the entry point'),
+    kidCreate('agent1', 1, 'Scope the export'),
+    kidCreate('agent1', 2, 'Build the writer'),
+    kidCreate('agent1', 3, 'Hook it up in main'),
+    kidUpdate('agent1', 1, 'completed'),
+    kidUpdate('agent1', 2, 'completed'),
+    kidUpdate('agent1', 3, 'completed'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['completed', 'pending', 'pending'],
+    'one anchored subject disables the positional fallback for that frame',
+  )
+}
+// ...and the proof does not have to arrive at CREATE time. Here the child names
+// a step the parent has not created yet, so nothing can match while it is being
+// recorded; the row lands a moment later and the child's update resolves through
+// it. That is the same proof, and a frame that only ever gets it this way used
+// to go on guessing forever — ticking 'Scope the export' off the back of 'Draft
+// the writer', which is a step of the subagent's own.
+{
+  const got = latestTodos([
+    create(1, 'Scope the export'),
+    create(2, 'Write the serializer'),
+    kidCreate('agent1', 1, 'Draft the writer'),
+    kidCreate('agent1', 2, 'Wire the entry point'),
+    create(3, 'Wire the entry point'),
+    kidUpdate('agent1', 2, 'completed'),
+    kidUpdate('agent1', 1, 'completed'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['pending', 'pending', 'completed'],
+    'a subject that resolves at update time anchors the frame too',
+  )
+}
+
+// A child create still streaming has no result, so no id — the frame's own
+// counter stands in, exactly as the parent's does one level up.
+{
+  const streaming: ChatItem = {
+    id: 'kp',
+    kind: 'tool',
+    name: 'TaskCreate',
+    input: { subject: 'Scope the export' },
+    status: 'pending',
+    parentId: 'agent1',
+  }
+  assert.equal(
+    latestTodos([create(1, 'Scope the export'), streaming, kidUpdate('agent1', 1, 'in_progress')])?.[0]
+      .status,
+    'in_progress',
+    "a pending child create still resolves through the frame's counter",
+  )
+}
+
+// Removal is the list's SHAPE, and the shape belongs to the main thread.
+//
+// The row is COMPLETED before the 'deleted' arrives, and that is the whole
+// assertion: against a pending row this proves nothing, since normaliseStatus
+// turns an unrecognised 'deleted' into 'pending' too and the guard could be
+// deleted without changing a byte. What it actually stops is a subagent's
+// 'deleted' knocking finished work back to pending in front of the user.
+{
+  const got = latestTodos([
+    create(1, 'Scope the export'),
+    create(2, 'Write the serializer'),
+    kidCreate('agent1', 1, 'Scope the export'),
+    kidUpdate('agent1', 1, 'completed'),
+    kidUpdate('agent1', 1, 'deleted'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.content),
+    ['Scope the export', 'Write the serializer'],
+    'a subagent may not delete a parent row',
+  )
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['completed', 'pending'],
+    "...and its 'deleted' does not degrade to a status either",
+  )
+}
+// Nor may it rewrite the list wholesale: TodoWrite claims to replace everything,
+// and from a subagent that is a delegation's private breakdown claiming to be
+// the approved plan.
+{
+  const kidWrite: ChatItem = {
+    id: 'kw',
+    kind: 'tool',
+    name: 'TodoWrite',
+    input: { todos: [todo('the subagent had other ideas', 'in_progress')] },
+    status: 'done',
+    parentId: 'agent1',
+  }
+  assert.deepEqual(
+    latestTodos([create(1, 'Scope the export'), kidWrite])?.map((t) => t.content),
+    ['Scope the export'],
+    "a subagent's TodoWrite is ignored outright",
+  )
+}
+
+// Render order is the PARENT's insertion order whatever order the work lands in
+// — a Map.set on an existing key does not move it.
+{
+  const got = latestTodos([
+    create(1, 'First'),
+    create(2, 'Second'),
+    create(3, 'Third'),
+    kidCreate('agent1', 1, 'Third'),
+    kidCreate('agent1', 2, 'First'),
+    kidUpdate('agent1', 1, 'completed'),
+    kidUpdate('agent1', 2, 'completed'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.content),
+    ['First', 'Second', 'Third'],
+    'out-of-order work still paints in plan order',
+  )
+  assert.deepEqual(got?.map((t) => t.status), ['completed', 'pending', 'completed'])
+}
+// A row the parent deleted resolves to nothing, so a subagent cannot bring it
+// back by finishing it.
+{
+  const got = latestTodos([
+    create(1, 'Scope the export'),
+    create(2, 'Write the serializer'),
+    kidCreate('agent1', 1, 'Scope the export'),
+    update(1, 'deleted'),
+    kidUpdate('agent1', 1, 'completed'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.content),
+    ['Write the serializer'],
+    'the parent removed it and it stays removed',
+  )
+}
+
+// A delegation with no parent plan behind it — a resumed session, say, joined
+// past the parent's creates — has nothing to join and shows nothing.
+assert.equal(
+  latestTodos([kidCreate('agent1', 1, 'subagent step'), kidUpdate('agent1', 1, 'completed')]),
+  null,
+  'a subagent alone produces no strip',
+)
+
+// Two steps worded identically share one row, first wins. The alternative —
+// "the first match not yet completed" — needs a Map<string, string[]> and
+// breaks the ordinary in_progress→completed double update, and it errs the
+// wrong way: this under-reports, which is visible, rather than over-reporting,
+// which is not.
+{
+  const got = latestTodos([
+    create(1, 'Update the docblock'),
+    create(2, 'Update the docblock'),
+    kidCreate('agent1', 1, 'Update the docblock'),
+    kidCreate('agent1', 2, 'Update the docblock'),
+    kidUpdate('agent1', 1, 'completed'),
+    kidUpdate('agent1', 2, 'completed'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['completed', 'pending'],
+    'duplicate subjects: the first row wins for both, the second stays pending',
+  )
+}
+// ...but a first that no longer exists wins nothing. The parent removes a step
+// and re-adds it later — a repair round is exactly when that happens — and
+// first-wins alone left the deleted row's dead key sitting in the index,
+// shadowing the live row out of the strip for good. The child quotes the subject
+// perfectly here and nothing moved.
+{
+  const got = latestTodos([
+    create(1, 'Wire the entry point'),
+    create(2, 'Write the serializer'),
+    update(1, 'deleted'),
+    create(3, 'Wire the entry point'),
+    kidCreate('agent1', 1, 'Wire the entry point'),
+    kidUpdate('agent1', 1, 'completed'),
+  ])
+  assert.deepEqual(got?.map((t) => t.content), ['Write the serializer', 'Wire the entry point'])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['pending', 'completed'],
+    'a re-added step is reachable again, not shadowed by the row that was deleted',
+  )
+}
+
+// --------------------------------------------------- latestTodos · TodoWrite
 
 // TodoWrite is still honoured, and being a whole-list rewrite it RESETS the fold.
 {
@@ -190,6 +608,67 @@ assert.equal(
     tool('TodoWrite', { todos: [todo('from todowrite', 'in_progress')] }),
   ])
   assert.deepEqual(got?.map((t) => t.content), ['from todowrite'], 'TodoWrite replaces the list')
+}
+
+// A rewrite ARRIVING UNDER A LIVE DELEGATION, which is where the two halves of
+// that reset earn their keep. The subject index is cleared and rebuilt against
+// the new rows: keep the old entries and the child's quote resolves to a key
+// that was thrown away with the old list; skip the rebuild and it resolves to
+// nothing at all. Either way a subagent quoting the plan word for word moves
+// nothing.
+{
+  const got = latestTodos([
+    create(1, 'Scope the export'),
+    kidCreate('agent1', 1, 'Scope the export'),
+    tool('TodoWrite', { todos: [todo('Scope the export', 'pending'), todo('Ship it', 'pending')] }),
+    kidUpdate('agent1', 1, 'completed'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['completed', 'pending'],
+    'a rewrite re-indexes the subjects a live subagent is still quoting',
+  )
+}
+// ...and `frames` survives the rewrite, which is the other half: a rewrite of
+// the parent's list says nothing about which id the subagent gave which subject.
+// The child recorded this subject before the row it names existed, so the frame
+// is the only place that mapping lives — clear it and the update has no subject
+// to look up.
+{
+  const got = latestTodos([
+    create(1, 'Scope the export'),
+    kidCreate('agent1', 1, 'Wire the entry point'),
+    tool('TodoWrite', {
+      todos: [todo('Wire the entry point', 'pending'), todo('Ship it', 'pending')],
+    }),
+    kidUpdate('agent1', 1, 'completed'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['completed', 'pending'],
+    "a subagent's recorded subjects re-resolve against the rewritten list",
+  )
+}
+// What does NOT survive a rewrite is a frame's positional picture, and this is
+// the one sequence where a stale snapshot resolves to something rather than to
+// nothing: a rewrite re-keys every row from `w0`, so after a second one the
+// snapshot's `w0` names a row the subagent has never seen. Both steps below are
+// the parent's own — the child reworded neither, it wrote its own breakdown —
+// and ticking either off would be the false merge this fold exists to refuse.
+{
+  const got = latestTodos([
+    tool('TodoWrite', { todos: [todo('Scope the export', 'pending'), todo('Build it', 'pending')] }),
+    kidCreate('agent1', 1, 'Figure out what to export'),
+    kidCreate('agent1', 2, 'Build the writer'),
+    tool('TodoWrite', { todos: [todo('Rethink the export', 'pending'), todo('Ship it', 'pending')] }),
+    kidUpdate('agent1', 1, 'completed'),
+    kidUpdate('agent1', 2, 'completed'),
+  ])
+  assert.deepEqual(
+    got?.map((t) => t.status),
+    ['pending', 'pending'],
+    'a rewrite retires the positional fallback for every frame open across it',
+  )
 }
 
 // Agent-authored JSON: malformed entries drop out instead of throwing in render.
@@ -1133,6 +1612,10 @@ assert.deepEqual(groupTurns([]), [], 'empty transcript')
     '3 edits',
   ])
   assert.deepEqual(chips([tool('Glob', {}), tool('Grep', {})]), ['2 searches'])
+  // Both delegation names are one noun, and it exists at all for the nest
+  // summary below — joinsRun keeps a delegation out of every run, so nothing up
+  // here can ever count one. Without the entry, two of them read `2 Task`.
+  assert.deepEqual(chips([tool('Task', {}), tool('Agent', {})]), ['2 delegations'])
   // MCP groups by SERVER, spelled exactly as the user wrote it in their config.
   assert.deepEqual(
     chips([tool('mcp__brain__brain_get', {}), tool('mcp__brain__brain_add', {})]),
@@ -1144,6 +1627,31 @@ assert.deepEqual(groupTurns([]), [], 'empty transcript')
   assert.deepEqual(chips([tool('SomeFutureTool', {})]), ['1 SomeFutureTool'])
   // A server that happens to be called Read must not collide with the tool.
   assert.deepEqual(chips([tool('Read', {}), tool('mcp__Read__x', {})]), ['1 read', '1 Read call'])
+
+  // PROVENANCE IS DATA, not something the chip can work out for itself: past
+  // here a group is a noun and a count, and `brain calls` is indistinguishable
+  // from a tool literally named that. The head's MCP mark hangs off this flag.
+  {
+    const marks = (items: ChatItem[]): [string, boolean][] =>
+      runSummary(rows(items)).groups.map((g) => [g.label, g.mcp])
+    assert.deepEqual(
+      marks([tool('Read', {}), tool('mcp__brain__brain_get', {})]),
+      [
+        ['read', false],
+        ['brain call', true],
+      ],
+      'the flag rides out per group, not per run',
+    )
+    // The collision case again, in flags rather than in text: `Read` the tool
+    // and `Read` the server are two buckets, and only one of them is MCP.
+    assert.deepEqual(marks([tool('Read', {}), tool('mcp__Read__x', {})]), [
+      ['read', false],
+      ['Read call', true],
+    ])
+    // An unknown tool is not MCP just because nothing knows its noun — the flag
+    // reads the wire name, and the noun fallback never touches it.
+    assert.deepEqual(marks([tool('SomeFutureTool', {})]), [['SomeFutureTool', false]])
+  }
 
   // ORDER IS ALWAYS FIRST APPEARANCE, whatever the counts are. A bigger group
   // appearing later does NOT jump the queue.
@@ -1240,6 +1748,81 @@ assert.deepEqual(groupTurns([]), [], 'empty transcript')
     removed: 0,
     live: null,
   })
+}
+
+// -------------------------------------------------------- the subagent's nest
+
+/* A Task's children go through the same two functions the transcript does —
+   transcriptRows, then groupRuns — because a subagent that made forty-seven
+   calls used to render forty-seven rows under one delegation, which is the
+   log-you-scroll the transcript stopped being two folds ago.
+
+   Every decision behind that lives in Conversation's ToolItem, a .tsx node
+   cannot run. So what is pinned here is the derivation it leans on: that the
+   nest folds like the transcript folds, that groupTurns has nothing to do down
+   there, and what the collapsed row is entitled to say about the work. */
+{
+  const kid = (name: string, input: unknown = {}): ChatItem => ({
+    id: `i${++seq}`,
+    kind: 'tool',
+    name,
+    input,
+    status: 'done',
+    parentId: 'task1',
+  })
+  const says = (id: string): ChatItem => ({ id, kind: 'assistant', text: 'x', parentId: 'task1' })
+  /** What the renderer hands the nest: the Task's children, already selected. */
+  const nest = (items: ChatItem[]): Row[] => transcriptRows(items)
+
+  // The nest folds exactly as a turn's work does — and a NESTED delegation
+  // breaks the run it lands in, just as one in the transcript does, because
+  // joinsRun keys off the tool's name and never looks at parentId. That is what
+  // makes a subagent inside a subagent still get its own row to expand.
+  assert.deepEqual(
+    groupRuns(nest([kid('Read'), kid('Bash'), kid('Task'), kid('Read')])).map((n) =>
+      n.kind === 'run' ? `run${n.rows.length}` : 'row',
+    ),
+    ['run2', 'row', 'run1'],
+    'the nest groups like the transcript, and a sub-delegation breaks the run',
+  )
+
+  // groupTurns is deliberately NOT applied to a nest, and THIS is the reason:
+  // only assistant, thinking and tool items carry a parentId, so a nest can hold
+  // no user message and no result. Every nest is therefore one lead-less,
+  // duration-less turn — and Turn's header gate (`work.length > 0 && elapsed !==
+  // null`) can never fire on it. A useState, an effect and a context read, for a
+  // header that cannot render.
+  const turns = groupTurns(nest([says('n1'), kid('Read'), says('n2')]))
+  assert.equal(turns.length, 1, 'a nest is always exactly one turn')
+  assert.equal(turns[0].lead, null, '...with no question to open it')
+  assert.equal(turns[0].durationMs, null, '...and no result to time it')
+
+  // The collapsed row's summary is runSummary over the WHOLE nest rather than
+  // over one run, so unlike a run head it DOES count sub-delegations — which is
+  // what the `delegations` noun above exists for.
+  const sum = runSummary(nest([kid('Read'), kid('Task'), kid('Agent')]))
+  assert.equal(sum.steps, 3, 'a nested delegation is a step of the nest')
+  assert.deepEqual(
+    sum.groups.map((g) => `${g.n} ${g.label}`),
+    ['1 read', '2 delegations'],
+  )
+
+  // A subagent that only reasoned and reported has no steps at all, and the row
+  // prints no summary line rather than `0 steps` under every prose-only
+  // delegation. The gate in ToolLine is `nest.steps > 0`; this is the value it
+  // gates on.
+  assert.equal(runSummary(nest([says('n1'), says('n2')])).steps, 0, 'prose-only nest, no steps')
+
+  // Checklist events are hidden inside a nest too. They were not, before the
+  // nest went through transcriptRows: a subagent's TaskCreate rendered as a bare
+  // tool row down here while the same call was folded away up there.
+  assert.deepEqual(
+    nest([create(1, 'Ship it'), kid('Bash')]).map((r) =>
+      r.item.kind === 'tool' ? r.item.name : r.item.kind,
+    ),
+    ['Bash'],
+    'hidden tools stay hidden inside a nest',
+  )
 }
 
 // -------------------------------------------------------------- toolRender

@@ -28,6 +28,7 @@ import {
   hms,
   planProposal,
   planTitle,
+  runSummary,
   toolLabel,
   toolRender,
   transcriptRows,
@@ -36,11 +37,15 @@ import {
 import type { Row, Turn as TurnShape, WorkNode } from '../derive.mts'
 import Markdown from './Markdown'
 
-/** How long each fun verb stays up. Slow enough to read, quick enough to notice. */
-const VERB_MS = 2500
+/** How long each fun verb stays up. A minute, because this is decoration next to
+ *  a line that is already saying "alive": at a few seconds the words change
+ *  faster than they can be read and the eye reads motion rather than a status. */
+const VERB_MS = 60_000
 
-/** 1s, because the readout counts seconds. The verb rotates off this same clock
- *  rather than its own interval — one timer, and the rotation comes free. */
+/** 1s, because the turn header's readout counts seconds — `Turn` is the only
+ *  caller now. The verb used to rotate off this same clock, but a minute apart
+ *  that would be fifty-nine renders that change nothing, so `Working` arms its
+ *  own timer against the boundary it actually cares about. */
 const TICK_MS = 1000
 
 export default function Conversation({ sessionId }: { sessionId: string }): React.JSX.Element {
@@ -291,16 +296,25 @@ interface RowCtx {
 }
 
 /** Each row keeps its own `data-item-id` wrapper: that is what the editor's
- *  gutter jumps to, and what `content-visibility` is applied to. A wrapper
- *  rather than an attribute on Item, because Item returns a different root per
- *  kind and threading the id through six branches would be six chances to miss
- *  one. */
+ *  gutter jumps to and flashes, and what `content-visibility` is applied to. A
+ *  wrapper rather than an attribute on Item, because Item returns a different
+ *  root per kind and threading the id through six branches would be six chances
+ *  to miss one.
+ *
+ *  A subagent's rows are wrapped by the same component now (see ToolItem), and
+ *  only some of that follows them down. `content-visibility` does not — those
+ *  rules are `.convo >`-scoped on purpose. The gutter half only half does: the
+ *  reveal map below is built from main-thread rows, so a nested target opens
+ *  nothing to reach itself, but the flash rule is unscoped and lands if the Task
+ *  is already open. What the wrapper is unconditionally there for down there is
+ *  `hidden` — a run folds inside a nest exactly as it does out here, and this is
+ *  the element the attribute has to land on. */
 function RowItem({ row, ctx }: { row: Row; ctx: RowCtx }): React.JSX.Element {
   // Inside a collapsed run this row is HIDDEN, not unmounted — that is what
   // keeps an open diff open when a run folds under the user. The attribute has
   // to be here, on the wrapper, because that is the element the CSS knows about;
-  // see `.convo > [data-item-id][hidden]`, which exists to beat the UA rule's
-  // specificity.
+  // see `.convo > [data-item-id][hidden]` and its twin under `.tool-nest >`,
+  // both of which exist to beat the UA rule's specificity.
   const folded = useContext(FoldedContext)
   return (
     <div data-item-id={row.item.id} hidden={folded || undefined}>
@@ -315,11 +329,17 @@ function RowItem({ row, ctx }: { row: Row; ctx: RowCtx }): React.JSX.Element {
   )
 }
 
-/** A turn's work: loose rows, and runs of tool calls folded behind one line.
+/** Loose rows, and runs of tool calls folded behind one line.
  *
- *  A pure mapper — the grouping happened in Conversation, where it is checkable.
- *  ToolRun is handed its rows already rendered because `Item` lives in this
- *  module; see the comment on ToolRun for why that direction. */
+ *  Two callers, one shape: a turn's work in the transcript, and a subagent's
+ *  entire nested transcript under a Task row. It reads nothing about either —
+ *  no `.convo`, no turn, no item ids — which is the whole reason ToolItem could
+ *  reuse it rather than growing a second renderer that folds differently.
+ *
+ *  A pure mapper — the grouping is groupRuns, in derive.mts, where it is
+ *  checkable, and both callers memoise it. ToolRun is handed its rows already
+ *  rendered because `Item` lives in this module; see the comment on ToolRun for
+ *  why that direction. */
 function Rows({ nodes, ctx }: { nodes: readonly WorkNode[]; ctx: RowCtx }): React.JSX.Element {
   return (
     <>
@@ -500,6 +520,19 @@ function parentOf(item: ChatItem): string | undefined {
   return 'parentId' in item ? item.parentId : undefined
 }
 
+/** Which verb is up: how many whole VERB_MS the turn has been running for.
+ *
+ *  Derived from the turn's start rather than counted from a mount, because
+ *  `Working` is not remounted per session — a component that survived a tab
+ *  switch, or that appeared halfway through a turn, still lands on the verb the
+ *  turn is actually up to. A turn whose start has not arrived yet reads as tick
+ *  0, which is reachable: main can flip the status one event before it sends the
+ *  timestamp. */
+function verbTick(startedAt: number | null): number {
+  if (startedAt === null) return 0
+  return Math.floor(Math.max(0, Date.now() - startedAt) / VERB_MS)
+}
+
 /**
  * "The agent is alive": bouncing dots and a rotating verb, and nothing else.
  *
@@ -509,26 +542,39 @@ function parentOf(item: ChatItem): string | undefined {
  * scrolled to the bottom, and the effort nowhere — the composer's model picker
  * already renders it as a suffix on the model name, four pixels away.
  *
- * Still its own component so the tick repaints one line rather than the whole
- * transcript. Re-rendering a child never re-renders its parent, so the interval
- * stays contained here even though it now runs 2.5x more often than the verb
- * rotation needs.
+ * Still its own component so a verb change repaints one line rather than the
+ * whole transcript. Nothing else on this line moves any more, so that is now one
+ * render per minute rather than one per second.
  */
 function Working({ session }: { session: SessionMeta }): React.JSX.Element {
-  const [now, setNow] = useState(() => Date.now())
+  // turnStartedAt comes from main rather than a mount timestamp — see verbTick.
+  const startedAt = session.turnStartedAt
   // Opt-out in Settings: the verbs are purely for fun, and the dots already say
-  // everything functional. The clock still has to tick, because it is what
-  // drives the rotation.
+  // everything functional. Nothing else on this line is timed, so switching them
+  // off leaves no timer armed at all.
   const verbs = useStore((s) => s.prefs.workingVerbs)
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), TICK_MS)
-    return () => clearInterval(id)
-  }, [])
+  const [tick, setTick] = useState(() => verbTick(startedAt))
 
-  // turnStartedAt comes from main rather than a mount timestamp because this
-  // component is not remounted per session: Conversation is rendered unkeyed, so
-  // a Working that survived a tab switch would still be timing the old turn.
-  const elapsed = session.turnStartedAt === null ? 0 : Math.max(0, now - session.turnStartedAt)
+  useEffect(() => {
+    // A new turn (or the missing timestamp finally landing) re-phases the
+    // rotation, rather than carrying the previous turn's tick into this one.
+    setTick(verbTick(startedAt))
+    if (!verbs || startedAt === null) return
+    // Re-armed against the wall clock on every fire instead of a flat interval:
+    // a timer that ran late — a busy main thread, a throttled background window
+    // — resyncs to the next boundary rather than carrying the lag for the rest
+    // of the turn.
+    let id: ReturnType<typeof setTimeout>
+    const arm = (): void => {
+      const elapsed = Math.max(0, Date.now() - startedAt)
+      id = setTimeout(() => {
+        setTick(verbTick(startedAt))
+        arm()
+      }, VERB_MS - (elapsed % VERB_MS))
+    }
+    arm()
+    return () => clearTimeout(id)
+  }, [verbs, startedAt])
 
   return (
     <div className="working">
@@ -537,10 +583,7 @@ function Working({ session }: { session: SessionMeta }): React.JSX.Element {
         <i />
         <i />
       </span>
-      {/* Rotation is derived from the clock instead of its own counter, so the
-          cadence alternates 2s/3s rather than a flat 2.5s. Indistinguishable,
-          and it buys one timer instead of two. */}
-      {verbs ? workingVerb(session.id, Math.floor(elapsed / VERB_MS)) : 'Working'}
+      {verbs ? workingVerb(session.id, tick) : 'Working'}
     </div>
   )
 }
@@ -598,6 +641,56 @@ function RecordRow({ item }: { item: Extract<ChatItem, { kind: 'tool' }> }): Rea
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * One tool call, with a subagent's transcript folded under it when it has one.
+ *
+ * ITS OWN COMPONENT BECAUSE OF HOOKS. `Item` is a switch, and a useMemo in one
+ * arm is a hook that does not run in the others — so the grouping either lives
+ * here or is not memoised at all, and `byParent` is rebuilt on every streaming
+ * delta.
+ *
+ * The nest gets THE SAME SHAPE AS THE TRANSCRIPT, through the same two
+ * functions: transcriptRows drops the checklist events, groupRuns folds
+ * consecutive calls behind one head. It used to get neither, so a subagent that
+ * made forty-seven calls rendered forty-seven rows — the log-you-scroll that the
+ * main transcript stopped being two folds ago.
+ *
+ * groupTurns is deliberately NOT applied, and that is verified rather than
+ * assumed: only assistant, thinking and tool items carry a parentId (see
+ * shared/types.ts), so a nest can hold no user message and no result. Every nest
+ * is therefore exactly one lead-less, duration-less turn, and `Turn`'s header
+ * gate can never fire on it — a useState, an effect and a RevealContext read
+ * bought for a header that cannot render.
+ *
+ * `nest` is the summary of the WHOLE nest rather than of any one run inside it:
+ * it is what the row says about the work while it is collapsed, so it counts a
+ * sub-delegation as a step where a run head would refuse to. Null when there is
+ * nothing to show at all, which is what keeps a Task whose only children were
+ * checklist events from offering an empty body — see ToolLine's `nested`.
+ */
+function ToolItem({
+  item,
+  sessionId,
+  cwd,
+  byParent,
+}: {
+  item: Extract<ChatItem, { kind: 'tool' }>
+  sessionId: string
+  cwd: string
+  byParent: Map<string, ChatItem[]>
+}): React.JSX.Element {
+  const kids = byParent.get(item.id)
+  const rows = useMemo(() => transcriptRows(kids ?? EMPTY), [kids])
+  const nodes = useMemo(() => groupRuns(rows), [rows])
+  const nest = useMemo(() => (rows.length > 0 ? runSummary(rows) : null), [rows])
+  const ctx: RowCtx = { sessionId, cwd, byParent }
+  return (
+    <ToolLine item={item} cwd={cwd} nest={nest}>
+      {nest && <Rows nodes={nodes} ctx={ctx} />}
+    </ToolLine>
   )
 }
 
@@ -682,15 +775,12 @@ function Item({
       // Tools the user participated in get a compact record row instead of a
       // card — see RecordRow. They never have a subagent transcript to nest.
       if (toolRender(item.name) === 'record') return <RecordRow item={item} />
-      // A Task card owns its subagent's whole transcript, nested. Recursing on
-      // Item means a subagent that spawns its own subagent nests again for free.
-      return (
-        <ToolLine item={item} cwd={cwd}>
-          {byParent.get(item.id)?.map((child) => (
-            <Item key={child.id} item={child} sessionId={sessionId} cwd={cwd} byParent={byParent} />
-          ))}
-        </ToolLine>
-      )
+      // A Task card owns its subagent's whole transcript, nested — and ToolItem
+      // shapes it the way the transcript shapes itself rather than mapping the
+      // children straight through. The recursion survives the detour, because
+      // ToolItem renders `Rows` and `Rows` render `Item`: a subagent that spawns
+      // its own subagent still nests again for free.
+      return <ToolItem item={item} sessionId={sessionId} cwd={cwd} byParent={byParent} />
     case 'error':
       return <div className="msg-error">{item.text}</div>
     case 'result':

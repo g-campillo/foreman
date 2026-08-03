@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { FolderTree, GitCompare, Gauge, Plus, SlidersHorizontal, SquareTerminal, X } from 'lucide-react'
+import { FolderTree, GitCompare, Gauge, PanelLeft, Plus, SlidersHorizontal, SquareTerminal, X } from 'lucide-react'
 import { activeSession, DEFAULT_APPEARANCE, useStore } from './store'
 import { baseName } from './derive.mts'
 import SessionRail from './components/SessionRail'
@@ -83,6 +83,10 @@ export default function App(): React.JSX.Element {
   const diffStats = useStore((s) => (s.activeId ? s.diffCounts[s.activeId] : undefined))
   const newSession = useStore((s) => s.newSession)
   const setAppearance = useStore((s) => s.setAppearance)
+  // Persisted rather than App-local like `panel`: where the user left the
+  // furniture is Appearance's job, and a rail that reopened on every launch
+  // would undo the one thing ⌘B is for.
+  const railOpen = useStore((s) => s.appearance.railOpen)
   const [panel, setPanel] = useState<Panel | null>(null)
   const [showSettings, setShowSettings] = useState(false)
   const [showPalette, setShowPalette] = useState(false)
@@ -231,17 +235,26 @@ export default function App(): React.JSX.Element {
         // keys open it, since muscle memory splits between the two.
         e.preventDefault()
         setShowPalette((v) => !v)
+      } else if (e.key === 'b') {
+        // Every editor's sidebar key, and free for the same reason ⌘, is: no
+        // Menu of our own, and Electron's default template does not claim it.
+        e.preventDefault()
+        setAppearance({ railOpen: !railOpen })
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [newSession, toggle])
+  }, [newSession, toggle, setAppearance, railOpen])
 
   return (
-    <div className="app" data-panel={panel ?? undefined}>
+    <div className="app" data-panel={panel ?? undefined} data-rail={railOpen ? undefined : 'closed'}>
       <SessionRail />
 
-      <section className="pane pane-fill">
+      {/* `pane-chat` names the pane rather than describing it: it is the only
+          .pane with nothing else to select it by, and collapsing the rail needs
+          to reach exactly this one — for its divider and for the traffic lights
+          it inherits. */}
+      <section className="pane pane-chat pane-fill">
         {/* Deliberately empty on the left. The title and the cwd · branch line
             that used to sit here are gone: the rail already names the session,
             and the empty state carries branch and model as chips, so this strip
@@ -262,6 +275,34 @@ export default function App(): React.JSX.Element {
             Settings keeps a button because it is the one thing here that belongs
             to the app rather than to the session. */}
         <header className="pane-head drag">
+          {/* First child, and the SAME slot open or closed — a control that
+              moves when you use it is a control you have to find again. When the
+              rail is collapsed the traffic lights land in this strip beside it;
+              see --traffic-w in theme.css. `no-drag`, because this strip is the
+              drag region (above).
+
+              One glyph, not a PanelLeft/PanelLeftClose swap: aria-pressed and
+              the tip carry the state to everything that needs it, and a glyph
+              that changes under the cursor is exactly the churn this app keeps
+              removing. No data-active either — the rail is open by default, so
+              the most permanent button in the window would be lit from launch,
+              which says nothing.
+
+              THE LABEL IS A NOUN, and the visible tip is the only thing that
+              names an action. aria-pressed already asserts that whatever the
+              label names is ON, so "Hide conversations" + pressed announces
+              "hiding is active" — the exact opposite of the state it is in. A
+              toggle carries its state in one place or the other, never both;
+              Settings beside it is labelled the same way for the same reason. */}
+          <button
+            className="tab no-drag"
+            aria-pressed={railOpen}
+            aria-label="Conversations"
+            {...hk(railOpen ? 'Hide conversations' : 'Show conversations', '⌘B')}
+            onClick={() => setAppearance({ railOpen: !railOpen })}
+          >
+            <PanelLeft size={ICON} />
+          </button>
           <span className="pane-title">{session?.title ?? ''}</span>
           <span className="spacer" />
           {/* Between the spacer and Settings, and no `no-drag`: it is text with a

@@ -1,6 +1,7 @@
-import { Children, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { ChevronDown, FileCode2 } from 'lucide-react'
 import type { ChatItem } from '../../../shared/types'
+import type { RunSummary } from '../derive.mts'
 import {
   editHunks,
   mcpName,
@@ -16,6 +17,8 @@ import { useStore } from '../store'
 import Markdown from './Markdown'
 import DiffLines from './DiffLines'
 import McpMark from './McpMark'
+import { RunChips } from './ToolRun'
+import { useTailPin } from './ScrollDown'
 
 type Tool = Extract<ChatItem, { kind: 'tool' }>
 
@@ -68,6 +71,7 @@ export { summarise }
 export default function ToolLine({
   item,
   cwd,
+  nest,
   children,
 }: {
   item: Tool
@@ -79,10 +83,22 @@ export default function ToolLine({
    * re-running `.find` over `sessions` on every streaming delta.
    */
   cwd?: string
+  /**
+   * What the nested transcript adds up to, and whether there is one at all.
+   *
+   * Null is the ONLY test for "has a subagent". This used to be
+   * `Children.count(children) > 0`, which is a trap rather than an equivalent:
+   * React counts `false` as one child and `null`/`undefined` as none, so the
+   * moment a caller guarded its children with `&&` instead of `?:` every tool
+   * row in the transcript would claim a nest and grow a chevron over an empty
+   * body. It was correct only by accident — `byParent.get(...)?.map()` happens
+   * to yield `undefined` — and ToolItem now does guard with `&&`.
+   */
+  nest?: RunSummary | null
   /** A subagent's nested transcript, when this call is a Task that spawned one. */
   children?: React.ReactNode
 }): React.JSX.Element {
-  const nested = Children.count(children) > 0
+  const nested = nest != null
   const gist = summarise(item.name, item.input, cwd)
   const plan = planProposal(item.name, item.input)
   const hunks = useMemo(() => editHunks(item.name, item.input), [item.name, item.input])
@@ -105,11 +121,19 @@ export default function ToolLine({
   // and a separate collapse control buys little at a 200-line cap.
   const [allLines, setAllLines] = useState(false)
 
+  /* The nest is capped and therefore scrolls itself, so something has to follow
+     its tail while the subagent streams — the transcript's autoscroll writes a
+     different element and cannot. A callback ref because the node only exists
+     while the row is open; see useTailPin, which is also where re-expanding gets
+     its meaning as the way back to the bottom. */
+  const nestRef = useTailPin<HTMLDivElement>()
+
   const added = hunks?.reduce((n, h) => n + h.lines.filter((l) => l.type === 'add').length, 0) ?? 0
   const removed = hunks?.reduce((n, h) => n + h.lines.filter((l) => l.type === 'del').length, 0) ?? 0
 
   /* A subagent gets Cursor's two-line form: what it was asked on the first line,
-     what it is doing right now on the second. Every other tool keeps one line
+     what it is doing right now on the second — and a third while it is
+     collapsed, summing the work behind the fold. Every other tool keeps one line
      and lets the rolling summary replace its argument, because for those the
      progress IS the argument — a Bash call reporting "installing packages" has
      nothing to say on a second line that the command did not already say. */
@@ -208,6 +232,21 @@ export default function ToolLine({
           the row as if it were expandable on its own. */}
       {status2 && <div className="tool-status">{status2}</div>}
 
+      {/* What is behind the fold, while it is shut — the same readout a folded
+          run wears, over the whole nest instead of over one run. A subagent is
+          the largest thing a turn can collapse, and until now it collapsed to a
+          single line that said only what it had been asked.
+
+          Gated on steps, because a subagent that only reasoned and reported
+          produces `steps: 0`, and `0 steps` under every prose-only delegation is
+          furniture. Gated on `!open` because the rows themselves are the better
+          answer once they are on screen. */}
+      {!open && nest && nest.steps > 0 && (
+        <div className="tool-sum" data-failed={nest.failed > 0 ? '' : undefined}>
+          <RunChips sum={nest} />
+        </div>
+      )}
+
       {open && (
         <div className="tool-body">
           {hunks && hunks.length > 0 && (
@@ -223,7 +262,11 @@ export default function ToolLine({
               onMore={allLines ? undefined : () => setAllLines(true)}
             />
           )}
-          {nested && <div className="tool-nest">{children}</div>}
+          {nested && (
+            <div className="tool-nest" ref={nestRef}>
+              {children}
+            </div>
+          )}
           {plan && (
             <div className="tool-plan">
               <Markdown text={plan.markdown} />

@@ -205,6 +205,15 @@ export default function SessionRail(): React.JSX.Element {
           carrying a permanent shortcut column, which is what keeps three rows of
           chrome from reading as a toolbar. */}
       <nav className="rail-nav">
+        <button
+          className="rail-nav-row"
+          data-active={showPast || undefined}
+          onClick={() => setShowPast((v) => !v)}
+          data-tip={showPast ? 'Hide past sessions' : 'Resume or search past sessions'}
+        >
+          <Search size={14} />
+          <span className="rail-nav-label">Search</span>
+        </button>
         {/* `data-key` rather than the `.rail-key` span this used to render: one
             way to declare a shortcut, so ⌘ reveals this one alongside the dock's
             without a second mechanism to keep in step. */}
@@ -215,15 +224,6 @@ export default function SessionRail(): React.JSX.Element {
         >
           <Plus size={14} />
           <span className="rail-nav-label">New conversation</span>
-        </button>
-        <button
-          className="rail-nav-row"
-          data-active={showPast || undefined}
-          onClick={() => setShowPast((v) => !v)}
-          data-tip={showPast ? 'Hide past sessions' : 'Resume or search past sessions'}
-        >
-          <Search size={14} />
-          <span className="rail-nav-label">Search</span>
         </button>
         {/* A Home row lived here, third. The dashboard it opened listed live
             sessions, recent projects and spend — all of which the rail itself

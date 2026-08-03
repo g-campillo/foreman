@@ -253,6 +253,9 @@ export const DEFAULT_APPEARANCE: Appearance = {
   // Today's behaviour to the pixel: 'comfortable' resolves --convo-max-w to
   // --composer-max-w, so nobody's transcript moves on upgrade.
   transcriptWidth: 'comfortable',
+  // The rail is the app's list of conversations; starting collapsed would open
+  // Foreman on a window with no way to reach any of them but a shortcut.
+  railOpen: true,
 }
 
 /**
@@ -314,6 +317,7 @@ function loadAppearance(): Appearance {
       railWidth: saved.railWidth ?? DEFAULT_APPEARANCE.railWidth,
       sideWidth: saved.sideWidth ?? DEFAULT_APPEARANCE.sideWidth,
       transcriptWidth: saved.transcriptWidth ?? DEFAULT_APPEARANCE.transcriptWidth,
+      railOpen: saved.railOpen ?? DEFAULT_APPEARANCE.railOpen,
     }
   } catch {
     return DEFAULT_APPEARANCE
@@ -425,10 +429,12 @@ export function applyAppearance(a: Appearance): void {
   // colour is pinned to #00000000 at creation — pushing a theme's opaque --bg
   // would land in front of the material and cancel the blur on every flip.
   //
-  // A window-level call, plus an attribute so .rail-head can drop
-  // the 84px it reserves for buttons that may not be there. toggleAttribute
-  // rather than dataset — assigning undefined writes the string "undefined",
-  // which an attribute selector reads as present.
+  // A window-level call, plus an attribute that drops the 84px reserved for
+  // buttons that may not be there. The attribute rewrites one token,
+  // --traffic-w, rather than one rule per header: which header carries the
+  // reservation depends on whether the rail is collapsed. toggleAttribute rather
+  // than dataset — assigning undefined writes the string "undefined", which an
+  // attribute selector reads as present.
   void window.foreman.setTrafficLights(a.trafficLights)
   document.documentElement.toggleAttribute('data-no-traffic-lights', !a.trafficLights)
 }

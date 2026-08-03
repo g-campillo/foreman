@@ -23,6 +23,18 @@ import { takeOrchestration } from './permissions'
  * the permission answer, the obvious-looking alternative, could never have
  * worked regardless of the `planWasEdited` question.
  *
+ * THE VERBATIM INSISTENCE IN STEPS 1, 2 AND 4 IS LOAD-BEARING. The implementer
+ * now ticks the user's checklist itself — it has to, since this agent spends
+ * the whole implementation blocked inside one Agent call — and `latestTodos`
+ * joins its tasks to these rows on the step's TEXT, the two id spaces being
+ * indistinguishable. Reword a step on the way down and its row simply stops
+ * advancing on screen.
+ *
+ * Step 5 is the backstop for that, and it is what bounds the worst case: with
+ * every step paraphrased, nothing matched and the renderer's positional
+ * fallback ruled out, the checklist degrades to what it did before any of this
+ * existed — one late catch-up — instead of sitting stuck forever.
+ *
  * Tagged like the diagnostics injection, so anything the model did not write
  * itself is visibly framed in its own context.
  */
@@ -30,19 +42,22 @@ export const ORCHESTRATION = `<foreman-orchestration>
 The user approved this plan with "Approve · subagents". Carry it out by
 delegating, not by editing files yourself.
 
-1. Call TaskCreate once per step of the plan BEFORE you delegate anything, and
-   TaskUpdate each one to "in_progress" / "completed" as the work lands. You own
-   the checklist even for steps a subagent carries out — a subagent's own tasks
-   are not shown to the user.
+1. Call TaskCreate once per step of the plan BEFORE you delegate anything, with
+   the step's own wording, verbatim. TaskUpdate each one to "in_progress" /
+   "completed" as the work lands.
 2. Spawn the \`implementer\` agent (Agent tool, subagent_type: "implementer") and
-   give it the plan verbatim plus the absolute paths it names. Wait for it.
+   give it the plan plus the absolute paths it names, quoting every step VERBATIM
+   in the same wording you just used as its subject. Wait for it.
 3. Then spawn \`reviewer\` and \`tester\`. Issue both in the SAME message so they
    run in parallel, and wait for both. Give the reviewer the plan text, so it has
    a spec to review against rather than an opinion.
-4. If either reports a problem, delegate the fix back to \`implementer\`, then
-   re-run \`tester\` once. Stop after that single repair round and report what is
-   still outstanding rather than looping.
-5. Finish with a short summary: what changed, what the reviewer found, what the
+4. If either reports a problem, delegate the fix back to \`implementer\`, quoting
+   the steps it must revisit in their original wording, then re-run \`tester\`
+   once. Stop after that single repair round and report what is still
+   outstanding rather than looping.
+5. TaskUpdate to "completed" any step you carried out yourself, and any step the
+   implementer finished but did not tick.
+6. Finish with a short summary: what changed, what the reviewer found, what the
    tests did.
 
 Edit files directly only to unblock a subagent that cannot proceed. If the Agent
@@ -104,21 +119,29 @@ export const PLAN_AGENTS: Record<string, AgentDefinition> = {
       'Glob',
       'Grep',
       'Bash',
-      // NO CHECKLIST TOOLS HERE, DELIBERATELY, and not by omission.
+      // THESE TWO DRIVE THE PARENT'S CHECKLIST, not a list of this agent's own.
       //
-      // `TodoWrite` used to be on this list and does not exist in the installed
-      // SDK. Replacing it with TaskCreate/TaskUpdate/TaskList looks like the fix
-      // and is not: `latestTodos` drops every task item carrying a `parentId`,
-      // because a subagent numbers its tasks from 1 exactly as the parent does
-      // and merging the two would overwrite the list the user is watching. So a
-      // task the implementer created could never reach the strip.
+      // `latestTodos` folds a subagent's task calls into the plan strip the user
+      // is watching, joined on the SUBJECT TEXT — the two id spaces collide,
+      // both numbering from 1, so the wording of a step is the only thing the
+      // two threads share. That is why the prompt below insists a step be copied
+      // rather than summarised: THE TEXT IS THE JOIN KEY, and a paraphrased step
+      // simply stops advancing on screen.
       //
-      // The parent owns the checklist across the whole delegation — see step 1
-      // of ORCHESTRATION — which is the right model anyway: the user is watching
-      // the plan they approved, not the subagent's private breakdown of it. That
-      // leaves these three as schemas the model is shown and can never usefully
-      // call, and an unused tool schema is pure context cost on every request;
-      // title.ts measures the same trade at $0.038 -> $0.0037.
+      // Withholding them is what used to make the strip sit still for the whole
+      // implementation: the parent owned the checklist and was blocked inside one
+      // Agent call until the moment everything ticked at once.
+      'TaskCreate',
+      'TaskUpdate',
+      // `TaskList` stays out, and `TodoWrite` does not exist in the installed
+      // SDK at all. TaskList would only let the model read back a list it was
+      // handed in its own prompt, and an unused tool schema is pure context cost
+      // on every request; title.ts measures the same trade at $0.038 -> $0.0037.
+      //
+      // `reviewer` and `tester` hold none of the three, and that is the same
+      // decision made the other way: their breakdown of the work is not the
+      // plan, and one that happened to be the same length as it would be a
+      // candidate for `latestTodos`'s positional fallback.
       ...READ_ONLY_TOOLS,
     ],
     prompt: [
@@ -127,6 +150,14 @@ export const PLAN_AGENTS: Record<string, AgentDefinition> = {
       'The plan is the spec. Do not redesign it, do not expand its scope, and do',
       'not skip steps you disagree with — if a step is wrong or impossible, do the',
       'rest and say so in your report.',
+      '',
+      'The user is watching a checklist of those steps. Call TaskCreate once per',
+      "step, in plan order, with the step's wording COPIED EXACTLY — not",
+      'summarised — then TaskUpdate each one to "in_progress" as you start it and',
+      '"completed" as you finish it. Those rows are matched back to the plan by',
+      'their text, so a step you reword is a step that stops moving on screen. Do',
+      'not add a task the plan did not name and do not delete one: a step you did',
+      'not do stays visibly unfinished, which is the point.',
       '',
       'Match the surrounding code: its naming, its error handling, its comment',
       'style. Prefer editing an existing file over adding a new one.',
